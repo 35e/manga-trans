@@ -16,5 +16,9 @@ services:
     # use `user: "${UID:-1000}:${GID:-1000}"` instead.
     userns_mode: "keep-id:uid=10001,gid=10001"
     # No command: the image default reads every image in /pages and writes one
-    # JSON per page to /pages/out. Add flags on the command line, e.g.
-    #   podman compose run --rm manga-trans --save-viz --gap 1.6
+    # JSON + txt per page to /pages/out. Add flags on the command line, e.g.
+    #   podman compose run --rm manga-trans --translate --save-viz
+    environment:
+      # ollama on the host; on docker use http://host.docker.internal:11434
+      OLLAMA_URL: http://host.containers.internal:11434
+      OLLAMA_MODEL: qwen3-vl:8b

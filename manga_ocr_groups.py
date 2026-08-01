@@ -162,11 +162,13 @@ class TextGroup:
     bbox: Box
     boxes: list[Box] = field(default_factory=list)
     text: str = ""
+    translation: str = ""
 
     def to_dict(self) -> dict:
         return {
             "bbox": self.bbox.as_list(),
             "text": self.text,
+            "translation": self.translation,
             "fragments": len(self.boxes),
             "fragment_boxes": [b.as_list() for b in self.boxes],
         }
@@ -338,6 +340,243 @@ def draw_visualisation(path: Path, page: Page, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# translation (ollama)
+# ---------------------------------------------------------------------------
+
+TRANSLATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "translations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "text": {"type": "string"},
+                },
+                "required": ["id", "text"],
+            },
+        }
+    },
+    "required": ["translations"],
+}
+
+SYSTEM_PROMPT = (
+    "You are a professional manga translator. You are given the text of every "
+    "speech bubble on one manga page, in reading order, each with an id. "
+    "Translate each one into {target}.\n"
+    "Rules:\n"
+    "- Return exactly one translation per id, reusing the same ids.\n"
+    "- Translate each bubble on its own; never merge or split bubbles.\n"
+    "- Keep the tone of the original (casual speech stays casual, shouting stays "
+    "shouting) and render sound effects as {target} onomatopoeia.\n"
+    "- Use the other bubbles only as context for pronouns and politeness.\n"
+    "- Output the translation only, with no notes, romaji or explanations.\n"
+    "- If a line is unreadable OCR noise, return it unchanged."
+)
+
+
+class OllamaError(RuntimeError):
+    """Ollama could not be reached or returned something unusable."""
+
+
+def extract_json(text: str) -> dict:
+    """Parse a JSON object out of a model response.
+
+    Thinking models like to wrap the answer in prose or ``<think>`` tags even
+    when a schema is set, so fall back to the outermost ``{...}``.
+    """
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+    raise OllamaError(f"could not parse ollama's response as JSON: {text[:200]!r}")
+
+
+def ollama_chat(
+    messages: list[dict],
+    *,
+    url: str,
+    model: str,
+    schema: dict | None = None,
+    timeout: float = 120.0,
+    think: bool = False,
+) -> str:
+    """POST to Ollama's /api/chat and return the assistant's answer.
+
+    ``think=False`` matters: on a thinking model like qwen3, reasoning about a
+    handful of speech bubbles costs a minute or more per page and adds nothing
+    to a translation.
+    """
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    payload: dict = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        # Translation should not be creative.
+        "options": {"temperature": 0},
+    }
+    if schema is not None:
+        payload["format"] = schema
+    if think is not None:
+        payload["think"] = think
+
+    def post(body: dict) -> dict:
+        request = urllib.request.Request(
+            url.rstrip("/") + "/api/chat",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+
+    try:
+        try:
+            body = post(payload)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace").strip()
+            if "think" not in detail.lower() or "think" not in payload:
+                raise OllamaError(
+                    f"ollama returned HTTP {exc.code}: {detail}"
+                ) from exc
+            # Model has no thinking mode - ask again without the field.
+            payload.pop("think")
+            body = post(payload)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()
+        raise OllamaError(f"ollama returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise OllamaError(
+            f"cannot reach ollama at {url} ({exc.reason}).\n"
+            "  - is `ollama serve` running?\n"
+            "  - from a container the host is http://host.containers.internal:11434\n"
+            "  - override with --ollama-url or $OLLAMA_URL"
+        ) from exc
+    except TimeoutError as exc:
+        raise OllamaError(
+            f"ollama timed out after {timeout}s; raise --ollama-timeout"
+        ) from exc
+
+    message = body.get("message") or {}
+    content = (message.get("content") or "").strip()
+    if not content:
+        # Some models (qwen3-vl) put the whole answer in `thinking` and leave
+        # `content` empty when thinking is disabled.
+        content = (message.get("thinking") or "").strip()
+    return content
+
+
+def clean_translation(text: str) -> str:
+    """Drop the list numbering models sometimes echo back ("1. Hello" -> "Hello")."""
+    return re.sub(r"^\s*\d+[.)]\s*", "", text).strip()
+
+
+def translate_texts(
+    texts: list[str],
+    *,
+    url: str,
+    model: str,
+    target_lang: str = "English",
+    timeout: float = 120.0,
+    log=lambda _msg: None,
+) -> list[str]:
+    """Translate one page worth of bubbles, keeping them aligned with the input.
+
+    The whole page goes in one request so the model has the surrounding bubbles
+    as context. A JSON schema keeps the ids intact; anything the model still
+    drops is retried on its own.
+    """
+    if not any(t.strip() for t in texts):
+        return ["" for _ in texts]
+
+    numbered = "\n".join(
+        f"{i}. {text}" for i, text in enumerate(texts, start=1) if text.strip()
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT.format(target=target_lang)},
+        {"role": "user", "content": numbered},
+    ]
+    content = ollama_chat(
+        messages, url=url, model=model, schema=TRANSLATION_SCHEMA, timeout=timeout
+    )
+
+    by_id: dict[int, str] = {}
+    try:
+        for item in extract_json(content).get("translations", []):
+            by_id[int(item["id"])] = clean_translation(str(item["text"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OllamaError(f"unexpected response shape: {content[:200]!r}") from exc
+
+    out: list[str] = []
+    for i, text in enumerate(texts, start=1):
+        if not text.strip():
+            out.append("")
+            continue
+        translated = by_id.get(i, "")
+        if not translated:
+            # The model skipped this bubble - ask again for just this one.
+            log(f"  retrying bubble {i}...")
+            single = ollama_chat(
+                [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT.format(target=target_lang),
+                    },
+                    {"role": "user", "content": f"1. {text}"},
+                ],
+                url=url,
+                model=model,
+                schema=TRANSLATION_SCHEMA,
+                timeout=timeout,
+            )
+            try:
+                items = extract_json(single).get("translations", [])
+                translated = clean_translation(str(items[0]["text"])) if items else ""
+            except (OllamaError, KeyError, IndexError, TypeError, ValueError):
+                translated = ""
+        out.append(translated)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# text output
+# ---------------------------------------------------------------------------
+
+
+def page_lines(page: "Page", fmt: str = "both") -> list[str]:
+    """The page's groups as text lines, in reading order."""
+    lines = [f"# {page.path.name}"]
+    for i, group in enumerate(page.groups, start=1):
+        if fmt == "translation":
+            if group.translation:
+                lines.append(f"[{i}] {group.translation}")
+        elif fmt == "original":
+            if group.text:
+                lines.append(f"[{i}] {group.text}")
+        else:
+            lines.append(f"[{i}] {group.text}")
+            if group.translation:
+                lines.append(f"    -> {group.translation}")
+    return lines
+
+
+def write_txt(pages: list["Page"], out_path: Path, fmt: str = "both") -> None:
+    blocks = ["\n".join(page_lines(page, fmt)) for page in pages]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # input discovery
 # ---------------------------------------------------------------------------
 
@@ -483,6 +722,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     recognition.add_argument("--cpu", action="store_true", help="force CPU inference")
 
+    translation = parser.add_argument_group("translation (ollama)")
+    translation.add_argument(
+        "--translate",
+        action="store_true",
+        help="translate every text group with a local ollama model",
+    )
+    translation.add_argument(
+        "--ollama-url",
+        default=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
+        help="ollama server; inside a container use http://host.containers.internal:11434",
+    )
+    translation.add_argument(
+        "--ollama-model",
+        default=os.environ.get("OLLAMA_MODEL", "qwen3-vl:8b"),
+        help="model to translate with (`ollama list` shows what you have)",
+    )
+    translation.add_argument(
+        "--target-lang", default="English", help="language to translate into"
+    )
+    translation.add_argument(
+        "--ollama-timeout",
+        type=float,
+        default=180.0,
+        help="seconds to wait for one ollama response",
+    )
+
     output = parser.add_argument_group("output")
     output.add_argument(
         "--out-dir",
@@ -495,6 +760,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--save-viz",
         action="store_true",
         help="with --out-dir, also write an annotated <name>.boxes.png per image",
+    )
+    output.add_argument(
+        "--txt",
+        type=Path,
+        help="write every page's text to one .txt file, in reading order "
+        "(default with --out-dir: <out-dir>/pages.txt)",
+    )
+    output.add_argument(
+        "--txt-format",
+        choices=["both", "translation", "original"],
+        default="both",
+        help="what the .txt files contain",
     )
     output.add_argument(
         "--json", type=Path, help="write all pages to one JSON file ('-' for stdout)"
@@ -516,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"no images found in {where}")
     if args.viz and len(images) > 1:
         raise SystemExit("--viz works with a single image at a time; use --save-viz")
+    if args.translate and args.no_ocr:
+        raise SystemExit("--translate needs the OCR text; drop --no-ocr")
 
     def log(msg: str) -> None:
         if not args.quiet:
@@ -560,6 +839,23 @@ def main(argv: list[str] | None = None) -> int:
     for path in images:
         log(f"processing {path}...")
         page = process_image(path, reader, mocr, args)
+
+        if args.translate and page.groups:
+            log(f"translating {len(page.groups)} group(s) with {args.ollama_model}...")
+            try:
+                translations = translate_texts(
+                    [g.text for g in page.groups],
+                    url=args.ollama_url,
+                    model=args.ollama_model,
+                    target_lang=args.target_lang,
+                    timeout=args.ollama_timeout,
+                    log=log,
+                )
+            except OllamaError as exc:
+                raise SystemExit(f"translation failed: {exc}") from exc
+            for group, translated in zip(page.groups, translations):
+                group.translation = translated
+
         pages.append(page)
 
         print(f"=== {path} - {len(page.groups)} text group(s) ===")
@@ -571,6 +867,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             if group.text:
                 print(f"    {group.text}")
+            if group.translation:
+                print(f"    -> {group.translation}")
         print()
 
         if args.out_dir:
@@ -581,6 +879,11 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
             )
             log(f"wrote {page_json}")
+
+            page_txt = args.out_dir / f"{stem}.txt"
+            write_txt([page], page_txt, args.txt_format)
+            log(f"wrote {page_txt}")
+
             if args.save_viz:
                 viz_path = args.out_dir / f"{stem}.boxes.png"
                 draw_visualisation(path, page, viz_path)
@@ -589,6 +892,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.viz:
         draw_visualisation(images[0], pages[0], args.viz)
         log(f"wrote {args.viz}")
+
+    # All pages in one file, in the order they were processed.
+    txt_path = args.txt or (args.out_dir / "pages.txt" if args.out_dir else None)
+    if txt_path:
+        write_txt(pages, txt_path, args.txt_format)
+        log(f"wrote {txt_path}")
 
     if args.json:
         payload = {"pages": [p.to_dict() for p in pages]}

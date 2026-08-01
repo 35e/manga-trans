@@ -51,6 +51,25 @@ wrote /pages/out/001.json
 wrote /pages/out/001.boxes.png
 ```
 
+Add `--translate` to also run every bubble through your local ollama:
+
+```bash
+podman run --rm -v ./pages:/pages --userns=keep-id:uid=10001,gid=10001 \
+  manga-trans --cpu --translate
+```
+
+The container reaches ollama on the host at `host.containers.internal:11434`
+(already the image default) and uses `qwen3-vl:8b`. Alongside the JSON you get
+`<name>.txt` per page and a combined `pages.txt`, both in reading order:
+
+```
+# 006.webp
+[1] またがって〜
+    -> Climb up~
+[2] ゴロン
+    -> Goron
+```
+
 Pages are processed in natural order (`page2` before `page10`), `--save-viz` is
 optional, and anything already in `out/` is never picked up as input, so
 re-running is safe. Everything after the image name is passed straight to
@@ -121,6 +140,37 @@ python manga_ocr_groups.py page.jpg --cpu                # force CPU
 
 `python manga_ocr_groups.py --help` lists every knob.
 
+## Translation
+
+`--translate` sends each page's bubbles to a local [ollama](https://ollama.com)
+in one request, so the model sees the whole page as context, and writes the
+result to `<name>.txt` (plus `pages.txt` for the whole run) in reading order.
+
+```bash
+ollama serve                                   # if it is not already running
+python manga_ocr_groups.py pages --out-dir pages/out --translate
+python manga_ocr_groups.py pages --out-dir pages/out --translate \
+  --ollama-model qwen3-vl:8b --target-lang Dutch --txt-format translation
+```
+
+| Flag | Default | |
+| --- | --- | --- |
+| `--ollama-url` | `$OLLAMA_URL`, else `http://localhost:11434` | container default is `http://host.containers.internal:11434` |
+| `--ollama-model` | `$OLLAMA_MODEL`, else `qwen3-vl:8b` | `ollama list` shows what you have |
+| `--target-lang` | `English` | any language the model knows |
+| `--ollama-timeout` | `180` | seconds per request |
+| `--txt-format` | `both` | `both`, `translation` or `original` |
+| `--txt` | `<out-dir>/pages.txt` | combined text file |
+
+Alignment is enforced with a JSON schema (ollama's structured outputs), so bubble
+_n_ always gets translation _n_; a bubble the model skips is retried on its own.
+Thinking is switched off (`"think": false`) — on qwen3-vl that is the difference
+between ~2 s and ~95 s per page, and models without a thinking mode are retried
+automatically without the flag.
+
+OCR noise gets translated as noise: if a bubble reads as gibberish, that is a
+detection/recognition problem, not a translation one — check it with `--save-viz`.
+
 ## How it works
 
 1. **Detect** — EasyOCR's CRAFT detector finds individual text fragments.
@@ -169,6 +219,7 @@ Note that `--no-ocr` still writes JSON when `--out-dir` is active — with empty
         {
           "bbox": [859, 119, 966, 358],
           "text": "おはようございます",
+          "translation": "Good morning",
           "fragments": 2,
           "fragment_boxes": [[859, 119, 909, 358], [916, 119, 966, 313]]
         }

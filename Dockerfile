@@ -43,8 +43,12 @@ USER 10001
 # Manga pages are mounted here; relative paths on the command line resolve
 # inside this directory. With no arguments the whole folder is read and one
 # JSON per page is written to /pages/out.
+# OLLAMA_URL points at the host's ollama (podman and docker both resolve these
+# names; docker uses host.docker.internal).
 ENV MANGA_TRANS_INPUT=/pages \
-    MANGA_TRANS_OUT_DIR=/pages/out
+    MANGA_TRANS_OUT_DIR=/pages/out \
+    OLLAMA_URL=http://host.containers.internal:11434 \
+    OLLAMA_MODEL=qwen3-vl:8b
 WORKDIR /pages
 VOLUME ["/pages"]
 
