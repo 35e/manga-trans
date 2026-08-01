@@ -200,6 +200,76 @@ the flag.
 OCR noise gets translated as noise: if a bubble reads as gibberish, that is a
 detection/recognition problem, not a translation one — check it with `--save-viz`.
 
+## Speech bubbles only
+
+By default only text inside a speech bubble or caption box is kept. Sound
+effects drawn straight onto the artwork are skipped: they OCR badly, and feeding
+that noise to the translator drags the rest of the page down with it.
+
+```
+processing /pages/03.webp...
+  skipping non-bubble text at [261, 26, 316, 130] (bubble 0.00)
+```
+
+A bubble is a *bounded* pale island, so measuring how white the surroundings are
+is not enough — an SFX over a cream-coloured panel looks just as white as a
+bubble does. Instead the near-white pixels are labelled into connected regions
+(OpenCV), and a group is kept when the region under it is **no more than 8× the
+size of the text**. A bubble is drawn around its lettering so it stays within a
+few times of it; a panel background dwarfs the sound effect painted on it. That
+ratio scales with the lettering rather than the page, which is what makes it
+hold across panel sizes.
+
+Each group's score lands in the JSON as `bubble` (1 = entirely on its bubble,
+0 = rejected outright), so you can tune against real numbers:
+
+```bash
+./run.sh --all-text --json -          # score everything, filter nothing
+./run.sh --bubble-threshold 0.15      # keep groups that straddle a bubble edge
+./run.sh --all-text                   # translate the sound effects too
+```
+
+Text on the artwork scores exactly 0, so `--bubble-threshold` only decides how
+sloppily a group may spill over its bubble's edge — worth lowering if a bubble
+your `--gap` merged with its neighbour gets dropped.
+
+## Rendering the translation onto the page
+
+`--render` writes `<name>.render.jpg` next to the JSON: the original Japanese is
+removed and the translation is lettered into the space it occupied.
+
+```bash
+./run.sh --translate --render
+```
+
+Two steps per bubble:
+
+1. **Erase** — the detected fragments are dilated (`--erase-pad`) into a mask and
+   [inpainted](https://docs.opencv.org/master/df/d3d/tutorial_py_inpainting.html)
+   away with OpenCV's Telea method. Inside a speech bubble that reproduces the
+   bubble exactly; where text sits directly on artwork it continues the art
+   rather than leaving a flat rectangle.
+2. **Letter** — the translation is wrapped and size-fitted with Pillow. A
+   Japanese bubble is tall and narrow because the text runs vertically, so the
+   box is re-shaped: each candidate widens it by *k* and shortens it by the same
+   *k*, covering the same area in a shape English can use. The candidate giving
+   the largest type wins, capped at 1.6× the original glyph size so a short line
+   is not blown up to fill its bubble. Shapes that would reach into a
+   neighbouring bubble are rejected.
+
+| Flag | Default | |
+| --- | --- | --- |
+| `--render` | off | write `<out-dir>/<name>.render.jpg` |
+| `--render-to` | — | render a single image to this path |
+| `--font` | DejaVu Sans Bold | any TTF/OTF; the image bundles `fonts-dejavu-core` |
+| `--text-colour` | `black` | lettering colour |
+| `--erase-pad` | `0.3` | how far the erase spills past each fragment, in glyph sizes |
+
+`--render` needs `--translate`. Quality is bounded by the detection: a bubble
+the detector split into two groups is lettered as two blocks, so check with
+`--save-viz` if something looks off. Text that sits on artwork rather than in a
+bubble leaves a soft inpainting smudge — unavoidable without a bubble detector.
+
 ## How it works
 
 1. **Detect** — EasyOCR's CRAFT detector finds individual text fragments.
@@ -210,7 +280,9 @@ detection/recognition problem, not a translation one — check it with `--save-v
    glyph size of the smaller fragment. The threshold is relative to glyph size,
    so small dialogue and big SFX on the same page both group sensibly.
    Clustering is single-linkage, so a chain of nearby fragments forms one box.
-3. **Recognise** — each group is cropped as a whole (with a little padding) and
+3. **Filter** — groups that are not on a speech bubble or caption box are
+   dropped; see [Speech bubbles only](#speech-bubbles-only).
+4. **Recognise** — each group is cropped as a whole (with a little padding) and
    read by `manga-ocr`, which is trained on complete manga text blocks and
    handles vertical text, multiple lines and furigana itself.
 
@@ -253,6 +325,7 @@ model.
 | Two nearby bubbles merged into one | lower `--gap` (e.g. `0.7`), or cap it with `--max-gap-px` |
 | Text missed entirely | lower `--text-threshold` / `--low-text`, or raise `--mag-ratio` for small text |
 | Noise picked up as text | raise `--min-fragments` or `--min-group-px` |
+| A real bubble is skipped as non-bubble | lower `--bubble-threshold`, or `--all-text` |
 | Run dies with no output (exit 137) | out of memory — see [Large pages](#large-pages) |
 
 `--min-gap-px` / `--max-gap-px` clamp the computed threshold in absolute pixels,
@@ -277,6 +350,7 @@ Note that `--no-ocr` still writes JSON when `--out-dir` is active — with empty
           "bbox": [859, 119, 966, 358],
           "text": "おはようございます",
           "translation": "Good morning",
+          "bubble": 0.81,
           "fragments": 2,
           "fragment_boxes": [[859, 119, 909, 358], [916, 119, 966, 313]]
         }

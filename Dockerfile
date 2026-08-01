@@ -2,9 +2,11 @@
 # Builds with either podman or docker - no BuildKit-only syntax is used.
 FROM python:3.12-slim-bookworm
 
-# Runtime libs for opencv-python-headless (pulled in by easyocr).
+# Runtime libs for opencv-python-headless (pulled in by easyocr), plus a real
+# font: the slim image ships none at all, and --render needs one to letter with.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libglib2.0-0 libgomp1 \
+    && apt-get install -y --no-install-recommends \
+        libglib2.0-0 libgomp1 fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

@@ -11,9 +11,14 @@ Pipeline
    boxes being compared, so a small furigana cluster and a big SFX cluster both
    group sensibly on the same page. Fragments further apart than the threshold
    end up in different groups, i.e. different text boxes / speech bubbles.
-3. **Recognise** - Each group is cropped as a whole and passed to `manga-ocr`,
+3. **Filter**  - Groups that are not sitting on a speech bubble or caption box
+   are dropped (``--all-text`` keeps them): sound effects painted onto the
+   artwork OCR badly and poison the translation of the rest of the page.
+4. **Recognise** - Each group is cropped as a whole and passed to `manga-ocr`,
    which is trained on complete manga text blocks and handles vertical text,
    multiple lines and furigana on its own.
+5. **Render**  - With ``--translate --render`` the original text is inpainted
+   out and the translation lettered into the space it occupied.
 
 Detection runs at ``--canvas-size auto`` by default: the resolution is fitted to
 the memory the machine actually has, so a large scan is downscaled for detection
@@ -35,6 +40,7 @@ folder is scanned. With ``--out-dir`` every page gets its own ``<name>.json``:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -176,15 +182,77 @@ class TextGroup:
     boxes: list[Box] = field(default_factory=list)
     text: str = ""
     translation: str = ""
+    bubble: float = 1.0
 
     def to_dict(self) -> dict:
         return {
             "bbox": self.bbox.as_list(),
             "text": self.text,
             "translation": self.translation,
+            "bubble": round(self.bubble, 3),
             "fragments": len(self.boxes),
             "fragment_boxes": [b.as_list() for b in self.boxes],
         }
+
+
+# A speech bubble is a pale *island*: one closed white blob, a few times bigger
+# than the text and no more. Just measuring how white the surroundings are does
+# not work - a sound effect drawn over a pale panel background scores just as
+# white as a bubble - so the white has to be a bounded region as well.
+BUBBLE_WHITE = 225
+# A bubble is drawn around its text, so it stays within a few times the size of
+# it. A pale panel background dwarfs the sound effect painted on it - that ratio
+# separates the two far more reliably than any absolute size, because it scales
+# with the lettering instead of with the page.
+BUBBLE_MAX_AREA_RATIO = 8.0
+# Backstop for a page whose whole background is white: then even the ratio can
+# look plausible for a big block of text.
+BUBBLE_MAX_PAGE_FRACTION = 0.2
+
+
+def white_components(grey):
+    """Label the connected near-white regions of the page.
+
+    Returns ``(labels, areas)`` where label 0 is everything that is not white,
+    or ``None`` if OpenCV is unavailable.
+    """
+    try:
+        import cv2  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - cv2 ships with easyocr
+        return None
+    import numpy as np  # noqa: PLC0415
+
+    mask = (grey >= BUBBLE_WHITE).astype(np.uint8)
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
+    return labels, stats[:, cv2.CC_STAT_AREA]
+
+
+def bubble_score(components, box: Box, page_area: int) -> float:
+    """How much of ``box`` sits on one self-contained white blob, 0-1.
+
+    High for text in a speech bubble or a caption box. Near zero for a sound
+    effect on the artwork, whether the artwork behind it is dark (little white)
+    or pale (the white is the whole panel, which is rejected on size).
+    """
+    if components is None:  # pragma: no cover - cv2 ships with easyocr
+        return 1.0
+    import numpy as np  # noqa: PLC0415
+
+    labels, areas = components
+    region = labels[box.y0 : box.y1, box.x0 : box.x1]
+    if region.size == 0:
+        return 0.0
+
+    counts = np.bincount(region.ravel(), minlength=len(areas))
+    counts[0] = 0  # not-white
+    label = int(counts.argmax())
+    if label == 0 or counts[label] == 0:
+        return 0.0
+    if areas[label] > region.size * BUBBLE_MAX_AREA_RATIO:
+        return 0.0
+    if areas[label] > page_area * BUBBLE_MAX_PAGE_FRACTION:
+        return 0.0
+    return float(counts[label] / region.size)
 
 
 def sort_reading_order(groups: list[TextGroup], order: str = "rtl") -> list[TextGroup]:
@@ -406,6 +474,11 @@ def process_image(path: Path, reader, mocr, args, log=lambda _msg: None) -> Page
     grey = np.array(image.convert("L"))
     fragments = detect_fragments(reader, grey, args, canvas_size, log=log)
 
+    # Always scored, so the number is in the JSON to tune --bubble-threshold
+    # against; only the filtering below is optional.
+    components = white_components(grey)
+    page_area = width * height
+
     groups: list[TextGroup] = []
     for indices in group_boxes(
         fragments,
@@ -419,7 +492,16 @@ def process_image(path: Path, reader, mocr, args, log=lambda _msg: None) -> Page
         bbox = union_box(members)
         if bbox.w < args.min_group_px and bbox.h < args.min_group_px:
             continue
-        groups.append(TextGroup(bbox=bbox, boxes=members))
+        score = bubble_score(components, bbox, page_area)
+        groups.append(TextGroup(bbox=bbox, boxes=members, bubble=score))
+
+    if args.bubbles_only:
+        kept = [g for g in groups if g.bubble >= args.bubble_threshold]
+        for group in groups:
+            if group.bubble < args.bubble_threshold:
+                log(f"  skipping non-bubble text at {group.bbox.as_list()} "
+                    f"(bubble {group.bubble:.2f})")
+        groups = kept
 
     groups = sort_reading_order(groups, args.order)
 
@@ -468,6 +550,238 @@ def draw_visualisation(path: Path, page: Page, out_path: Path) -> None:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(out_path)
+
+
+# ---------------------------------------------------------------------------
+# rendering the translation back onto the page
+# ---------------------------------------------------------------------------
+
+# The slim base image has no fonts; fonts-dejavu-core provides this one. Falls
+# back to Pillow's built-in font so the script still runs outside the container.
+FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+)
+
+FONT_MIN = 9
+LINE_SPACING = 0.16  # extra gap between lines, in multiples of the font size
+# A Japanese bubble is tall and narrow because the text runs vertically, English
+# wants the opposite shape. Each candidate widens the box by k and shortens it
+# by the same k, so every shape covers the area the original text already
+# occupied - the bubble stays as full as it was, just laid out the other way.
+SHAPE_SCALES = (1.0, 1.25, 1.5, 2.0, 2.5)
+# Detected boxes hug the glyphs, so the bubble around them has a little slack.
+AREA_BONUS = 1.1
+# Lettering should read at the same scale as the original; the cap stops a short
+# line like "Huh?!" from being blown up to fill its whole bubble.
+MAX_FONT_PER_GLYPH = 1.6
+
+
+@functools.lru_cache(maxsize=256)
+def load_font(path: str | None, size: int):
+    from PIL import ImageFont  # noqa: PLC0415
+
+    for candidate in ([path] if path else list(FONT_CANDIDATES)):
+        try:
+            return ImageFont.truetype(candidate, size)
+        except OSError:
+            continue
+    if path:
+        raise SystemExit(f"could not load font: {path}")
+    return ImageFont.load_default(size=size)
+
+
+def wrap_text(text: str, font, max_width: float) -> list[str]:
+    """Greedy word wrap measured with the font itself.
+
+    A single word too long for ``max_width`` is left to overflow; the caller
+    shrinks the font until it fits, which keeps hyphenation out of it.
+    """
+    words = text.split()
+    if not words:
+        return []
+    lines, current = [], words[0]
+    for word in words[1:]:
+        if font.getlength(f"{current} {word}") <= max_width:
+            current = f"{current} {word}"
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def fit_text(draw, text: str, box_w: int, box_h: int, font_path: str | None, max_size: int):
+    """Largest font size at which ``text`` wraps inside ``box_w`` x ``box_h``.
+
+    Returns ``(font, lines, spacing)``, or ``None`` if it will not fit at all.
+    """
+    lo, hi, best = FONT_MIN, max(FONT_MIN, min(box_h, max_size)), None
+    while lo <= hi:
+        size = (lo + hi) // 2
+        font = load_font(font_path, size)
+        lines = wrap_text(text, font, box_w)
+        if not lines:
+            return None
+        spacing = size * LINE_SPACING
+        block = "\n".join(lines)
+        left, top, right, bottom = draw.multiline_textbbox(
+            (0, 0), block, font=font, spacing=spacing, align="center"
+        )
+        if right - left <= box_w and bottom - top <= box_h:
+            best = (font, lines, spacing)
+            lo = size + 1
+        else:
+            hi = size - 1
+    return best
+
+
+def overlaps_any(box: Box, others: list[Box]) -> bool:
+    return any(
+        box.x0 < o.x1 and o.x0 < box.x1 and box.y0 < o.y1 and o.y0 < box.y1
+        for o in others
+    )
+
+
+def fit_group_text(
+    draw, text: str, box: Box, size: tuple[int, int], args, max_size: int, others: list[Box]
+):
+    """Best (font, lines, spacing) for ``text`` in the space ``box`` occupies.
+
+    Every candidate shape holds roughly the same area, so the winner is whichever
+    aspect ratio lets the type be biggest - for a vertical Japanese column that
+    is always a wider, shorter box. Shapes that would reach into a neighbouring
+    bubble are dropped, which is what keeps a long line from covering the page.
+    """
+    image_w, image_h = size
+    best = None
+    for scale in SHAPE_SCALES:
+        box_w = min(int(box.w * scale * AREA_BONUS), image_w)
+        box_h = min(int(box.h / scale * AREA_BONUS), image_h)
+        if box_h < FONT_MIN or box_w < FONT_MIN:
+            continue
+        candidate = Box(
+            int(box.cx - box_w / 2),
+            int(box.cy - box_h / 2),
+            int(box.cx + box_w / 2),
+            int(box.cy + box_h / 2),
+        )
+        # scale 1.0 is the text's own footprint, so it is always allowed.
+        if scale != 1.0 and overlaps_any(candidate, others):
+            continue
+        fitted = fit_text(draw, text, box_w, box_h, args.font, max_size)
+        if fitted and (best is None or fitted[0].size > best[0].size):
+            best = fitted
+    return best
+
+
+def erase_text(image, groups: list["TextGroup"], erase_pad: float):
+    """Paint the original text out of the page.
+
+    Inpainting rather than a flat fill: inside a speech bubble it reproduces the
+    bubble exactly, and where text sits straight on the artwork it continues the
+    art instead of leaving a grey rectangle behind.
+    """
+    from PIL import Image  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    pixels = np.asarray(image).copy()
+    height, width = pixels.shape[:2]
+
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for group in groups:
+        for fragment in group.boxes:
+            bleed = max(2, int(round(erase_pad * fragment.glyph_size)))
+            patch = fragment.padded(bleed, width, height)
+            mask[patch.y0 : patch.y1, patch.x0 : patch.x1] = 255
+    if not mask.any():
+        return image
+
+    try:
+        import cv2  # noqa: PLC0415
+
+        # A small radius on purpose: inpainting only has to reach in from the
+        # edge of each mask, and a large one visibly smears the artwork.
+        return Image.fromarray(cv2.inpaint(pixels, mask, 3, cv2.INPAINT_TELEA))
+    except ImportError:  # pragma: no cover - cv2 ships with easyocr
+        pixels[mask == 255] = 255
+        return Image.fromarray(pixels)
+
+
+def background_colour(image, box: Box) -> tuple[int, int, int]:
+    """Median colour inside ``box`` - called after the text has been erased."""
+    import numpy as np  # noqa: PLC0415
+
+    patch = np.asarray(image.crop(tuple(box.as_list())))
+    if patch.size == 0:
+        return (255, 255, 255)
+    return tuple(int(c) for c in np.median(patch.reshape(-1, patch.shape[-1]), axis=0)[:3])
+
+
+def render_page(path: Path, page: "Page", out_path: Path, args) -> int:
+    """Write a copy of the page with each bubble's translation lettered in.
+
+    The original text is inpainted away and the translation is fitted into the
+    space it occupied, at the size the original was lettered at. Groups without
+    a translation are left exactly as they were.
+    """
+    from PIL import Image, ImageDraw, ImageOps  # noqa: PLC0415
+
+    image = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    width, height = image.size
+
+    lettered = [g for g in page.groups if g.translation.strip()]
+    image = erase_text(image, lettered, args.erase_pad)
+    draw = ImageDraw.Draw(image)
+
+    rendered = 0
+    for group in lettered:
+        box = group.bbox
+        # The original glyph size sets the scale of the lettering; fragments are
+        # single columns of text, so their short side is the character size.
+        glyph = statistics.median([f.glyph_size for f in group.boxes] or [box.w])
+        max_size = max(FONT_MIN, int(glyph * MAX_FONT_PER_GLYPH))
+
+        others = [g.bbox for g in page.groups if g is not group]
+        fitted = fit_group_text(
+            draw, group.translation.strip(), box, (width, height), args, max_size, others
+        )
+        if not fitted:
+            continue
+
+        font, lines, spacing = fitted
+        fill = background_colour(image, box)
+        block = "\n".join(lines)
+        # Centre the measured block on the bubble, then nudge it back inside the
+        # page if a wide line has pushed it over an edge.
+        left, top, right, bottom = draw.multiline_textbbox(
+            (0, 0), block, font=font, spacing=spacing, align="center"
+        )
+        x = box.cx - (left + right) / 2
+        y = box.cy - (top + bottom) / 2
+        x = min(max(x, -left), width - (right - left) - left)
+        y = min(max(y, -top), height - (bottom - top) - top)
+
+        # A thin halo keeps the text readable if a bubble was not fully erased.
+        draw.multiline_text(
+            (x, y),
+            block,
+            font=font,
+            fill=args.text_colour,
+            spacing=spacing,
+            align="center",
+            stroke_width=max(1, font.size // 16),
+            stroke_fill=fill,
+        )
+        rendered += 1
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.suffix.lower() in {".jpg", ".jpeg"}:
+        image.save(out_path, quality=92, subsampling=0)
+    else:
+        image.save(out_path)
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -826,6 +1140,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="drop groups smaller than this in both dimensions",
     )
     grouping.add_argument(
+        "--all-text",
+        dest="bubbles_only",
+        action="store_false",
+        help="also keep text that is not in a speech bubble or caption box "
+        "(sound effects drawn onto the artwork), which is skipped by default",
+    )
+    grouping.add_argument(
+        "--bubble-threshold",
+        type=float,
+        default=0.25,
+        help="how much of a group must sit on its bubble to be kept, 0-1. "
+        "Text on the artwork scores 0, so this only decides how sloppily a "
+        "group may straddle its bubble's edge (lower = keep more)",
+    )
+    grouping.add_argument(
         "--order",
         choices=["rtl", "ltr", "none"],
         default="rtl",
@@ -898,6 +1227,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds to wait for one ollama response",
     )
 
+    render = parser.add_argument_group("rendering (--translate required)")
+    render.add_argument(
+        "--render",
+        action="store_true",
+        help="with --out-dir, write <name>.render.jpg: the page with the "
+        "original text painted over and the translation lettered in its place",
+    )
+    render.add_argument(
+        "--render-to",
+        type=Path,
+        help="write the rendered page here instead (single image only)",
+    )
+    render.add_argument(
+        "--font",
+        help="TTF/OTF to letter with (default: DejaVu Sans Bold, then Pillow's own)",
+    )
+    render.add_argument(
+        "--text-colour",
+        "--text-color",
+        dest="text_colour",
+        default="black",
+        help="colour of the lettering",
+    )
+    render.add_argument(
+        "--erase-pad",
+        type=float,
+        default=0.3,
+        help="how far the erased area spills past each detected fragment, "
+        "in multiples of glyph size (raise if originals show through)",
+    )
+
     output = parser.add_argument_group("output")
     output.add_argument(
         "--out-dir",
@@ -943,8 +1303,14 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"no images found in {where}")
     if args.viz and len(images) > 1:
         raise SystemExit("--viz works with a single image at a time; use --save-viz")
+    if args.render_to and len(images) > 1:
+        raise SystemExit("--render-to takes a single image; use --render --out-dir")
     if args.translate and args.no_ocr:
         raise SystemExit("--translate needs the OCR text; drop --no-ocr")
+    if (args.render or args.render_to) and not args.translate:
+        raise SystemExit("--render draws the translation; add --translate")
+    if args.render and not args.out_dir:
+        raise SystemExit("--render writes into --out-dir; give one, or use --render-to")
 
     def log(msg: str) -> None:
         if not args.quiet:
@@ -1039,9 +1405,18 @@ def main(argv: list[str] | None = None) -> int:
                 draw_visualisation(path, page, viz_path)
                 log(f"wrote {viz_path}")
 
+            if args.render:
+                render_path = args.out_dir / f"{stem}.render.jpg"
+                count = render_page(path, page, render_path, args)
+                log(f"wrote {render_path} ({count} bubble(s) lettered)")
+
     if args.viz:
         draw_visualisation(images[0], pages[0], args.viz)
         log(f"wrote {args.viz}")
+
+    if args.render_to:
+        count = render_page(images[0], pages[0], args.render_to, args)
+        log(f"wrote {args.render_to} ({count} bubble(s) lettered)")
 
     # All pages in one file, in the order they were processed.
     txt_path = args.txt or (args.out_dir / "pages.txt" if args.out_dir else None)

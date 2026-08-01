@@ -15,9 +15,13 @@ from manga_ocr_groups import (
     box_gap,
     canvas_size_arg,
     group_boxes,
+    bubble_score,
     is_memory_error,
+    load_font,
+    overlaps_any,
     sort_reading_order,
     union_box,
+    wrap_text,
 )
 
 
@@ -162,6 +166,67 @@ def test_canvas_size_arg():
             pass
         else:
             raise AssertionError(f"{bad!r} should have been rejected")
+
+
+def _page_with_a_bubble_and_a_panel():
+    """Dark artwork with a small white bubble and a large pale panel."""
+    import numpy as np
+
+    from manga_ocr_groups import white_components
+
+    page = np.zeros((600, 600), dtype=np.uint8)
+    page[50:170, 50:170] = 255  # bubble blob, 14400 px
+    page[300:560, 300:560] = 255  # panel background, 67600 px - under the
+    return white_components(page), 600 * 600  # page-fraction backstop of 20%
+
+
+def test_bubble_score_keeps_text_in_a_bubble():
+    components, page_area = _page_with_a_bubble_and_a_panel()
+    # 60x60 of text in a 120x120 bubble: 4x bigger, well inside the ratio.
+    assert bubble_score(components, Box(80, 80, 140, 140), page_area) > 0.9
+
+
+def test_bubble_score_rejects_sfx_on_a_pale_panel():
+    components, page_area = _page_with_a_bubble_and_a_panel()
+    # Same whiteness as a bubble, but the blob dwarfs the text (75x), so it is
+    # panel background rather than a bubble drawn around the lettering.
+    assert bubble_score(components, Box(400, 400, 430, 430), page_area) == 0.0
+
+
+def test_bubble_score_rejects_sfx_on_dark_artwork():
+    components, page_area = _page_with_a_bubble_and_a_panel()
+    assert bubble_score(components, Box(200, 200, 260, 260), page_area) == 0.0
+
+
+def test_bubble_score_without_opencv_keeps_everything():
+    assert bubble_score(None, Box(0, 0, 10, 10), 1000) == 1.0
+
+
+def test_overlaps_any():
+    box = Box(100, 100, 200, 200)
+    assert not overlaps_any(box, [])
+    assert not overlaps_any(box, [Box(300, 100, 400, 200)])  # clear to the right
+    assert not overlaps_any(box, [Box(200, 100, 300, 200)])  # edges touching only
+    assert overlaps_any(box, [Box(150, 150, 250, 250)])  # corner overlap
+    assert overlaps_any(box, [Box(0, 0, 500, 500)])  # fully enclosing
+
+
+def test_wrap_text_fits_the_width():
+    font = load_font(None, 20)
+    text = "Failed my college entrance exams and been a NEET for three years"
+    wide = wrap_text(text, font, 10_000)
+    narrow = wrap_text(text, font, 150)
+
+    assert wide == [text]  # all on one line when there is room
+    assert len(narrow) > 1
+    assert " ".join(narrow) == text  # wrapping never loses or reorders words
+    # Every line fits, except one that is a single unbreakable word.
+    for line in narrow:
+        assert font.getlength(line) <= 150 or " " not in line
+
+
+def test_wrap_text_empty():
+    assert wrap_text("   ", load_font(None, 20), 100) == []
 
 
 if __name__ == "__main__":
