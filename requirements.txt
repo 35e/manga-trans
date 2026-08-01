@@ -1,0 +1,4 @@
+easyocr>=1.7
+manga-ocr>=0.1.14
+pillow>=9.0
+numpy>=1.23
