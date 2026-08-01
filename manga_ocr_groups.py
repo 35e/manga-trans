@@ -15,6 +15,10 @@ Pipeline
    which is trained on complete manga text blocks and handles vertical text,
    multiple lines and furigana on its own.
 
+Detection runs at ``--canvas-size auto`` by default: the resolution is fitted to
+the memory the machine actually has, so a large scan is downscaled for detection
+instead of getting the process OOM-killed.
+
 Usage
 -----
     python manga_ocr_groups.py page.jpg
@@ -84,6 +88,15 @@ class Box:
             max(0, self.y0 - px),
             min(width, self.x1 + px),
             min(height, self.y1 + px),
+        )
+
+    def clipped(self, width: int, height: int) -> "Box":
+        """Confine the box to the image; the detector may overshoot its edges."""
+        return Box(
+            min(max(0, self.x0), width),
+            min(max(0, self.y0), height),
+            min(max(0, self.x1), width),
+            min(max(0, self.y1), height),
         )
 
     def as_list(self) -> list[int]:
@@ -191,6 +204,100 @@ def sort_reading_order(groups: list[TextGroup], order: str = "rtl") -> list[Text
 
 
 # ---------------------------------------------------------------------------
+# detection canvas budget
+# ---------------------------------------------------------------------------
+
+CANVAS_MAX = 2560  # EasyOCR's own default; there is nothing to gain above it
+CANVAS_MIN = 640  # below this the detector stops finding dialogue
+# Free memory drifts between runs; rounding the canvas down to a coarse step
+# keeps the same page detecting at the same resolution anyway.
+CANVAS_STEP = 128
+
+# CRAFT's peak memory grows linearly with the canvas it runs on. Measured on
+# CPU (podman, python:3.12-slim): ~1.4 kB per canvas pixel on top of a fixed
+# ~400 MB for the interpreter, torch and the model weights. A 2894x4093 page at
+# the default canvas of 2560 therefore wants ~4.4 GB and is simply killed on a
+# 4 GB machine, which is what ``auto`` exists to prevent.
+DETECT_BYTES_PER_PIXEL = 1400
+DETECT_BASE_BYTES = 400 * 1024**2
+# An OOM kill arrives as SIGKILL and cannot be caught, so stay well under.
+MEMORY_SAFETY = 0.8
+
+
+def available_memory_bytes() -> int | None:
+    """Memory this process can realistically use, or ``None`` if unknown.
+
+    In a container the cgroup limit is what actually kills the process; outside
+    one, MemAvailable is the honest number. Whichever is smaller wins.
+    """
+    limits: list[int] = []
+    for path, unlimited in (
+        ("/sys/fs/cgroup/memory.max", "max"),  # cgroup v2
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", None),  # cgroup v1
+    ):
+        try:
+            raw = Path(path).read_text().strip()
+            value = int(raw) if raw != unlimited else 0
+        except (OSError, ValueError):
+            continue
+        # cgroup v1 spells "unlimited" as a huge number rather than a word.
+        if 0 < value < 1 << 60:
+            limits.append(value)
+
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                limits.append(int(line.split()[1]) * 1024)
+                break
+    except (OSError, IndexError, ValueError):
+        pass
+
+    if not limits:  # macOS and anything else without /proc
+        try:
+            limits.append(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
+        except (OSError, ValueError, AttributeError):
+            return None
+    return min(limits)
+
+
+def auto_canvas_size(
+    width: int, height: int, budget_bytes: int | None, ceiling: int = CANVAS_MAX
+) -> int:
+    """Largest detection canvas that fits ``budget_bytes``, in pixels.
+
+    EasyOCR scales the image's long side down to the canvas size (it never
+    upscales past it here) and pads both sides to a multiple of 32, so the
+    canvas holds about ``canvas**2 * short_side / long_side`` pixels.
+    """
+    long_side, short_side = max(width, height), max(1, min(width, height))
+    ceiling = min(ceiling, long_side)  # never magnify a page past its own size
+    if budget_bytes is None:
+        return max(CANVAS_MIN, ceiling)
+
+    usable = budget_bytes * MEMORY_SAFETY - DETECT_BASE_BYTES
+    if usable <= 0:
+        return CANVAS_MIN
+    canvas = int(math.sqrt(usable / DETECT_BYTES_PER_PIXEL * long_side / short_side))
+    canvas -= canvas % CANVAS_STEP
+    return max(CANVAS_MIN, min(ceiling, canvas))
+
+
+def is_memory_error(exc: BaseException) -> bool:
+    """Does this exception mean "ran out of memory"?
+
+    torch reports a failed CPU allocation as a plain ``RuntimeError``, so the
+    message is all there is to go on.
+    """
+    if isinstance(exc, MemoryError):
+        return True
+    text = str(exc).lower()
+    return any(
+        s in text
+        for s in ("out of memory", "can't allocate", "cannot allocate", "bad_alloc")
+    )
+
+
+# ---------------------------------------------------------------------------
 # detection
 # ---------------------------------------------------------------------------
 
@@ -211,24 +318,39 @@ def build_detector(gpu: bool, detect_network: str, verbose: bool):
         return easyocr.Reader(["ja", "en"], **kwargs)
 
 
-def detect_fragments(reader, image_grey, args) -> list[Box]:
-    """Return raw text fragment boxes, with EasyOCR's own line merging disabled."""
-    horizontal_agg, free_agg = reader.detect(
-        image_grey,
-        min_size=args.min_size,
-        text_threshold=args.text_threshold,
-        low_text=args.low_text,
-        link_threshold=args.link_threshold,
-        canvas_size=args.canvas_size,
-        mag_ratio=args.mag_ratio,
-        # Zeroed so EasyOCR does not merge fragments into "lines" using
-        # horizontal-text assumptions - our own grouping handles that.
-        slope_ths=0.0,
-        ycenter_ths=0.0,
-        height_ths=0.0,
-        width_ths=0.0,
-        add_margin=0.0,
-    )
+def detect_fragments(reader, image_grey, args, canvas_size, log=lambda _msg: None) -> list[Box]:
+    """Return raw text fragment boxes, with EasyOCR's own line merging disabled.
+
+    ``canvas_size`` is already budgeted for the machine; the retry loop only
+    catches the allocation failures torch reports as exceptions. A hard OOM kill
+    never gets here - that is what the budget is for.
+    """
+    height, width = image_grey.shape[:2]
+
+    while True:
+        try:
+            horizontal_agg, free_agg = reader.detect(
+                image_grey,
+                min_size=args.min_size,
+                text_threshold=args.text_threshold,
+                low_text=args.low_text,
+                link_threshold=args.link_threshold,
+                canvas_size=canvas_size,
+                mag_ratio=args.mag_ratio,
+                # Zeroed so EasyOCR does not merge fragments into "lines" using
+                # horizontal-text assumptions - our own grouping handles that.
+                slope_ths=0.0,
+                ycenter_ths=0.0,
+                height_ths=0.0,
+                width_ths=0.0,
+                add_margin=0.0,
+            )
+            break
+        except (MemoryError, RuntimeError) as exc:
+            if canvas_size <= CANVAS_MIN or not is_memory_error(exc):
+                raise
+            canvas_size = max(CANVAS_MIN, canvas_size // 2)
+            log(f"  detection ran out of memory, retrying at canvas {canvas_size}")
 
     boxes: list[Box] = []
     for x_min, x_max, y_min, y_max in horizontal_agg[0]:
@@ -238,6 +360,9 @@ def detect_fragments(reader, image_grey, args) -> list[Box]:
         ys = [int(p[1]) for p in poly]
         boxes.append(Box(min(xs), min(ys), max(xs), max(ys)))
 
+    # Boxes come back in original-image coordinates and can overshoot the edges
+    # by a pixel or two once scaled back up from the canvas.
+    boxes = [b.clipped(width, height) for b in boxes]
     return [b for b in boxes if b.w > 0 and b.h > 0]
 
 
@@ -264,7 +389,7 @@ class Page:
         }
 
 
-def process_image(path: Path, reader, mocr, args) -> Page:
+def process_image(path: Path, reader, mocr, args, log=lambda _msg: None) -> Page:
     from PIL import Image, ImageOps  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
 
@@ -272,8 +397,14 @@ def process_image(path: Path, reader, mocr, args) -> Page:
     image = ImageOps.exif_transpose(image).convert("RGB")
     width, height = image.size
 
+    canvas_size = args.canvas_size
+    if canvas_size is None:  # --canvas-size auto
+        canvas_size = auto_canvas_size(width, height, available_memory_bytes())
+        if canvas_size < max(width, height):
+            log(f"  {width}x{height} page, detecting at canvas {canvas_size}")
+
     grey = np.array(image.convert("L"))
-    fragments = detect_fragments(reader, grey, args)
+    fragments = detect_fragments(reader, grey, args, canvas_size, log=log)
 
     groups: list[TextGroup] = []
     for indices in group_boxes(
@@ -636,6 +767,19 @@ def collect_images(
 # ---------------------------------------------------------------------------
 
 
+def canvas_size_arg(value: str) -> int | None:
+    """``--canvas-size``: ``auto`` (``None``, resolved per page) or a pixel count."""
+    if value.strip().lower() == "auto":
+        return None
+    try:
+        canvas = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected 'auto' or a number, got {value!r}")
+    if canvas < CANVAS_MIN:
+        raise argparse.ArgumentTypeError(f"must be at least {CANVAS_MIN}")
+    return canvas
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="OCR a manga page, grouping text by text box / speech bubble.",
@@ -693,7 +837,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     detection.add_argument("--text-threshold", type=float, default=0.7)
     detection.add_argument("--low-text", type=float, default=0.4)
     detection.add_argument("--link-threshold", type=float, default=0.4)
-    detection.add_argument("--canvas-size", type=int, default=2560)
+    detection.add_argument(
+        "--canvas-size",
+        type=canvas_size_arg,
+        default="auto",
+        help="detection resolution in px (long side). 'auto' fits it to the "
+        "memory this machine has, so large pages are not killed mid-run",
+    )
     detection.add_argument("--mag-ratio", type=float, default=1.0)
     detection.add_argument("--detect-network", default="craft", choices=["craft", "dbnet18"])
 
@@ -735,7 +885,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     translation.add_argument(
         "--ollama-model",
-        default=os.environ.get("OLLAMA_MODEL", "qwen3-vl:8b"),
+        default=os.environ.get("OLLAMA_MODEL", "gemma4:12b"),
         help="model to translate with (`ollama list` shows what you have)",
     )
     translation.add_argument(
@@ -838,7 +988,7 @@ def main(argv: list[str] | None = None) -> int:
     pages = []
     for path in images:
         log(f"processing {path}...")
-        page = process_image(path, reader, mocr, args)
+        page = process_image(path, reader, mocr, args, log=log)
 
         if args.translate and page.groups:
             log(f"translating {len(page.groups)} group(s) with {args.ollama_model}...")

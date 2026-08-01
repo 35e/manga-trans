@@ -4,6 +4,27 @@ OCR a manga page and get the text back **grouped per text box** — fragments th
 sit close together belong to the same speech bubble, fragments separated by a
 gap become separate groups.
 
+## Quick start
+
+Drop your pages in `pages/` and run:
+
+```bash
+./run.sh                 # OCR every image in pages/ -> pages/out/
+./run.sh --translate     # ... and translate each bubble with ollama
+```
+
+`run.sh` builds the container image the first time (a few minutes), then uses
+it for every run. It picks up podman or docker, whichever you have, mounts
+`pages/` and points the container at ollama on your host. Everything after
+`run.sh` is passed straight to the script, so `./run.sh --help` lists every
+flag. Other entry points:
+
+```bash
+./run.sh 001.jpg --save-viz   # a single page, plus an annotated copy
+./run.sh test                 # unit tests (no models needed)
+./run.sh build                # rebuild the image after changing the code
+```
+
 ## Install
 
 Needs Python 3.10+.
@@ -26,14 +47,17 @@ HuggingFace).
 
 ## Container (podman / docker)
 
-CPU-only image, both models baked in, so a run needs no network.
+CPU-only image with both models baked in and `HF_HUB_OFFLINE=true`, so a run
+makes no network calls at all — the detector and `manga-ocr` load from the image
+in about a second, every time. `run.sh` above wraps all of this; the raw
+commands are here for when you want to change them.
 
 ```bash
 podman build -t manga-trans .          # ~7 min, ~4.7 GB image
 ```
 
-Drop your pages in `pages/` and run it with no arguments — every image in the
-folder is read and one `<name>.json` per page is written to `pages/out/`:
+With no arguments every image in the mounted folder is read and one
+`<name>.json` per page is written to `pages/out/`:
 
 ```bash
 cp ~/scans/*.webp pages/
@@ -59,7 +83,7 @@ podman run --rm -v ./pages:/pages --userns=keep-id:uid=10001,gid=10001 \
 ```
 
 The container reaches ollama on the host at `host.containers.internal:11434`
-(already the image default) and uses `qwen3-vl:8b`. Alongside the JSON you get
+(already the image default) and uses `gemma4:12b`. Alongside the JSON you get
 `<name>.txt` per page and a combined `pages.txt`, both in reading order:
 
 ```
@@ -88,9 +112,10 @@ user (rootless podman), so files written to `pages/` are owned by you. Notes:
 - docker instead of podman: drop `--userns` and use `--user "$(id -u):$(id -g)"`.
 - `--cpu` is optional; the image has CPU-only torch, it just silences the
   "CUDA not available" warning.
-- `--build-arg PREFETCH_MODELS=false` leaves the models out (~530 MB smaller)
+- `--build-arg PREFETCH_MODELS=false` leaves the models out (~930 MB smaller)
   and downloads them on first run instead — mount a cache so that happens once:
-  `-v manga-models:/opt/models`.
+  `-v manga-models:/opt/models`. That build also sets `HF_HUB_OFFLINE=false`, so
+  the download can actually happen.
 
 Or via compose:
 
@@ -153,10 +178,13 @@ python manga_ocr_groups.py pages --out-dir pages/out --translate \
   --ollama-model qwen3-vl:8b --target-lang Dutch --txt-format translation
 ```
 
+The default model is `gemma4:12b` — pull it once with `ollama pull gemma4:12b`,
+or point `--ollama-model` at whatever `ollama list` shows you have.
+
 | Flag | Default | |
 | --- | --- | --- |
 | `--ollama-url` | `$OLLAMA_URL`, else `http://localhost:11434` | container default is `http://host.containers.internal:11434` |
-| `--ollama-model` | `$OLLAMA_MODEL`, else `qwen3-vl:8b` | `ollama list` shows what you have |
+| `--ollama-model` | `$OLLAMA_MODEL`, else `gemma4:12b` | `ollama list` shows what you have |
 | `--target-lang` | `English` | any language the model knows |
 | `--ollama-timeout` | `180` | seconds per request |
 | `--txt-format` | `both` | `both`, `translation` or `original` |
@@ -164,9 +192,10 @@ python manga_ocr_groups.py pages --out-dir pages/out --translate \
 
 Alignment is enforced with a JSON schema (ollama's structured outputs), so bubble
 _n_ always gets translation _n_; a bubble the model skips is retried on its own.
-Thinking is switched off (`"think": false`) — on qwen3-vl that is the difference
-between ~2 s and ~95 s per page, and models without a thinking mode are retried
-automatically without the flag.
+Thinking is switched off (`"think": false`) — on a thinking model like gemma4 or
+qwen3-vl that is the difference between a couple of seconds and a minute or more
+per page, and models without a thinking mode are retried automatically without
+the flag.
 
 OCR noise gets translated as noise: if a bubble reads as gibberish, that is a
 detection/recognition problem, not a translation one — check it with `--save-viz`.
@@ -185,6 +214,33 @@ detection/recognition problem, not a translation one — check it with `--save-v
    read by `manga-ocr`, which is trained on complete manga text blocks and
    handles vertical text, multiple lines and furigana itself.
 
+## Large pages
+
+Detection memory grows with the resolution the detector runs at, not with the
+file on disk: roughly **1.4 kB per pixel of detection canvas**, on top of ~400 MB
+for torch and the models. At the usual canvas of 2560 a 2894×4093 scan wants
+~4.4 GB, so on a 4 GB machine (a default podman VM, a small container) the
+process is simply killed — no traceback, just exit 137.
+
+`--canvas-size auto`, the default, avoids that: before each page it reads the
+memory actually available (the cgroup limit inside a container, `MemAvailable`
+outside one) and picks the largest canvas that fits, between 640 and 2560.
+
+```
+processing jpeg_020.jpg...
+  2894x4093 page, detecting at canvas 1280
+```
+
+Detected boxes come back in original-image coordinates either way, so the JSON,
+the crops and `--viz` are unaffected — only how much fine detail the detector
+can see. Notes:
+
+- Pass an explicit `--canvas-size 1600` when you want the same result every run;
+  free memory drifts, so `auto` may pick a different canvas on a busy machine.
+- Give the container more memory and `auto` uses it (`podman run --memory=8g`).
+- If small furigana goes missing on a low-memory machine, that is the trade —
+  more memory, or a smaller `--canvas-size` with a higher `--mag-ratio`.
+
 ## Tuning the grouping
 
 `--gap` is the knob that matters. Run with `--no-ocr --viz` to see the result
@@ -197,6 +253,7 @@ model.
 | Two nearby bubbles merged into one | lower `--gap` (e.g. `0.7`), or cap it with `--max-gap-px` |
 | Text missed entirely | lower `--text-threshold` / `--low-text`, or raise `--mag-ratio` for small text |
 | Noise picked up as text | raise `--min-fragments` or `--min-group-px` |
+| Run dies with no output (exit 137) | out of memory — see [Large pages](#large-pages) |
 
 `--min-gap-px` / `--max-gap-px` clamp the computed threshold in absolute pixels,
 which helps on pages that mix very small and very large lettering.
@@ -235,9 +292,11 @@ to change that.
 
 ## Tests
 
-`test_grouping.py` covers the geometry and clustering logic and needs no models:
+`test_grouping.py` covers the geometry, clustering and canvas-budget logic and
+needs no models:
 
 ```bash
+./run.sh test                  # in the container
 python test_grouping.py        # or: python -m pytest test_grouping.py
 ```
 

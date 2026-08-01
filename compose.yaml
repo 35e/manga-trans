@@ -21,4 +21,4 @@ services:
     environment:
       # ollama on the host; on docker use http://host.docker.internal:11434
       OLLAMA_URL: http://host.containers.internal:11434
-      OLLAMA_MODEL: qwen3-vl:8b
+      OLLAMA_MODEL: gemma4:12b

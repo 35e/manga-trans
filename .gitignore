@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.DS_Store
 
 # Manga pages and OCR output mounted into the container: keep the folders,
 # ignore what you drop in them.

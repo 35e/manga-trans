@@ -4,10 +4,18 @@ Run with:  python -m pytest test_grouping.py    or    python test_grouping.py
 """
 
 from manga_ocr_groups import (
+    CANVAS_MAX,
+    CANVAS_MIN,
+    CANVAS_STEP,
+    DETECT_BASE_BYTES,
     Box,
     TextGroup,
+    auto_canvas_size,
+    available_memory_bytes,
     box_gap,
+    canvas_size_arg,
     group_boxes,
+    is_memory_error,
     sort_reading_order,
     union_box,
 )
@@ -101,6 +109,59 @@ def test_reading_order_right_to_left_then_down():
 
     unordered = sort_reading_order([top_right, bottom, top_left], order="none")
     assert [g.bbox.x0 for g in unordered] == [400, 200, 50]
+
+
+def test_box_clipped_to_image():
+    # The detector scales boxes back up from the canvas and can overshoot.
+    assert Box(-5, -2, 50, 60).clipped(100, 100).as_list() == [0, 0, 50, 60]
+    assert Box(80, 80, 130, 140).clipped(100, 100).as_list() == [80, 80, 100, 100]
+    assert Box(10, 10, 20, 20).clipped(100, 100).as_list() == [10, 10, 20, 20]
+
+
+def test_auto_canvas_size_shrinks_with_the_budget():
+    gb = 1024**3
+    roomy = auto_canvas_size(2894, 4093, 16 * gb)
+    tight = auto_canvas_size(2894, 4093, 4 * gb)
+    assert roomy == CANVAS_MAX  # plenty of memory: no reason to downscale
+    assert CANVAS_MIN <= tight < roomy
+    # 4 GB is the machine the OOM kills were seen on; 2048 was fatal there.
+    assert tight < 2048
+
+
+def test_auto_canvas_size_never_upscales_a_small_page():
+    assert auto_canvas_size(800, 1200, 64 * 1024**3) == 1200
+
+
+def test_auto_canvas_size_stays_within_bounds():
+    assert auto_canvas_size(2894, 4093, DETECT_BASE_BYTES) == CANVAS_MIN  # no room
+    assert auto_canvas_size(2894, 4093, None) == CANVAS_MAX  # unknown budget
+    assert auto_canvas_size(2894, 4093, 4 * 1024**3) % CANVAS_STEP == 0
+
+
+def test_available_memory_is_plausible_or_unknown():
+    budget = available_memory_bytes()
+    assert budget is None or budget > 64 * 1024**2
+
+
+def test_is_memory_error():
+    assert is_memory_error(MemoryError())
+    # What torch raises when a CPU allocation fails.
+    assert is_memory_error(RuntimeError("DefaultCPUAllocator: can't allocate memory"))
+    assert is_memory_error(RuntimeError("std::bad_alloc"))
+    assert not is_memory_error(RuntimeError("shape mismatch"))
+
+
+def test_canvas_size_arg():
+    assert canvas_size_arg("auto") is None
+    assert canvas_size_arg("AUTO") is None
+    assert canvas_size_arg("1280") == 1280
+    for bad in ("banana", str(CANVAS_MIN - 1)):
+        try:
+            canvas_size_arg(bad)
+        except Exception:
+            pass
+        else:
+            raise AssertionError(f"{bad!r} should have been rejected")
 
 
 if __name__ == "__main__":

@@ -48,7 +48,14 @@ USER 10001
 ENV MANGA_TRANS_INPUT=/pages \
     MANGA_TRANS_OUT_DIR=/pages/out \
     OLLAMA_URL=http://host.containers.internal:11434 \
-    OLLAMA_MODEL=qwen3-vl:8b
+    OLLAMA_MODEL=gemma4:12b
+
+# With the weights baked in, transformers must not phone home: it HEAD-requests
+# the model files on every start, which costs a round-trip per run and fails
+# outright with no network. Follows PREFETCH_MODELS ("true"/"false" are exactly
+# what huggingface_hub parses), so a build without the models still downloads
+# them on first run.
+ENV HF_HUB_OFFLINE=${PREFETCH_MODELS}
 WORKDIR /pages
 VOLUME ["/pages"]
 
