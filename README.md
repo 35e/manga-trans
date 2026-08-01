@@ -6,12 +6,23 @@ gap become separate groups.
 
 ## Install
 
+Needs Python 3.10+.
+
 ```bash
 pip install -r requirements.txt
 ```
 
+On Linux this pulls the CUDA build of PyTorch (~4 GB of `nvidia-*` wheels). If
+you only run on CPU, install a CPU-only torch first:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+```
+
 Both models download themselves on first run: the CRAFT detector (~80 MB, from
-jaided.ai) and `kha-white/manga-ocr-base` (~450 MB, from HuggingFace).
+the EasyOCR GitHub releases) and `kha-white/manga-ocr-base` (~450 MB, from
+HuggingFace).
 
 ## Usage
 
