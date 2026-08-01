@@ -1,0 +1,13 @@
+.git/
+.gitignore
+.dockerignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# The pages folder is mounted at runtime, never copied into the image.
+pages/
+*.jpg
+*.jpeg
+*.png
+*.webp

@@ -24,6 +24,62 @@ Both models download themselves on first run: the CRAFT detector (~80 MB, from
 the EasyOCR GitHub releases) and `kha-white/manga-ocr-base` (~450 MB, from
 HuggingFace).
 
+## Container (podman / docker)
+
+CPU-only image, both models baked in, so a run needs no network.
+
+```bash
+podman build -t manga-trans .          # ~7 min, ~4.7 GB image
+```
+
+Drop your pages in `pages/` and run it with no arguments — every image in the
+folder is read and one `<name>.json` per page is written to `pages/out/`:
+
+```bash
+cp ~/scans/*.webp pages/
+
+podman run --rm \
+  -v ./pages:/pages \
+  --userns=keep-id:uid=10001,gid=10001 \
+  manga-trans --cpu --save-viz
+```
+
+```
+=== /pages/001.webp - 4 text group(s) ===
+...
+wrote /pages/out/001.json
+wrote /pages/out/001.boxes.png
+```
+
+Pages are processed in natural order (`page2` before `page10`), `--save-viz` is
+optional, and anything already in `out/` is never picked up as input, so
+re-running is safe. Everything after the image name is passed straight to
+`manga_ocr_groups.py` — `podman run --rm manga-trans --help` lists every flag,
+and a single page still works:
+
+```bash
+podman run --rm -v ./pages:/pages --userns=keep-id:uid=10001,gid=10001 \
+  manga-trans 001.webp --cpu --json out/001.json --viz out/boxes.png
+```
+
+`--userns=keep-id:uid=10001,gid=10001` maps your host user onto the container
+user (rootless podman), so files written to `pages/` are owned by you. Notes:
+
+- SELinux hosts (Fedora/RHEL): mount as `-v ./pages:/pages:Z`.
+- docker instead of podman: drop `--userns` and use `--user "$(id -u):$(id -g)"`.
+- `--cpu` is optional; the image has CPU-only torch, it just silences the
+  "CUDA not available" warning.
+- `--build-arg PREFETCH_MODELS=false` leaves the models out (~530 MB smaller)
+  and downloads them on first run instead — mount a cache so that happens once:
+  `-v manga-models:/opt/models`.
+
+Or via compose:
+
+```bash
+podman compose run --rm manga-trans           # whole pages/ folder
+podman compose run --rm manga-trans --gap 1.6 # same, with a flag
+```
+
 ## Usage
 
 ```bash
@@ -39,10 +95,23 @@ python manga_ocr_groups.py page.jpg
 ...
 ```
 
+Folders work too, and one JSON per page can be written with `--out-dir`:
+
+```bash
+python manga_ocr_groups.py pages --out-dir pages/out     # every image in pages/
+python manga_ocr_groups.py pages --out-dir pages/out --save-viz --recursive
+python manga_ocr_groups.py                               # current folder
+```
+
+With no arguments the current folder is scanned (override with
+`MANGA_TRANS_INPUT`; `MANGA_TRANS_OUT_DIR` sets `--out-dir`, which is how the
+container defaults to `/pages` → `/pages/out`). Images are processed in natural
+order and the output folder is skipped when scanning, so re-runs stay stable.
+
 Other options:
 
 ```bash
-python manga_ocr_groups.py page.jpg --json out.json      # structured output ('-' = stdout)
+python manga_ocr_groups.py page.jpg --json out.json      # all pages in one file ('-' = stdout)
 python manga_ocr_groups.py page.jpg --viz boxes.png      # annotated image, groups numbered
 python manga_ocr_groups.py page.jpg --gap 1.6            # merge more aggressively
 python manga_ocr_groups.py page.jpg --no-ocr --viz b.png # tune grouping without loading the OCR model
@@ -81,6 +150,10 @@ model.
 
 `--min-gap-px` / `--max-gap-px` clamp the computed threshold in absolute pixels,
 which helps on pages that mix very small and very large lettering.
+
+Note that `--no-ocr` still writes JSON when `--out-dir` is active — with empty
+`text` fields, overwriting earlier results. Point it at a scratch folder
+(`--out-dir /tmp/tune`) while tuning.
 
 ## JSON output
 

@@ -2,3 +2,11 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Manga pages and OCR output mounted into the container: keep the folders,
+# ignore what you drop in them.
+pages/*
+!pages/.gitkeep
+!pages/out/
+pages/out/*
+!pages/out/.gitkeep

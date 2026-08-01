@@ -21,6 +21,11 @@ Usage
     python manga_ocr_groups.py page.jpg --json out.json --viz boxes.png
     python manga_ocr_groups.py page.jpg --gap 1.6      # merge more aggressively
     python manga_ocr_groups.py page.jpg --no-ocr --viz boxes.png   # tune grouping fast
+
+Arguments may also be folders - or left out entirely, in which case the current
+folder is scanned. With ``--out-dir`` every page gets its own ``<name>.json``:
+
+    python manga_ocr_groups.py pages --out-dir pages/out
 """
 
 from __future__ import annotations
@@ -28,10 +33,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
 import statistics
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 
 # ---------------------------------------------------------------------------
 # geometry
@@ -329,6 +338,61 @@ def draw_visualisation(path: Path, page: Page, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# input discovery
+# ---------------------------------------------------------------------------
+
+
+def natural_key(path: Path) -> tuple:
+    """Sort key that orders page2 before page10.
+
+    Each chunk is a same-shaped tuple so that a numeric chunk never has to be
+    compared against a text one ("001.webp" next to "image.png").
+    """
+    chunks = [
+        (0, int(c), "") if c.isdigit() else (1, 0, c)
+        for c in re.split(r"(\d+)", path.name.lower())
+        if c
+    ]
+    return (path.parent.as_posix(), chunks)
+
+
+def collect_images(
+    paths: list[Path], recursive: bool = False, skip_dir: Path | None = None
+) -> list[Path]:
+    """Expand folders into the image files inside them.
+
+    Files given explicitly are always kept, whatever their extension. Folders
+    contribute the images they contain (``recursive`` also walks sub-folders);
+    anything under ``skip_dir`` - the output folder - is left out so results are
+    never fed back in as input.
+    """
+    found: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            entries = path.rglob("*") if recursive else path.glob("*")
+            found.extend(
+                p for p in entries if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+            )
+        elif path.is_file():
+            found.append(path)
+        else:
+            raise SystemExit(f"no such file or folder: {path}")
+
+    if skip_dir is not None and skip_dir.exists():
+        skip = skip_dir.resolve()
+        found = [p for p in found if skip not in p.resolve().parents]
+
+    images: list[Path] = []
+    seen: set[Path] = set()
+    for path in sorted(found, key=natural_key):
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            images.append(path)
+    return images
+
+
+# ---------------------------------------------------------------------------
 # cli
 # ---------------------------------------------------------------------------
 
@@ -338,7 +402,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="OCR a manga page, grouping text by text box / speech bubble.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("images", nargs="+", type=Path, help="image file(s) to process")
+    default_input = Path(os.environ.get("MANGA_TRANS_INPUT", "."))
+    default_out_dir = os.environ.get("MANGA_TRANS_OUT_DIR")
+
+    parser.add_argument(
+        "images",
+        nargs="*",
+        type=Path,
+        default=[default_input],
+        help="image file(s) or folder(s) to process; a folder is scanned for images",
+    )
+    parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="also scan sub-folders of the folders given",
+    )
 
     grouping = parser.add_argument_group("grouping")
     grouping.add_argument(
@@ -406,7 +484,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     recognition.add_argument("--cpu", action="store_true", help="force CPU inference")
 
     output = parser.add_argument_group("output")
-    output.add_argument("--json", type=Path, help="write results as JSON ('-' for stdout)")
+    output.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path(default_out_dir) if default_out_dir else None,
+        help="write one <name>.json per image into this folder "
+        "(files already in it are never used as input)",
+    )
+    output.add_argument(
+        "--save-viz",
+        action="store_true",
+        help="with --out-dir, also write an annotated <name>.boxes.png per image",
+    )
+    output.add_argument(
+        "--json", type=Path, help="write all pages to one JSON file ('-' for stdout)"
+    )
     output.add_argument(
         "--viz", type=Path, help="write an annotated copy of the image (single image only)"
     )
@@ -418,15 +510,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
-    for path in args.images:
-        if not path.is_file():
-            raise SystemExit(f"no such file: {path}")
-    if args.viz and len(args.images) > 1:
-        raise SystemExit("--viz works with a single image at a time")
+    images = collect_images(args.images, args.recursive, skip_dir=args.out_dir)
+    if not images:
+        where = ", ".join(str(p) for p in args.images)
+        raise SystemExit(f"no images found in {where}")
+    if args.viz and len(images) > 1:
+        raise SystemExit("--viz works with a single image at a time; use --save-viz")
 
     def log(msg: str) -> None:
         if not args.quiet:
             print(msg, file=sys.stderr)
+
+    log(f"{len(images)} image(s) to process")
 
     log("loading text detector...")
     reader = build_detector(
@@ -444,8 +539,25 @@ def main(argv: list[str] | None = None) -> int:
         log("loading manga-ocr...")
         mocr = MangaOcr(pretrained_model_name_or_path=args.model, force_cpu=args.cpu)
 
+    if args.out_dir:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    used_stems: set[str] = set()
+
+    def out_stem(path: Path) -> str:
+        """Unique output name, so same-named pages in different folders (--recursive)
+        do not overwrite each other."""
+        stem = path.stem
+        if stem in used_stems:
+            stem = f"{path.parent.name}_{stem}" if path.parent.name else stem
+            suffix = 2
+            while stem in used_stems:
+                stem, suffix = f"{path.stem}_{suffix}", suffix + 1
+        used_stems.add(stem)
+        return stem
+
     pages = []
-    for path in args.images:
+    for path in images:
         log(f"processing {path}...")
         page = process_image(path, reader, mocr, args)
         pages.append(page)
@@ -461,8 +573,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    {group.text}")
         print()
 
+        if args.out_dir:
+            stem = out_stem(path)
+            page_json = args.out_dir / f"{stem}.json"
+            page_json.write_text(
+                json.dumps(page.to_dict(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            log(f"wrote {page_json}")
+            if args.save_viz:
+                viz_path = args.out_dir / f"{stem}.boxes.png"
+                draw_visualisation(path, page, viz_path)
+                log(f"wrote {viz_path}")
+
     if args.viz:
-        draw_visualisation(args.images[0], pages[0], args.viz)
+        draw_visualisation(images[0], pages[0], args.viz)
         log(f"wrote {args.viz}")
 
     if args.json:

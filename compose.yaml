@@ -1,0 +1,20 @@
+services:
+  manga-trans:
+    build:
+      context: .
+      # Set to "false" to keep the models out of the image and download them
+      # on first run instead.
+      args:
+        PREFETCH_MODELS: "true"
+    image: localhost/manga-trans:latest
+    volumes:
+      # Host folder with the manga pages <-> working directory in the container.
+      # On SELinux hosts (Fedora/RHEL) append :Z -> ./pages:/pages:Z
+      - ./pages:/pages
+    # Rootless podman: map your host user onto the container's uid/gid 10001 so
+    # files written to ./pages are owned by you. Remove this line on docker and
+    # use `user: "${UID:-1000}:${GID:-1000}"` instead.
+    userns_mode: "keep-id:uid=10001,gid=10001"
+    # No command: the image default reads every image in /pages and writes one
+    # JSON per page to /pages/out. Add flags on the command line, e.g.
+    #   podman compose run --rm manga-trans --save-viz --gap 1.6
