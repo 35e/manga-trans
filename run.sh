@@ -56,9 +56,10 @@ test)
     shift
     "$engine" image inspect "$image" >/dev/null 2>&1 || build
     # Mount the working copy so tests run against it without a rebuild.
-    exec "$engine" run --rm --entrypoint python \
+    exec "$engine" run --rm --entrypoint python -w /app \
         -v "$PWD/manga_ocr_groups.py:/app/manga_ocr_groups.py:ro" \
         -v "$PWD/test_grouping.py:/app/test_grouping.py:ro" \
+        -v "$PWD/mangatrans:/app/mangatrans:ro" \
         "$image" /app/test_grouping.py "$@"
     ;;
 esac

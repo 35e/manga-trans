@@ -33,6 +33,7 @@ RUN if [ "$PREFETCH_MODELS" = "true" ]; then \
     fi
 
 COPY manga_ocr_groups.py test_grouping.py /app/
+COPY mangatrans /app/mangatrans
 
 # uid 10001, group 0 so the image also runs under `--user $(id -u):$(id -g)`.
 RUN useradd --uid 10001 --gid 0 --create-home --home-dir /home/appuser appuser \
