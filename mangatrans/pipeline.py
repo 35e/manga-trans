@@ -34,6 +34,9 @@ class TextGroup:
     region: Region | None = None
     text: str = ""
     translation: str = ""
+    # Set once the page has been masked: the area the white actually covers, and
+    # so the room the English lettered in its place has to play with.
+    mask_bbox: Box | None = None
 
     @property
     def glyph_size(self) -> float:
@@ -52,6 +55,7 @@ class TextGroup:
             "kind": self.kind,
             "plainness": round(self.plainness, 3),
             "region": self.region.to_dict() if self.region else None,
+            "mask_bbox": self.mask_bbox.as_list() if self.mask_bbox else None,
             "fragments": len(self.boxes),
             "fragment_boxes": [b.as_list() for b in self.boxes],
         }
@@ -155,8 +159,10 @@ def process_image(path: Path, reader, mocr, args, log=lambda _msg: None) -> Page
 
     canvas_size = args.canvas_size
     if canvas_size is None:  # --canvas-size auto
-        canvas_size = auto_canvas_size(width, height, available_memory_bytes())
-        if canvas_size < max(width, height):
+        canvas_size = auto_canvas_size(
+            width, height, available_memory_bytes(), mag_ratio=args.mag_ratio
+        )
+        if canvas_size < max(width, height) * max(1.0, args.mag_ratio):
             log(f"  {width}x{height} page, detecting at canvas {canvas_size}")
 
     grey = np.array(image.convert("L"))
