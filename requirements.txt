@@ -1,16 +1,12 @@
-# Text detection runs comic-text-detector through OpenCV's ONNX backend, so
-# OpenCV is all detection needs - no torch, no onnxruntime. The weights are not
-# on PyPI; scripts/prefetch_models.py fetches them.
+# Detection runs comic-text-detector through OpenCV's ONNX backend, so no torch
+# and no onnxruntime are needed for it. The weights are not on PyPI;
+# scripts/fetch_models.py fetches them.
 opencv-python-headless>=4.8
-# Recognition. 0.1.16 is the first release that works with transformers >= 5.13.
-manga-ocr>=0.1.16
-# 10.1 for ImageFont.load_default(size=...), used by --viz.
-pillow>=10.1
 numpy>=1.26
-
-# Optional. EasyOCR's CRAFT detector, used by --detector craft, which is what
-# runs when the comic detector's weights are not installed. It is a
-# general-purpose detector that knows nothing about comics, and it drags in
-# scipy and torchvision on top of the torch manga-ocr already needs, so it is
-# left out by default:
-#     pip install easyocr
+# 10.1 for ImageFont.load_default(size=...), used when no system font is found.
+pillow>=10.1
+# The review GUI.
+flask>=3.0
+# Recognition. 0.1.16 is the first release that works with transformers >= 5.13.
+# This is what pulls in torch; everything else here is small.
+manga-ocr>=0.1.16

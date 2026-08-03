@@ -7,6 +7,8 @@ services:
       args:
         PREFETCH_MODELS: "true"
     image: localhost/manga-trans:latest
+    ports:
+      - "8000:8000"
     volumes:
       # Host folder with the manga pages <-> working directory in the container.
       # On SELinux hosts (Fedora/RHEL) append :Z -> ./pages:/pages:Z
@@ -15,9 +17,6 @@ services:
     # files written to ./pages are owned by you. Remove this line on docker and
     # use `user: "${UID:-1000}:${GID:-1000}"` instead.
     userns_mode: "keep-id:uid=10001,gid=10001"
-    # No command: the image default reads every image in /pages and writes one
-    # JSON + txt per page to /pages/out. Add flags on the command line, e.g.
-    #   podman compose run --rm manga-trans --translate --save-viz
     environment:
       # ollama on the host; on docker use http://host.docker.internal:11434
       OLLAMA_URL: http://host.containers.internal:11434

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>manga-trans</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>manga-trans</h1>
+  <div class="tools">
+    <button id="detect" disabled>Detect text</button>
+    <button id="translate" disabled>Translate</button>
+    <button id="overlay" class="primary" disabled>Overlay approved</button>
+    <span class="spacer"></span>
+    <button id="zoom-out" title="zoom out">&minus;</button>
+    <button id="zoom-in" title="zoom in">+</button>
+    <label class="toggle"><input type="checkbox" id="show-result" disabled> result</label>
+    <a id="download" download hidden>download</a>
+  </div>
+  <p id="status"></p>
+</header>
+
+<main>
+  <aside id="library">
+    <label class="upload">
+      add pages
+      <input type="file" id="file" accept="image/*" multiple hidden>
+    </label>
+    <ul id="pages"></ul>
+  </aside>
+
+  <section id="viewer">
+    <div id="stage">
+      <img id="page" alt="">
+      <img id="result" alt="" hidden>
+      <div id="boxes"></div>
+    </div>
+    <p id="empty">Pick a page on the left. Drag on the picture to add a region.</p>
+  </section>
+
+  <aside id="editor">
+    <ul id="regions"></ul>
+  </aside>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
