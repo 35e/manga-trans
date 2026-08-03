@@ -58,7 +58,10 @@ def draw_visualisation(path: Path, page, out_path: Path, show_dropped: bool = Tr
         box = group.bbox
         colour = KIND_COLOUR.get(group.kind, DROPPED_COLOUR)
         draw.rectangle(box.as_list(), outline=colour, width=2 * scale)
-        label = f"{i}"
+        # A detector that reports confidence has it shown, because a page that
+        # went wrong nearly always went wrong where the model was unsure, and
+        # that is the box to look at first.
+        label = f"{i}" if group.confidence >= 1.0 else f"{i} {group.confidence:.2f}"
         tx, ty = box.x0 + 2 * scale, max(0, box.y0 - 17 * scale)
         draw.rectangle(
             [tx - 2 * scale, ty, tx + 8 * scale * len(label), ty + 17 * scale],

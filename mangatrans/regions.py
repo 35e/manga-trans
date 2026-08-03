@@ -85,6 +85,11 @@ class PageMasks:
     ink: object  # np.ndarray, bool - line art
     pale_threshold: int
     ink_threshold: int
+    # Per-pixel lettering mask, when a detector produced one. Where it exists it
+    # beats asking "what here is not paper?": it was trained to find lettering,
+    # so it takes a glyph standing on a screentone and leaves the screentone,
+    # and it stops at a bubble's drawn outline without being told where that is.
+    text: object | None = None  # np.ndarray, uint8
 
     @property
     def shape(self) -> tuple[int, int]:

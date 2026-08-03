@@ -9,7 +9,11 @@ import re
 import sys
 from pathlib import Path
 
-from .detect import CANVAS_MIN, build_detector
+from .comicdetect import CONF_THRESHOLD, MASK_THRESHOLD
+from .detect import CANVAS_MIN
+from .detectors import AUTO as DETECTOR_AUTO
+from .detectors import DETECTORS, MODEL_ENV, MODEL_NAME
+from .detectors import build as build_text_detector
 from .erase import (
     AUTO,
     BLEED_GLYPHS,
@@ -22,7 +26,7 @@ from .erase import (
     text_mask,
 )
 from .letter import render_page
-from .pipeline import KEEP, Page, process_image
+from .pipeline import AUTO_TEXT, TEXT_CHOICES, Page, process_image
 from .regions import CONTAINS, MAX_MIDTONE, MIN_SOLIDITY, SEAL_PX, page_masks
 from .translate import OllamaError, translate_texts
 from .viz import draw_visualisation
@@ -156,11 +160,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     what = parser.add_argument_group("what counts as text")
     what.add_argument(
         "--text",
-        choices=sorted(KEEP),
-        default="page",
+        choices=TEXT_CHOICES,
+        default=AUTO_TEXT,
         help="bubbles: only text inside a speech bubble, caption box or sign. "
         "page: also free-standing text on plain paper (narration, titles). "
-        "all: also text painted over artwork (sound effects)",
+        "all: also text painted over artwork (sound effects). "
+        "auto: everything a detector that groups the page found (it already "
+        "decided what is text), otherwise the same as page",
     )
     what.add_argument(
         "--all-text",
@@ -253,6 +259,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["rtl", "ltr", "none"],
         default="rtl",
         help="reading order of the returned groups (rtl = manga)",
+    )
+
+    which = parser.add_argument_group("which detector")
+    which.add_argument(
+        "--detector",
+        choices=DETECTORS,
+        default=DETECTOR_AUTO,
+        help="comic: comic-text-detector, trained on manga - it finds the text "
+        "blocks, so the bubble segmentation and grouping options below are only "
+        "used to shape the lettering. craft: EasyOCR's general-purpose detector, "
+        "with the blocks reconstructed by geometry. auto: comic if its weights "
+        "are installed, else craft",
+    )
+    which.add_argument(
+        "--detector-model",
+        default=None,
+        help=f"path to {MODEL_NAME} (default: ${MODEL_ENV}, then /opt/models "
+        "and ~/.cache/manga-trans)",
+    )
+    which.add_argument(
+        "--detector-conf",
+        type=float,
+        default=CONF_THRESHOLD,
+        help="confidence a text block needs before the comic detector reports "
+        "it at all",
+    )
+    which.add_argument(
+        "--detector-mask-threshold",
+        type=float,
+        default=MASK_THRESHOLD,
+        help="confidence a pixel needs to count as lettering, 0-1",
+    )
+    which.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.0,
+        help="drop text blocks the detector was less sure of than this. 0 keeps "
+        "everything: a doubtful block is reported with its doubt attached, and "
+        "the JSON records anything dropped and why",
     )
 
     detection = parser.add_argument_group("detection (EasyOCR/CRAFT)")
@@ -586,9 +631,8 @@ def main(argv: list[str] | None = None) -> int:
     log(f"{len(images)} image(s) to process")
 
     log("loading text detector...")
-    reader = build_detector(
-        gpu=not args.cpu, detect_network=args.detect_network, verbose=not args.quiet
-    )
+    detector = build_text_detector(args.detector, args, log=log)
+    log(f"  using the {detector.name} detector")
 
     mocr = None
     if not args.no_ocr:
@@ -621,7 +665,7 @@ def main(argv: list[str] | None = None) -> int:
     pages: list[Page] = []
     for path in images:
         log(f"processing {path}...")
-        page = process_image(path, reader, mocr, args, log=log)
+        page = process_image(path, detector, mocr, args, log=log)
 
         if args.translate and page.groups:
             log(f"translating {len(page.groups)} group(s) with {args.ollama_model}...")

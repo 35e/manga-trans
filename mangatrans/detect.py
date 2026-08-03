@@ -173,3 +173,43 @@ def detect_fragments(
     # by a pixel or two once scaled back up from the canvas.
     boxes = [b.clipped(width, height) for b in boxes]
     return [b for b in boxes if b.w > 0 and b.h > 0]
+
+
+class CraftDetector:
+    """CRAFT behind the common detector interface.
+
+    Fragments only: CRAFT finds runs of glyphs and has no opinion about which of
+    them form one utterance, so the grouping and the bubble-finding downstream
+    have to reconstruct that from geometry. See :mod:`.detectors` for what a
+    trained comic detector supplies instead.
+    """
+
+    name = "craft"
+
+    def __init__(self, args, log=lambda _msg: None) -> None:
+        self.args = args
+        self.reader = build_detector(
+            gpu=not args.cpu,
+            detect_network=args.detect_network,
+            verbose=not args.quiet,
+        )
+
+    def __call__(self, image, log=lambda _msg: None):
+        import cv2  # noqa: PLC0415
+
+        from .detectors import DetectionResult  # noqa: PLC0415
+
+        args = self.args
+        height, width = image.shape[:2]
+        grey = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+        canvas_size = args.canvas_size
+        if canvas_size is None:  # --canvas-size auto
+            canvas_size = auto_canvas_size(
+                width, height, available_memory_bytes(), mag_ratio=args.mag_ratio
+            )
+            if canvas_size < max(width, height) * max(1.0, args.mag_ratio):
+                log(f"  {width}x{height} page, detecting at canvas {canvas_size}")
+
+        fragments = detect_fragments(self.reader, grey, args, canvas_size, log=log)
+        return DetectionResult(fragments=fragments)

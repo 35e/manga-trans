@@ -16,24 +16,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     EASYOCR_MODULE_PATH=/opt/models/easyocr \
     HF_HOME=/opt/models/huggingface
 
-# CPU-only torch first, otherwise the easyocr dependency drags in ~4 GB of
-# nvidia-* wheels that are useless in this image.
+# CPU-only torch first, otherwise the manga-ocr dependency drags in ~4 GB of
+# nvidia-* wheels that are useless in this image. Only recognition needs torch:
+# the text detector runs on OpenCV's ONNX backend.
 RUN pip install --no-cache-dir torch torchvision \
     --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Bake the models into the image (~530 MB) so a run needs no network.
+# Bake the models into the image (~545 MB) so a run needs no network.
 # Build with --build-arg PREFETCH_MODELS=false to skip and download on first run.
+# --build-arg CRAFT=true also installs easyocr and its weights, for the
+# --detector craft fallback; the image does not need them otherwise.
 ARG PREFETCH_MODELS=true
+ARG CRAFT=false
 COPY scripts/prefetch_models.py /app/scripts/prefetch_models.py
-RUN if [ "$PREFETCH_MODELS" = "true" ]; then \
-        python /app/scripts/prefetch_models.py; \
+COPY mangatrans /app/mangatrans
+RUN if [ "$CRAFT" = "true" ]; then pip install --no-cache-dir easyocr; fi \
+    && if [ "$PREFETCH_MODELS" = "true" ]; then \
+        python /app/scripts/prefetch_models.py \
+            $([ "$CRAFT" = "true" ] && echo --craft); \
     fi
 
 COPY manga_ocr_groups.py test_grouping.py /app/
-COPY mangatrans /app/mangatrans
 
 # uid 10001, group 0 so the image also runs under `--user $(id -u):$(id -g)`.
 RUN useradd --uid 10001 --gid 0 --create-home --home-dir /home/appuser appuser \
