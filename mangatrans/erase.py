@@ -100,6 +100,19 @@ def _disc(radius: int):
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1,) * 2)
 
 
+def _lettering(masks: PageMasks, group: TextGroup):
+    """Boolean page mask of what counts as ink for ``group``.
+
+    A detector that hands back a lettering mask has already answered this, and
+    answered it better: "not the background tone" cannot tell a stroke from the
+    screentone it is standing on, and a model trained on comics can.
+    """
+    if masks.text is not None:
+        return masks.text.astype(bool)
+    backing = masks.pale if group.polarity == "light" else masks.ink
+    return ~backing
+
+
 def _stroke_mask(masks: PageMasks, group: TextGroup, bleed: int, shape):
     """Per-pixel mask of the lettering in ``group``.
 
@@ -111,12 +124,12 @@ def _stroke_mask(masks: PageMasks, group: TextGroup, bleed: int, shape):
     import numpy as np  # noqa: PLC0415
 
     height, width = shape
-    backing = masks.pale if group.polarity == "light" else masks.ink
+    ink = _lettering(masks, group)
     mask = _blank(shape)
     for fragment in group.boxes:
         patch = fragment.padded(bleed, width, height)
         window = (slice(patch.y0, patch.y1), slice(patch.x0, patch.x1))
-        mask[window][~backing[window]] = 255
+        mask[window][ink[window]] = 255
     if bleed > 0:
         k = 2 * bleed + 1
         mask = cv2.dilate(mask, np.ones((k, k), np.uint8))
@@ -206,7 +219,7 @@ def _tight_mask(
     as it is safe to go with artwork underneath.
     """
     height, width = shape
-    backing = masks.pale if group.polarity == "light" else masks.ink
+    ink = _lettering(masks, group)
 
     if group.region is None:
         keep = _blank(shape)
@@ -217,7 +230,7 @@ def _tight_mask(
         keep = _bubble_mask(group, shape, reach_glyphs)
 
     mask = _blank(shape)
-    mask[keep.astype(bool) & ~backing] = 255
+    mask[keep.astype(bool) & ink] = 255
     mask = _knit(_drop_specks(mask, group), group, knit_glyphs, bleed)
     # Closing and bleeding both grow the patch, and neither knows what it is
     # growing over. Holding it back to where the lettering was looked for in the

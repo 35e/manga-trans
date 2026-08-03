@@ -6,6 +6,7 @@
 #   ./run.sh 001.jpg --save-viz     # one page, plus an annotated copy
 #   ./run.sh --help                 # every flag the script takes
 #   ./run.sh test                   # unit tests (no models needed)
+#   ./run.sh eval --truth t --pred p  # score a run against hand-checked pages
 #   ./run.sh build                  # rebuild the image
 #
 # podman and docker both work; whichever is on PATH is used. Override with
@@ -61,6 +62,17 @@ test)
         -v "$PWD/test_grouping.py:/app/test_grouping.py:ro" \
         -v "$PWD/mangatrans:/app/mangatrans:ro" \
         "$image" /app/test_grouping.py "$@"
+    ;;
+eval)
+    shift
+    "$engine" image inspect "$image" >/dev/null 2>&1 || build
+    mkdir -p pages/out
+    exec "$engine" run --rm --entrypoint python -w /pages \
+        -v "./pages:/pages" \
+        -v "$PWD/mangatrans:/app/mangatrans:ro" \
+        "${id_args[@]}" \
+        -e PYTHONPATH=/app \
+        "$image" -m mangatrans.evaluate "$@"
     ;;
 esac
 

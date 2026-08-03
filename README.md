@@ -33,50 +33,99 @@ Needs Python 3.10+.
 
 ```bash
 pip install -r requirements.txt
+python scripts/prefetch_models.py          # the detector, and manga-ocr's weights
 ```
 
-On Linux this pulls the CUDA build of PyTorch (~4 GB of `nvidia-*` wheels). If
-you only run on CPU, install a CPU-only torch first:
+On Linux this pulls the CUDA build of PyTorch (~4 GB of `nvidia-*` wheels) for
+`manga-ocr`. If you only run on CPU, install a CPU-only torch first:
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
 
-Both models download themselves on first run: the CRAFT detector (~80 MB, from
-the EasyOCR GitHub releases) and `kha-white/manga-ocr-base` (~450 MB, from
-HuggingFace).
+Two models. The text detector (`comictextdetector.pt.onnx`, ~95 MB) is fetched
+by `scripts/prefetch_models.py` into `~/.cache/manga-trans`, because it is
+published as a GitHub release asset and no package manager knows how to get it.
+`kha-white/manga-ocr-base` (~450 MB) downloads itself from HuggingFace on first
+use; `--detector-only` skips it if all you want is the detector.
+
+Detection runs on OpenCV's ONNX backend, so it needs no torch and no
+onnxruntime. `easyocr` is **not** installed by default any more — it is only
+needed for `--detector craft`:
+
+```bash
+pip install easyocr                        # optional, for --detector craft
+```
 
 ## How it works
 
 ```
-detect  ->  segment  ->  match  ->  group  ->  recognise  ->  translate  ->  render
-CRAFT       bubbles      text to    one per    manga-ocr      ollama         erase +
-            & plates     a shape    utterance                                letter
+detect  ->  shape  ->  recognise  ->  translate  ->  render
+blocks +    bubble     manga-ocr      ollama         erase +
+lettering   geometry                                 letter
 ```
 
-1. **Detect** — EasyOCR's CRAFT detector finds the text fragments (roughly one
-   box per column of glyphs). EasyOCR's own line merging is switched off: its
-   thresholds assume horizontal Latin text, and so do its defaults —
-   `--text-threshold` and `--low-text` are set lower here (0.5 and 0.3 against
-   CRAFT's 0.7 and 0.4) because a kana scores lower per character than a Latin
-   word does. On the sample pages that finds about a fifth more fragments
-   without picking anything up off the artwork.
-2. **Segment** — the page is broken into the *shapes* text sits on. See
-   [Finding the bubbles](#finding-the-bubbles).
-3. **Match** — each fragment is assigned to the smallest shape that covers it,
-   so a bubble always beats the pale panel it happens to be drawn on. Fragments
-   on no shape at all are judged by what is behind them.
-4. **Group** — the fragments of one shape become one text group, split into
-   separate utterances by [how the text lines up](#grouping-into-utterances).
-5. **Recognise** — each group is cropped as a whole and read by `manga-ocr`,
+1. **Detect** — [comic-text-detector](https://github.com/dmMaze/comic-text-detector),
+   trained on ~13k comic pages, returns the text *blocks* (one per utterance,
+   with a confidence and a language) and a per-pixel mask of the lettering. See
+   [Which detector](#which-detector).
+2. **Shape** — the page is still segmented into the *shapes* text sits on, but
+   only to answer what the model does not: what a bubble looks like, so the
+   eraser can repaint its surface and the letterer can fit English into it. See
+   [Finding the bubbles](#finding-the-bubbles). Failing to find a bubble under a
+   block costs the block its typesetting box and nothing else — the text is
+   never lost for it.
+3. **Recognise** — each group is cropped as a whole and read by `manga-ocr`,
    which is trained on complete manga text blocks and handles vertical text,
    multiple lines and furigana itself.
-6. **Translate / render** — see [Translation](#translation) and
+4. **Translate / render** — see [Translation](#translation) and
    [Rendering](#rendering-the-translation-onto-the-page).
+
+With `--detector craft` the blocks are not given but reconstructed, which is
+what this project used to do throughout: CRAFT finds fragments, the fragments
+are matched to segmented shapes, and
+[how the text lines up](#grouping-into-utterances) decides which of them are one
+utterance.
 
 Everything lives in the `mangatrans` package, one module per stage;
 `manga_ocr_groups.py` is the entry point the container runs.
+
+## Which detector
+
+Finding text on a comic page and cutting it into utterances can be done two
+ways, and they are not equally good.
+
+**`--detector craft`** detects fragments with a general-purpose text detector
+and rebuilds everything else with geometry: segment the page into flat islands,
+decide which are bubbles, cluster fragments by distance. Every step is a
+hand-set threshold, every threshold is another gate a bubble has to pass, and
+the gates interact — so tuning `--gap` to fix one page breaks another, and a
+bubble that fails a gate does not come back wrong, it goes *missing*.
+
+**`--detector comic`** asks a model trained on manga instead, and gets the text
+blocks, their language and a mask of the lettering in one pass. There is nothing
+to tune, and a page it struggles with says so, with a confidence attached.
+
+`--detector auto`, the default, uses the comic detector when its weights are
+installed and falls back to craft when they are not.
+
+| | `comic` | `craft` |
+| --- | --- | --- |
+| finds | text blocks, language, lettering mask | text fragments |
+| grouping | the model's | `--gap` / `--stack-gap` / alignment |
+| reports confidence | yes | no |
+| needs | OpenCV, 95 MB of weights | easyocr → torch, torchvision, scipy |
+| detection resolution | fixed 1024² | `--canvas-size`, fitted to free memory |
+
+The comic detector is not perfect either — two speech bubbles drawn overlapping
+are still sometimes read as one block — but it fails far less often, and when it
+does the confidence in `--save-viz` and in the JSON points straight at it.
+
+Everything under [Finding the bubbles](#finding-the-bubbles) and
+[Grouping](#grouping-into-utterances) still applies to `--detector craft`. With
+`comic` the segmentation options only shape the lettering and the cover-up; they
+can no longer delete text.
 
 ## Finding the bubbles
 
@@ -113,25 +162,35 @@ What is left over — text on no shape at all — is sorted by what is behind it
 measured on the ring around it so the lettering does not count as its own
 background:
 
-| kind | what it is | kept by default |
-| --- | --- | --- |
-| `bubble` | in a speech bubble, caption box or sign | yes |
-| `plate` | free-standing on plain paper: narration, a title | yes |
-| `art` | painted over artwork: sound effects, scribbles | no |
+| kind | what it is | kept by `comic` | kept by `craft` |
+| --- | --- | --- | --- |
+| `bubble` | in a speech bubble, caption box or sign | yes | yes |
+| `plate` | free-standing on plain paper: narration, a title | yes | yes |
+| `art` | painted over artwork: sound effects, scribbles | yes | no |
 
 ```bash
 ./run.sh --text bubbles     # dialogue only
-./run.sh --text page        # default: also narration on plain paper
+./run.sh --text page        # also narration on plain paper
 ./run.sh --text all         # also sound effects  (--all-text is an alias)
+./run.sh --text auto        # default: see below
 ```
 
-Sound effects are dropped by default because they OCR badly and drag the rest
-of the page's translation down with them. Each group's `kind` and the plainness
-score behind it land in the JSON, so you can tune against real numbers:
+`kind` answers two different questions, and only one of them is a good reason to
+throw text away. For the eraser it says what is *under* the lettering, which
+decides whether the surface can be measured or has to be inpainted — always
+worth knowing. As a filter it stands in for "is this a sound effect?", which was
+a fair guess when the alternative was feeding CRAFT's noise to the translator.
+
+It is not a fair guess once a model has said "this is a block of text, and here
+is how sure I am". So `--text auto`, the default, keeps everything a detector
+that grouped the page found, and falls back to `page` for `--detector craft`.
+Ask for less explicitly if you want less.
+
+Anything left out is listed in the JSON under `dropped`, with the reason:
 
 ```
 processing /pages/004.webp...
-  skipping art text at [640, 398, 672, 428] (plain 0.69, 1 fragment(s))
+  skipping text at [640, 398, 672, 428]: kind 'art' not in --text bubbles
 ```
 
 ## Grouping into utterances
@@ -153,6 +212,9 @@ two groups while a pair of overlapping bubbles merged into one.
 
 | Symptom | Fix |
 | --- | --- |
+| Text missed, with `--detector comic` | lower `--detector-conf` (0.4 by default) |
+| Artwork picked up as text | raise `--detector-conf`, or `--min-confidence` to keep it in the JSON while leaving it out of the results |
+| Bubbles merged or split, with `--detector comic` | not tunable — the model decided. Check `--save-viz`; the confidence on the box says how sure it was |
 | One bubble split into several groups | raise `--gap`, or `--stack-gap` if the pieces are stacked |
 | Two utterances in one bubble merged | lower `--gap` |
 | A real bubble treated as free text | raise `--max-bubble-ratio`, lower `--min-solidity` or raise `--max-midtone` |
@@ -316,10 +378,13 @@ user (rootless podman), so files written to `pages/` are owned by you. Notes:
 - docker instead of podman: drop `--userns` and use `--user "$(id -u):$(id -g)"`.
 - `--cpu` is optional; the image has CPU-only torch, it just silences the
   "CUDA not available" warning.
-- `--build-arg PREFETCH_MODELS=false` leaves the models out (~930 MB smaller)
+- `--build-arg PREFETCH_MODELS=false` leaves the models out (~545 MB smaller)
   and downloads them on first run instead — mount a cache so that happens once:
   `-v manga-models:/opt/models`. That build also sets `HF_HUB_OFFLINE=false`, so
   the download can actually happen.
+- `--build-arg CRAFT=true` also installs easyocr and its weights, for
+  `--detector craft`. The image does not carry them otherwise, which is most of
+  why it is smaller than it was.
 
 Or via compose:
 
@@ -461,6 +526,8 @@ can see. Notes:
           "text": "おはようございます",
           "translation": "Good morning",
           "kind": "bubble",
+          "confidence": 0.97,
+          "language": "ja",
           "plainness": 1.0,
           "mask_bbox": [848, 100, 985, 375],
           "region": {
@@ -472,6 +539,15 @@ can see. Notes:
           "fragments": 2,
           "fragment_boxes": [[859, 119, 909, 358], [916, 119, 966, 313]]
         }
+      ],
+      "dropped": [
+        {
+          "bbox": [120, 34, 567, 90],
+          "kind": "art",
+          "confidence": 0.53,
+          "drop_reason": "kind 'art' not in --text bubbles",
+          "...": "..."
+        }
       ]
     }
   ]
@@ -480,15 +556,62 @@ can see. Notes:
 
 `bbox` is `[x0, y0, x1, y1]` in pixels. `region` is the shape the text was found
 on, or `null` for free-standing text. `mask_bbox` is what `--clean`/`--mask`
-covered, and is `null` unless one of those ran. Groups are returned in best-effort manga
-reading order (top to bottom, right to left); use `--order ltr` or `--order none`
-to change that.
+covered, and is `null` unless one of those ran. `confidence` is the detector's,
+and is always `1.0` from `--detector craft`, which has no opinion. Groups are
+returned in best-effort manga reading order (top to bottom, right to left); use
+`--order ltr` or `--order none` to change that.
+
+**`dropped`** is everything the page found and then decided against, each entry
+carrying the `drop_reason` that removed it. Nothing leaves the pipeline
+silently: a bubble that went missing used to be indistinguishable from a bubble
+that was never there, which is the single hardest failure to notice by eye.
+
+## Measuring a change
+
+Every option here trades one kind of mistake for another, and judging by eye
+cannot tell those apart — a handful of pages always look roughly right, and the
+failure that matters is the bubble that quietly went missing on page fifty.
+
+Ground truth is the same JSON the pipeline already writes, corrected by hand, so
+building a set costs a run and an hour rather than a labelling project:
+
+```bash
+./run.sh pages --out-dir truth        # then correct truth/*.json by hand
+./run.sh pages --out-dir out          # the run you want to judge
+./run.sh eval --truth truth --pred out
+```
+
+```
+page                          found  miss  spur  recall   prec     F1     CER
+--------------------------------------------------------------------------
+004-1114x1600.webp                8     1     0   88.9% 100.0%  94.1%    2.1%
+010-1114x1600.webp                9     8     0   52.9% 100.0%  69.2%    3.4%
+--------------------------------------------------------------------------
+TOTAL (2 pages)                  17     9     0   65.4% 100.0%  79.1%    2.7%
+
+detection   recall 65.4%  precision 100.0%  F1 79.1%   (9 missed, 0 spurious)
+recognition CER 2.7%  read perfectly 14/17 (82.4%)
+```
+
+Two numbers, and they answer different questions on purpose. **Detection F1**
+says whether the text was found and cut into the right utterances — the detector
+and the grouping move this. **CER**, over the boxes that did match, says whether
+what was found was read correctly — the recognition model moves this. A change
+that finds three more bubbles and reads them badly is not an improvement, and a
+single blended number would call it one.
+
+Twenty to thirty pages spanning the range you actually read is enough to stop
+you tuning in circles. `--worst 10` prints the bubbles that were read worst, and
+`--json` gives the totals for a script to diff between runs.
+
+Outside the container: `python -m mangatrans.evaluate --truth truth --pred out`.
 
 ## Tests
 
-`test_grouping.py` covers the geometry, grouping, segmentation, erasing and
-layout logic against a synthetic page. It needs numpy, OpenCV and Pillow, but no
-models and no network:
+`test_grouping.py` covers the geometry, grouping, segmentation, erasing,
+scoring and layout logic against a synthetic page. It needs numpy, OpenCV and
+Pillow, but no models and no network — the detector tests drive the block path
+through a stub rather than loading the weights:
 
 ```bash
 ./run.sh test                  # in the container
@@ -501,13 +624,24 @@ python test_grouping.py        # or: python -m pytest test_grouping.py
 python manga_ocr_groups.py tests --no-ocr --out-dir /tmp/tune --save-viz
 ```
 
+By eye is for spotting *what* went wrong; use
+[the eval harness](#measuring-a-change) to decide whether a change was an
+improvement.
+
 ## Notes
 
-- The detector is a general-purpose text detector, not a bubble detector; the
-  bubbles come from segmenting the page. Heavily stylised SFX are hit and miss,
-  which is fine, because they are dropped by default anyway.
-- Recognition quality is whatever `manga-ocr` gives you — it is Japanese-only.
-  Pass `--model` to use a fine-tune or a local copy.
+- With `--detector craft` the detector is a general-purpose text detector, not a
+  bubble detector; the bubbles come from segmenting the page. Heavily stylised
+  SFX are hit and miss.
+- Recognition quality is whatever `manga-ocr` gives you — it is Japanese-only,
+  and it is the strongest link in the chain, so it is the last thing worth
+  replacing. Most of what looks like a recognition error is a bad crop. Pass
+  `--model` to use a fine-tune or a local copy.
+- Translation sees the page's text but not the page. Speaker, gender and who is
+  being addressed are exactly what a text-only model has to guess at, so if the
+  bubbles are being found correctly and the English still reads oddly, that is
+  where to look next — measure it with the eval harness before and after, or you
+  will not know which change did what.
 - A bubble that pokes out of its panel and merges with the page margin is not an
   island any more, so it is classified as free text on plain paper rather than as
   a bubble. It is still kept and still erased cleanly; it just does not get the

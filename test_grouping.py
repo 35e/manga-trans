@@ -1,14 +1,19 @@
-"""Tests for the geometry, segmentation and layout logic.
+"""Tests for the geometry, segmentation, scoring and layout logic.
 
-Needs numpy, OpenCV and Pillow (all pulled in by easyocr), but no models and no
-network.
+Needs numpy, OpenCV and Pillow, but no models and no network - including the
+detector tests, which drive the block path through a stub rather than loading
+95 MB of weights.
 
 Run with:  python -m pytest test_grouping.py    or    python test_grouping.py
 """
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 
+from mangatrans.cli import canvas_size_arg, natural_key
+from mangatrans.comicdetect import columns_in, decode_blocks, letterbox
 from mangatrans.detect import (
     CANVAS_MAX,
     CANVAS_MIN,
@@ -18,8 +23,17 @@ from mangatrans.detect import (
     available_memory_bytes,
     is_memory_error,
 )
-from mangatrans.cli import canvas_size_arg, natural_key
+from mangatrans.detectors import Detection, DetectionResult
 from mangatrans.erase import TIGHT, WHOLE, _stroke_mask, erase_text, text_mask
+from mangatrans.evaluate import (
+    edit_distance,
+    iou,
+    load_pages,
+    match,
+    report,
+    score_page,
+    score_run,
+)
 from mangatrans.geometry import (
     Box,
     box_gap,
@@ -30,7 +44,17 @@ from mangatrans.geometry import (
     union_box,
 )
 from mangatrans.letter import fit_text, inscribed_rect, load_font, wrap_text
-from mangatrans.pipeline import ART, BUBBLE, PLATE, TextGroup, build_groups
+from mangatrans.pipeline import (
+    ART,
+    AUTO_TEXT,
+    BUBBLE,
+    PLATE,
+    TextGroup,
+    build_groups,
+    build_groups_from_blocks,
+    keep_kinds,
+    process_image,
+)
 from mangatrans.regions import (
     assign_regions,
     backing_of,
@@ -226,6 +250,18 @@ class _Args:
     contains = 0.6
     max_bubble_ratio = 10.0
     plain_threshold = 0.85
+    # Read by process_image on top of the above.
+    seal = 1
+    min_solidity = 0.62
+    max_midtone = 0.12
+    no_inverted = False
+    text = AUTO_TEXT
+    min_fragments = 1
+    min_group_px = 12
+    min_confidence = 0.0
+    order = "rtl"
+    pad = 0.15
+    drop_empty = True
 
 
 def test_thresholds_follow_the_pages_white_point():
@@ -580,6 +616,285 @@ def test_natural_key_orders_page2_before_page10():
         "p2.webp",
         "p10.webp",
     ]
+
+
+# ---------------------------------------------------------------------------
+# the detector interface, and the blocks a trained detector supplies
+# ---------------------------------------------------------------------------
+
+
+class _StubDetector:
+    """A detector that reports blocks, standing in for the real model.
+
+    The point of the interface is that the pipeline never asks which detector it
+    is talking to, so the block path can be exercised without 95 MB of weights.
+    """
+
+    name = "stub"
+
+    def __init__(self, blocks, text_mask=None):
+        self.blocks = blocks
+        self.text_mask = text_mask
+
+    def __call__(self, image, log=lambda _m: None):
+        return DetectionResult(
+            fragments=[f for b in self.blocks for f in b.fragments],
+            blocks=self.blocks,
+            text_mask=self.text_mask,
+        )
+
+
+def test_letterbox_pads_to_a_square_without_stretching():
+    image = np.zeros((800, 400, 3), np.uint8)
+    boxed, pad_w, pad_h = letterbox(image, 1024)
+    assert boxed.shape[:2] == (1024, 1024)
+    # The long side fills the canvas, the short side is padded to it.
+    assert pad_h == 0
+    assert pad_w == 1024 - 512
+
+
+def test_letterbox_maps_a_corner_back_to_where_it_started():
+    image = np.zeros((1600, 1114, 3), np.uint8)
+    _, pad_w, pad_h = letterbox(image, 1024)
+    scale_x = 1114 / (1024 - pad_w)
+    scale_y = 1600 / (1024 - pad_h)
+    assert abs((1024 - pad_w) * scale_x - 1114) < 1
+    assert abs((1024 - pad_h) * scale_y - 1600) < 1
+
+
+def test_decode_blocks_suppresses_the_duplicate():
+    # cx, cy, w, h, objectness, then a score per class. Two near-identical
+    # boxes and one well away from them.
+    raw = np.array(
+        [
+            [100, 100, 40, 80, 0.9, 0.1, 0.9],
+            [102, 101, 42, 78, 0.8, 0.1, 0.9],  # the same block, seen twice
+            [500, 400, 60, 60, 0.95, 0.9, 0.1],
+        ],
+        dtype=np.float32,
+    )
+    boxes, classes, confidences = decode_blocks(raw, 0.4, 0.35)
+    assert len(boxes) == 2, boxes
+    assert set(classes.tolist()) == {0, 1}
+    assert all(c > 0.4 for c in confidences)
+
+
+def test_decode_blocks_drops_everything_below_the_threshold():
+    raw = np.array([[100, 100, 40, 80, 0.2, 0.1, 0.5]], dtype=np.float32)
+    boxes, _, _ = decode_blocks(raw, 0.4, 0.35)
+    assert len(boxes) == 0
+
+
+def test_columns_in_welds_glyphs_into_columns():
+    """Two columns of three glyphs each come back as two fragments, not six."""
+    mask = np.zeros((300, 300), np.uint8)
+    for x in (60, 140):  # two columns, 80px apart
+        for y in (40, 90, 140):  # three glyphs down each
+            mask[y : y + 34, x : x + 34] = 255
+    columns = columns_in(mask, Box(0, 0, 300, 300), vertical=True)
+    assert len(columns) == 2, columns
+    # Each column spans all three glyphs and only its own width.
+    for column in columns:
+        assert column.h > 100
+        assert column.w < 50
+
+
+def test_columns_in_reads_horizontal_text_the_other_way_round():
+    mask = np.zeros((300, 300), np.uint8)
+    for y in (60, 140):  # two lines
+        for x in (40, 90, 140):
+            mask[y : y + 34, x : x + 34] = 255
+    lines = columns_in(mask, Box(0, 0, 300, 300), vertical=False)
+    assert len(lines) == 2, lines
+    for line in lines:
+        assert line.w > 100
+        assert line.h < 50
+
+
+def test_columns_in_ignores_specks():
+    """Screentone that survived the mask must not be read as type."""
+    mask = np.zeros((300, 300), np.uint8)
+    mask[40:120, 60:100] = 255  # one real column
+    for y in range(200, 280, 8):  # a field of tone dots
+        for x in range(60, 240, 8):
+            mask[y : y + 2, x : x + 2] = 255
+    columns = columns_in(mask, Box(0, 0, 300, 300), vertical=True)
+    assert len(columns) == 1, columns
+
+
+def test_blocks_from_a_detector_become_the_groups():
+    """No clustering: the model already said what belongs together."""
+    masks = page_masks(_synthetic_page())
+    regions = find_regions(masks)
+    blocks = [
+        Detection(box=BUBBLE_TEXT, confidence=0.97, language="ja",
+                  fragments=[BUBBLE_TEXT]),
+        Detection(box=SFX_TEXT, confidence=0.55, language="ja",
+                  fragments=[SFX_TEXT]),
+    ]
+    groups = build_groups_from_blocks(
+        masks, DetectionResult(blocks=blocks), regions, _Args()
+    )
+    assert len(groups) == 2
+    by_x = {g.bbox.x0: g for g in groups}
+    assert by_x[BUBBLE_TEXT.x0].kind == BUBBLE
+    assert by_x[BUBBLE_TEXT.x0].confidence == 0.97
+    assert by_x[SFX_TEXT.x0].kind == ART  # hatching behind it
+    assert by_x[SFX_TEXT.x0].language == "ja"
+
+
+def test_a_block_keeps_its_text_when_no_bubble_is_found_under_it():
+    """The old pipeline lost text here; losing the bubble shape is enough."""
+    masks = page_masks(_synthetic_page())
+    regions = find_regions(masks)
+
+    class Strict(_Args):
+        max_bubble_ratio = 0.001  # no region can pass this
+
+    blocks = [Detection(box=BUBBLE_TEXT, confidence=0.9, fragments=[BUBBLE_TEXT])]
+    groups = build_groups_from_blocks(
+        masks, DetectionResult(blocks=blocks), regions, Strict()
+    )
+    assert len(groups) == 1  # still there ...
+    assert groups[0].region is None  # ... just without the typesetting box
+    assert groups[0].bbox == BUBBLE_TEXT
+
+
+def test_keep_kinds_believes_a_detector_that_grouped_the_page():
+    assert keep_kinds(AUTO_TEXT, grouped=True) == {BUBBLE, PLATE, ART}
+    assert keep_kinds(AUTO_TEXT, grouped=False) == {BUBBLE, PLATE}
+    # An explicit choice is still honoured either way.
+    assert keep_kinds("bubbles", grouped=True) == {BUBBLE}
+    assert keep_kinds("page", grouped=True) == {BUBBLE, PLATE}
+
+
+def test_nothing_is_dropped_without_a_reason():
+    """Text that falls out of the pipeline has to say so, in the JSON."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "page.png"
+        cv2.imwrite(str(path), _synthetic_page())
+
+        blocks = [
+            Detection(box=BUBBLE_TEXT, confidence=0.95, fragments=[BUBBLE_TEXT]),
+            Detection(box=SFX_TEXT, confidence=0.20, fragments=[SFX_TEXT]),
+        ]
+
+        class Picky(_Args):
+            min_confidence = 0.5
+
+        page = process_image(path, _StubDetector(blocks), None, Picky())
+
+    assert len(page.groups) == 1
+    assert len(page.dropped) == 1
+    dropped = page.dropped[0]
+    assert dropped.bbox == SFX_TEXT
+    assert "confidence" in dropped.drop_reason
+    # And it survives into the JSON rather than vanishing from it.
+    as_dict = page.to_dict()
+    assert len(as_dict["dropped"]) == 1
+    assert as_dict["dropped"][0]["drop_reason"] == dropped.drop_reason
+    assert as_dict["groups"][0]["confidence"] == 0.95
+
+
+# ---------------------------------------------------------------------------
+# scoring a run
+# ---------------------------------------------------------------------------
+
+
+def test_iou_of_a_box_with_itself_is_one():
+    box = Box(10, 10, 50, 90)
+    assert iou(box, box) == 1.0
+    assert iou(box, Box(200, 200, 240, 280)) == 0.0
+
+
+def test_iou_of_half_overlapping_boxes():
+    # Two 10x10 boxes sharing a 5x10 strip: 50 shared, 150 in the union.
+    assert abs(iou(Box(0, 0, 10, 10), Box(5, 0, 15, 10)) - 50 / 150) < 1e-9
+
+
+def test_edit_distance():
+    assert edit_distance("", "") == 0
+    assert edit_distance("abc", "abc") == 0
+    assert edit_distance("abc", "abd") == 1
+    assert edit_distance("", "abc") == 3
+    assert edit_distance("おはよう", "おはようございます") == 5
+
+
+def test_match_pairs_each_box_once():
+    truth = [Box(0, 0, 100, 100), Box(200, 200, 300, 300)]
+    predicted = [Box(205, 205, 300, 300), Box(2, 2, 100, 100)]
+    pairs = match(predicted, truth)
+    assert sorted(pairs) == [(0, 1), (1, 0)]
+
+
+def test_match_refuses_a_box_that_barely_overlaps():
+    assert match([Box(0, 0, 100, 100)], [Box(90, 90, 190, 190)]) == []
+
+
+def _page(groups):
+    return {"image": "p.webp", "groups": groups}
+
+
+def test_score_page_counts_misses_and_spurious_boxes():
+    truth = _page([
+        {"bbox": [0, 0, 100, 100], "text": "おはよう"},
+        {"bbox": [200, 200, 300, 300], "text": "こんばんは"},
+    ])
+    predicted = _page([
+        {"bbox": [0, 0, 100, 100], "text": "おはよう"},   # found, read right
+        {"bbox": [600, 600, 700, 700], "text": "?"},      # nothing is there
+    ])
+    score = score_page(predicted, truth)
+    assert (score.matched, score.missed, score.spurious) == (1, 1, 1)
+    assert score.recall == 0.5
+    assert score.precision == 0.5
+    assert score.cer == 0.0  # the one it did find, it read perfectly
+    assert score.exact == 1
+
+
+def test_score_page_reports_recognition_separately_from_detection():
+    """Finding every box and misreading them is not a good score."""
+    truth = _page([{"bbox": [0, 0, 100, 100], "text": "おはよう"}])
+    predicted = _page([{"bbox": [0, 0, 100, 100], "text": "おはよn"}])
+    score = score_page(predicted, truth)
+    assert score.recall == 1.0 and score.precision == 1.0
+    assert score.cer == 0.25  # one character in four
+    assert score.exact == 0
+
+
+def test_score_skips_recognition_when_the_truth_has_no_text():
+    truth = _page([{"bbox": [0, 0, 100, 100], "text": ""}])
+    predicted = _page([{"bbox": [0, 0, 100, 100], "text": "anything"}])
+    score = score_page(predicted, truth)
+    assert score.matched == 1
+    assert score.scored_pairs == 0
+    assert score.cer == 0.0
+
+
+def test_a_perfect_run_scores_one():
+    groups = [{"bbox": [0, 0, 100, 100], "text": "おはよう"}]
+    total, per_page = score_run({"p.webp": _page(groups)}, {"p.webp": _page(groups)})
+    assert total.f1 == 1.0
+    assert total.cer == 0.0
+    assert len(per_page) == 1
+    assert "100.0%" in report(total, per_page)
+
+
+def test_load_pages_reads_both_json_shapes():
+    import json
+    import tempfile
+
+    page = _page([{"bbox": [0, 0, 10, 10], "text": "x"}])
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "one.json").write_text(json.dumps(page), encoding="utf-8")
+        (folder / "many.json").write_text(
+            json.dumps({"pages": [{**page, "image": "q.webp"}]}), encoding="utf-8"
+        )
+        loaded = load_pages(folder)
+    assert set(loaded) == {"p.webp", "q.webp"}
 
 
 if __name__ == "__main__":
