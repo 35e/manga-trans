@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# Run manga-trans in a container, building the image the first time.
+# Run the manga-trans GUI in a container, building the image the first time.
 #
-#   ./run.sh                        # OCR every image in pages/ -> pages/out/
-#   ./run.sh --translate            # ... and translate each bubble with ollama
-#   ./run.sh 001.jpg --save-viz     # one page, plus an annotated copy
-#   ./run.sh --help                 # every flag the script takes
-#   ./run.sh test                   # unit tests (no models needed)
-#   ./run.sh eval --truth t --pred p  # score a run against hand-checked pages
-#   ./run.sh build                  # rebuild the image
+#   ./run.sh            # open http://localhost:8000
+#   ./run.sh test       # unit tests (no models needed)
+#   ./run.sh build      # rebuild the image after changing the code
 #
 # podman and docker both work; whichever is on PATH is used. Override with
-# $CONTAINER_ENGINE, the ollama server with $OLLAMA_URL, the model with
-# $OLLAMA_MODEL.
+# $CONTAINER_ENGINE, the port with $PORT, the ollama server with $OLLAMA_URL
+# and the model with $OLLAMA_MODEL.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -49,35 +45,22 @@ build() {
 
 case "${1:-}" in
 build)
-    shift
     build
-    [ $# -eq 0 ] && exit 0
+    exit 0
     ;;
 test)
     shift
     "$engine" image inspect "$image" >/dev/null 2>&1 || build
-    # Mount the working copy so tests run against it without a rebuild.
     exec "$engine" run --rm --entrypoint python -w /app \
-        -v "$PWD/manga_ocr_groups.py:/app/manga_ocr_groups.py:ro" \
-        -v "$PWD/test_grouping.py:/app/test_grouping.py:ro" \
         -v "$PWD/mangatrans:/app/mangatrans:ro" \
-        "$image" /app/test_grouping.py "$@"
-    ;;
-eval)
-    shift
-    "$engine" image inspect "$image" >/dev/null 2>&1 || build
-    mkdir -p pages/out
-    exec "$engine" run --rm --entrypoint python -w /pages \
-        -v "./pages:/pages" \
-        -v "$PWD/mangatrans:/app/mangatrans:ro" \
-        "${id_args[@]}" \
-        -e PYTHONPATH=/app \
-        "$image" -m mangatrans.evaluate "$@"
+        -v "$PWD/tests:/app/tests:ro" \
+        "$image" -m unittest discover -s tests -t . "$@"
     ;;
 esac
 
 "$engine" image inspect "$image" >/dev/null 2>&1 || build
 
+port=${PORT:-8000}
 mkdir -p pages/out
 mount=./pages:/pages
 # SELinux hosts (Fedora/RHEL) refuse the mount without a relabel.
@@ -85,9 +68,11 @@ if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled 2>/dev/null; then
     mount=$mount:Z
 fi
 
+echo "run.sh: open http://localhost:$port" >&2
 exec "$engine" run --rm --init \
+    -p "$port:8000" \
     -v "$mount" \
     "${id_args[@]}" \
     -e "OLLAMA_URL=${OLLAMA_URL:-http://$host_alias:11434}" \
     ${OLLAMA_MODEL:+-e "OLLAMA_MODEL=$OLLAMA_MODEL"} \
-    "$image" --cpu "$@"
+    "$image" "$@"
