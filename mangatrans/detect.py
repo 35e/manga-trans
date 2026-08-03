@@ -62,16 +62,27 @@ def available_memory_bytes() -> int | None:
 
 
 def auto_canvas_size(
-    width: int, height: int, budget_bytes: int | None, ceiling: int = CANVAS_MAX
+    width: int,
+    height: int,
+    budget_bytes: int | None,
+    ceiling: int = CANVAS_MAX,
+    mag_ratio: float = 1.0,
 ) -> int:
     """Largest detection canvas that fits ``budget_bytes``, in pixels.
 
-    EasyOCR scales the image's long side down to the canvas size (it never
-    upscales past it here) and pads both sides to a multiple of 32, so the
+    EasyOCR scales the image's long side to ``mag_ratio`` times itself and then
+    clamps that to the canvas size, padding both sides to a multiple of 32; the
     canvas holds about ``canvas**2 * short_side / long_side`` pixels.
+
+    The clamp is why the canvas has to know about ``mag_ratio``. A page is never
+    magnified for its own sake - at ``mag_ratio`` 1 the ceiling is the page's own
+    long side - but when a magnification has been asked for, holding the canvas
+    down to the original size would silently cancel it, and the small furigana it
+    was asked for would go on being missed.
     """
     long_side, short_side = max(width, height), max(1, min(width, height))
-    ceiling = min(ceiling, long_side)  # never magnify a page past its own size
+    wanted = int(long_side * max(1.0, mag_ratio))
+    ceiling = min(ceiling, wanted)
     if budget_bytes is None:
         return max(CANVAS_MIN, ceiling)
 

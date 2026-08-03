@@ -10,7 +10,17 @@ import sys
 from pathlib import Path
 
 from .detect import CANVAS_MIN, build_detector
-from .erase import BLEED_GLYPHS
+from .erase import (
+    AUTO,
+    BLEED_GLYPHS,
+    KNIT_GLYPHS,
+    MODES,
+    TIGHT,
+    WIPE_GLYPHS,
+    colour,
+    erase_text,
+    text_mask,
+)
 from .letter import render_page
 from .pipeline import KEEP, Page, process_image
 from .regions import CONTAINS, MAX_MIDTONE, MIN_SOLIDITY, SEAL_PX, page_masks
@@ -247,8 +257,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     detection = parser.add_argument_group("detection (EasyOCR/CRAFT)")
     detection.add_argument("--min-size", type=int, default=10)
-    detection.add_argument("--text-threshold", type=float, default=0.7)
-    detection.add_argument("--low-text", type=float, default=0.4)
+    detection.add_argument(
+        "--text-threshold",
+        type=float,
+        default=0.5,
+        help="how sure the detector must be that a blob is a character. "
+        "CRAFT's own default is 0.7, which is set for Latin prose; kana and "
+        "kanji score lower per character and 0.5 finds about a fifth more of "
+        "them without picking up artwork",
+    )
+    detection.add_argument(
+        "--low-text",
+        type=float,
+        default=0.3,
+        help="score at which a box stops growing. Lower makes the boxes hug "
+        "faint strokes and thin punctuation instead of cutting them off",
+    )
     detection.add_argument("--link-threshold", type=float, default=0.4)
     detection.add_argument(
         "--canvas-size",
@@ -257,7 +281,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="detection resolution in px (long side). 'auto' fits it to the "
         "memory this machine has, so large pages are not killed mid-run",
     )
-    detection.add_argument("--mag-ratio", type=float, default=1.0)
+    detection.add_argument(
+        "--mag-ratio",
+        type=float,
+        default=1.0,
+        help="magnify the page by this much before detecting. Raise it (1.5 is "
+        "a good try) when small furigana is being missed; it costs about that "
+        "much again in time and memory",
+    )
     detection.add_argument("--detect-network", default="craft", choices=["craft", "dbnet18"])
 
     recognition = parser.add_argument_group("recognition (manga-ocr)")
@@ -355,6 +386,61 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "(raise if the original shows through)",
     )
 
+    masking = parser.add_argument_group("masking (no translation needed)")
+    masking.add_argument(
+        "--clean",
+        action="store_true",
+        help="with --out-dir, write <name>.clean.png: the page with the Japanese "
+        "covered over and nothing drawn in its place, ready to be lettered by hand",
+    )
+    masking.add_argument(
+        "--clean-to", type=Path, help="write the cleaned page here (single image only)"
+    )
+    masking.add_argument(
+        "--mask",
+        action="store_true",
+        help="with --out-dir, write <name>.mask.png: white where the lettering "
+        "was, black everywhere else",
+    )
+    masking.add_argument(
+        "--mask-to", type=Path, help="write the mask here (single image only)"
+    )
+    masking.add_argument(
+        "--mask-mode",
+        choices=list(MODES),
+        default=None,
+        help="how far the cover-up spreads. text: exactly over the lettering, "
+        "which is the default for --clean/--mask. bubble: the whole inside of "
+        "the bubble, which leaves the most room to letter English into. auto: "
+        "measure the surface under the text and paint that back instead of a "
+        "flat colour, which is the default for --render",
+    )
+    masking.add_argument(
+        "--mask-colour",
+        "--mask-color",
+        dest="mask_colour",
+        default="white",
+        help="colour laid over the lettering in text/bubble mode",
+    )
+    masking.add_argument(
+        "--mask-reach",
+        type=float,
+        default=WIPE_GLYPHS,
+        help="how far past the detected text the cover-up looks for leftovers, "
+        "in multiples of glyph size. Inside a bubble this is what picks up "
+        "furigana and a leading ellipsis the detector never boxed; raise it if "
+        "stray marks survive, lower it if a neighbouring utterance is caught",
+    )
+    masking.add_argument(
+        "--mask-knit",
+        type=float,
+        default=KNIT_GLYPHS,
+        help="how far the cover-up closes over the gaps between strokes and "
+        "characters, in multiples of glyph size, so a column of type comes out "
+        "as one patch rather than as separate glyph-shaped holes (0 traces "
+        "each glyph exactly)",
+    )
+
     output = parser.add_argument_group("output")
     output.add_argument(
         "--out-dir",
@@ -405,6 +491,68 @@ def _load_masks(path: Path):
     return page_masks(np.array(image))
 
 
+def write_cover(path: Path, page, args, clean_to: Path | None, mask_to: Path | None):
+    """Write the cleaned page and/or the mask of what it covered.
+
+    Both come from one pass, because the mask is what the cleaning painted; a
+    second pass could only disagree with the first. Each group's covered area
+    lands back on the group, so the JSON says where there is now room to letter.
+    """
+    import cv2  # noqa: PLC0415
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    masks = _load_masks(path)
+    mode = args.mask_mode or TIGHT
+    image = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+
+    if mode == AUTO:
+        # The surface under the lettering is measured rather than chosen, so the
+        # page has to be painted to know what was covered.
+        image = erase_text(
+            image,
+            page.groups,
+            masks,
+            args.erase_pad,
+            mode=mode,
+            reach_glyphs=args.mask_reach,
+        )
+        mask = (
+            text_mask(
+                masks,
+                page.groups,
+                masks.shape,
+                bleed_glyphs=args.erase_pad,
+                reach_glyphs=args.mask_reach,
+                mode=mode,
+            )
+            if mask_to is not None
+            else None
+        )
+    else:
+        mask = text_mask(
+            masks,
+            page.groups,
+            masks.shape,
+            bleed_glyphs=args.erase_pad,
+            knit_glyphs=args.mask_knit,
+            reach_glyphs=args.mask_reach,
+            mode=mode,
+        )
+        if clean_to is not None:
+            pixels = np.asarray(image).copy()
+            pixels[mask.astype(bool)] = colour(args.mask_colour)
+            image = Image.fromarray(pixels)
+
+    if clean_to is not None:
+        clean_to.parent.mkdir(parents=True, exist_ok=True)
+        image.save(clean_to)
+    if mask_to is not None:
+        mask_to.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(mask_to), mask)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -416,6 +564,14 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--viz works with a single image at a time; use --save-viz")
     if args.render_to and len(images) > 1:
         raise SystemExit("--render-to takes a single image; use --render --out-dir")
+    for flag, value in (("--clean-to", args.clean_to), ("--mask-to", args.mask_to)):
+        if value and len(images) > 1:
+            raise SystemExit(f"{flag} takes a single image; use --out-dir")
+    if (args.clean or args.mask) and not args.out_dir:
+        raise SystemExit(
+            "--clean/--mask write into --out-dir; give one, or use --clean-to/--mask-to"
+        )
+    colour(args.mask_colour)  # fail now rather than after the models have loaded
     if args.translate and args.no_ocr:
         raise SystemExit("--translate needs the OCR text; drop --no-ocr")
     if (args.render or args.render_to) and not args.translate:
@@ -500,6 +656,17 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.out_dir:
             stem = out_stem(path)
+
+            # Before the JSON: covering the page is what fills in each group's
+            # mask_bbox, and that belongs in the file with the rest of it.
+            clean_path = args.out_dir / f"{stem}.clean.png" if args.clean else None
+            mask_path = args.out_dir / f"{stem}.mask.png" if args.mask else None
+            if clean_path or mask_path:
+                write_cover(path, page, args, clean_path, mask_path)
+                for written in (clean_path, mask_path):
+                    if written:
+                        log(f"wrote {written}")
+
             page_json = args.out_dir / f"{stem}.json"
             page_json.write_text(
                 json.dumps(page.to_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -520,6 +687,12 @@ def main(argv: list[str] | None = None) -> int:
                 render_path = args.out_dir / f"{stem}.render.jpg"
                 count = render_page(path, page, render_path, _load_masks(path), args)
                 log(f"wrote {render_path} ({count} bubble(s) lettered)")
+
+    if args.clean_to or args.mask_to:
+        write_cover(images[0], pages[0], args, args.clean_to, args.mask_to)
+        for written in (args.clean_to, args.mask_to):
+            if written:
+                log(f"wrote {written}")
 
     if args.viz:
         draw_visualisation(images[0], pages[0], args.viz)

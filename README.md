@@ -12,6 +12,7 @@ Drop your pages in `pages/` and run:
 ./run.sh                          # OCR every image in pages/ -> pages/out/
 ./run.sh --translate              # ... and translate each bubble with ollama
 ./run.sh --translate --render     # ... and letter it back onto the page
+./run.sh --clean --mask           # or: just cover the Japanese, letter it yourself
 ```
 
 `run.sh` builds the container image the first time (a few minutes), then uses
@@ -56,7 +57,11 @@ CRAFT       bubbles      text to    one per    manga-ocr      ollama         era
 
 1. **Detect** — EasyOCR's CRAFT detector finds the text fragments (roughly one
    box per column of glyphs). EasyOCR's own line merging is switched off: its
-   thresholds assume horizontal Latin text.
+   thresholds assume horizontal Latin text, and so do its defaults —
+   `--text-threshold` and `--low-text` are set lower here (0.5 and 0.3 against
+   CRAFT's 0.7 and 0.4) because a kana scores lower per character than a Latin
+   word does. On the sample pages that finds about a fifth more fragments
+   without picking anything up off the artwork.
 2. **Segment** — the page is broken into the *shapes* text sits on. See
    [Finding the bubbles](#finding-the-bubbles).
 3. **Match** — each fragment is assigned to the smallest shape that covers it,
@@ -153,6 +158,8 @@ two groups while a pair of overlapping bubbles merged into one.
 | A real bubble treated as free text | raise `--max-bubble-ratio`, lower `--min-solidity` or raise `--max-midtone` |
 | Free text dropped as a sound effect | lower `--plain-threshold`, or `--text all` |
 | Text missed entirely | lower `--text-threshold` / `--low-text`, or raise `--mag-ratio` for small text |
+| Japanese survives the cover-up | raise `--mask-reach`, then `--erase-pad` |
+| The cover-up eats the artwork | lower `--mask-reach` and `--mask-knit` |
 | Noise picked up as text | raise `--min-fragments` or `--min-group-px` |
 | Run dies with no output (exit 137) | out of memory — see [Large pages](#large-pages) |
 
@@ -209,6 +216,68 @@ and a line of confetti; hyphens appear only when a word cannot fit at any size.
 `--render` needs `--translate`. Two bubbles drawn overlapping share one blob of
 paper; when their text also lines up they are lettered as one block across both
 — check with `--save-viz` if something looks off.
+
+## Covering the Japanese to letter it yourself
+
+If you would rather set the English by hand — in Photoshop, in a comic editor,
+or from your own script — you do not need the translator or the renderer at all.
+`--clean` writes the page with the Japanese covered in flat white, `--mask`
+writes the mask that covered it, and neither needs ollama:
+
+```bash
+./run.sh --clean --mask               # <name>.clean.png + <name>.mask.png
+./run.sh --clean --no-ocr             # fastest: no recognition model either
+```
+
+The white goes **exactly over the lettering** rather than over the box around
+it. Inside a bubble the shape of the bubble is already known, so the question is
+not "which pixels did the detector box?" but "which pixels on this piece of
+paper are not paper?" — which finds the furigana beside a kanji and the specks
+the detector never boxed, and which stops at the drawn outline, so a cover-up
+can never spill onto the artwork. What it finds is then closed up, so a column
+of type comes out as one patch to letter onto rather than a constellation of
+glyph-shaped holes.
+
+| Flag | Default | |
+| --- | --- | --- |
+| `--clean` | off | with `--out-dir`, write `<name>.clean.png` |
+| `--mask` | off | with `--out-dir`, write `<name>.mask.png` (white = covered) |
+| `--clean-to`, `--mask-to` | — | write one image to this path instead |
+| `--mask-mode` | `text` | `text`, `bubble` or `auto` — see below |
+| `--mask-colour` | `white` | any colour name or `#rrggbb` |
+| `--mask-reach` | `1.0` | how far past the detected text to look for leftovers, in glyph sizes |
+| `--mask-knit` | `0.25` | how far to close the gaps between strokes (`0` traces each glyph exactly) |
+| `--erase-pad` | `0.12` | how far to bleed past each glyph, in glyph sizes |
+
+Three shapes of cover-up, in `--mask-mode`:
+
+- **`text`** — exactly over the lettering. The default here, and what you want
+  when the artwork inside the bubble matters.
+- **`bubble`** — the whole inside of every bubble that held text. Roughly three
+  times the paint, and the most room to fit English into, which is what a
+  scanlation usually does. Text with no bubble behind it is still covered
+  tightly, because there is nothing there to fill.
+- **`auto`** — do not lay down a flat colour at all: measure the surface the
+  text was sitting on and paint *that* back, and inpaint sound effects standing
+  on artwork. This is what `--render` uses, and it is the one to pick when the
+  bubbles carry a wash or a gradient. Passing `--mask-mode` explicitly makes
+  `--render` use that mode too.
+
+Each group's JSON gains a `mask_bbox` — the box the white actually covers, and
+so the room the English has to play with:
+
+```bash
+./run.sh --clean --mask --no-ocr      # then read <name>.json for the boxes
+```
+
+Two things are worth knowing before you tune. Screentone is not paper, so a
+naive "cover everything that is not paper" swallows a whole dotted panel; tone
+dots are dropped by size, which is what tells a speck from a stroke, so a
+sound effect lettered over a dot screen is covered and the screen is not. And a
+leading `……` or a trailing `？` set in a column of its own is often not boxed by
+the detector at all — `--mask-reach` is what picks those up, since inside a
+bubble there is nothing to find but lettering. Raise it if stray marks survive;
+lower it if the utterance next to it gets caught.
 
 ## Container (podman / docker)
 
@@ -367,8 +436,14 @@ can see. Notes:
 - Pass an explicit `--canvas-size 1600` when you want the same result every run;
   free memory drifts, so `auto` may pick a different canvas on a busy machine.
 - Give the container more memory and `auto` uses it (`podman run --memory=8g`).
+- `--mag-ratio` and `--canvas-size` are not independent: the magnified long side
+  is *clamped* to the canvas, so a magnification bigger than the canvas allows is
+  silently thrown away. `auto` sizes the canvas to fit the magnification you
+  asked for (memory permitting), so `--mag-ratio 1.5` really does detect at 1.5×.
+  With an explicit `--canvas-size`, keep it at or above `mag-ratio × long side`
+  or the flag does nothing.
 - If small furigana goes missing on a low-memory machine, that is the trade —
-  more memory, or a smaller `--canvas-size` with a higher `--mag-ratio`.
+  the canvas is the detail budget, and it is bounded by the memory available.
 
 ## JSON output
 
@@ -387,6 +462,7 @@ can see. Notes:
           "translation": "Good morning",
           "kind": "bubble",
           "plainness": 1.0,
+          "mask_bbox": [848, 100, 985, 375],
           "region": {
             "bbox": [840, 100, 985, 375],
             "polarity": "light",
@@ -403,7 +479,8 @@ can see. Notes:
 ```
 
 `bbox` is `[x0, y0, x1, y1]` in pixels. `region` is the shape the text was found
-on, or `null` for free-standing text. Groups are returned in best-effort manga
+on, or `null` for free-standing text. `mask_bbox` is what `--clean`/`--mask`
+covered, and is `null` unless one of those ran. Groups are returned in best-effort manga
 reading order (top to bottom, right to left); use `--order ltr` or `--order none`
 to change that.
 

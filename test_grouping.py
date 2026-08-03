@@ -19,7 +19,7 @@ from mangatrans.detect import (
     is_memory_error,
 )
 from mangatrans.cli import canvas_size_arg, natural_key
-from mangatrans.erase import _stroke_mask, erase_text
+from mangatrans.erase import TIGHT, WHOLE, _stroke_mask, erase_text, text_mask
 from mangatrans.geometry import (
     Box,
     box_gap,
@@ -334,6 +334,114 @@ def test_erasing_a_bubble_leaves_it_blank():
 
 
 # ---------------------------------------------------------------------------
+# masking: a flat patch to letter English onto
+# ---------------------------------------------------------------------------
+
+
+def _bubble_group():
+    masks = page_masks(_synthetic_page())
+    regions = find_regions(masks)
+    held, _ = assign_regions(regions, _text_boxes())
+    group = TextGroup(
+        bbox=BUBBLE_TEXT, boxes=[BUBBLE_TEXT], kind=BUBBLE, region=held[0][0]
+    )
+    return masks, group
+
+
+def test_tight_mask_covers_every_stroke_of_the_text():
+    """The point of the tight mode: no Japanese survives inside its own box."""
+    masks, group = _bubble_group()
+    mask = text_mask(masks, [group], masks.shape, mode=TIGHT)
+
+    window = (
+        slice(BUBBLE_TEXT.y0, BUBBLE_TEXT.y1),
+        slice(BUBBLE_TEXT.x0, BUBBLE_TEXT.x1),
+    )
+    ink = ~masks.pale[window]
+    assert ink.any(), "the fixture should have lettering to cover"
+    assert not (ink & ~mask[window].astype(bool)).any(), "ink left showing"
+
+
+def test_tight_mask_hugs_the_text_instead_of_filling_the_bubble():
+    masks, group = _bubble_group()
+    tight = text_mask(masks, [group], masks.shape, mode=TIGHT)
+    whole = text_mask(masks, [group], masks.shape, mode=WHOLE)
+
+    assert np.count_nonzero(tight) < 0.75 * np.count_nonzero(whole)
+    # Both stay inside the bubble: neither may cross the drawn outline.
+    outside = np.ones(masks.shape, bool)
+    outside[BUBBLE_BOX.y0 : BUBBLE_BOX.y1, BUBBLE_BOX.x0 : BUBBLE_BOX.x1] = False
+    assert not tight[outside].any()
+    assert not whole[outside].any()
+
+
+def test_knitting_closes_the_gaps_between_glyphs_without_leaving_the_text():
+    """Closing is what makes one patch of a column of type rather than stripes."""
+    masks, group = _bubble_group()
+    # With the bleed turned down the gaps between the fixture's bars survive,
+    # which is the thing knitting exists to close.
+    def mask_for(knit):
+        return text_mask(
+            masks, [group], masks.shape, bleed_glyphs=0.0, knit_glyphs=knit, mode=TIGHT
+        )
+
+    window = (
+        slice(BUBBLE_TEXT.y0, BUBBLE_TEXT.y1),
+        slice(BUBBLE_TEXT.x0, BUBBLE_TEXT.x1),
+    )
+    traced = np.count_nonzero(mask_for(0.0)[window]) / BUBBLE_TEXT.area
+    knitted = np.count_nonzero(mask_for(0.25)[window]) / BUBBLE_TEXT.area
+
+    assert traced < 0.9, "tracing each bar should leave the gaps between them"
+    assert knitted > 0.99, "knitting should close them into one patch"
+
+
+def test_masking_with_a_colour_lays_that_colour_down_flat():
+    from PIL import Image
+
+    page = _synthetic_page()
+    masks, group = _bubble_group()
+    image = Image.fromarray(cv2.cvtColor(page, cv2.COLOR_GRAY2RGB))
+    painted = np.asarray(
+        erase_text(image, [group], masks, 0.12, mode=TIGHT, fill=(255, 0, 0))
+    )
+
+    window = (
+        slice(BUBBLE_TEXT.y0, BUBBLE_TEXT.y1),
+        slice(BUBBLE_TEXT.x0, BUBBLE_TEXT.x1),
+    )
+    ink = ~masks.pale[window]
+    assert (painted[window][ink] == (255, 0, 0)).all(), "the text should be covered"
+    # The artwork outside the bubble is not this operation's business.
+    sfx = painted[SFX_TEXT.y0 : SFX_TEXT.y1, SFX_TEXT.x0 : SFX_TEXT.x1]
+    assert not (sfx == (255, 0, 0)).all(-1).any()
+
+
+def test_masking_records_where_there_is_now_room():
+    masks, group = _bubble_group()
+    text_mask(masks, [group], masks.shape, mode=TIGHT)
+
+    assert group.mask_bbox is not None
+    # It covers the text it was built from, and stays inside the bubble.
+    assert group.mask_bbox.x0 <= BUBBLE_TEXT.x0 and group.mask_bbox.x1 >= BUBBLE_TEXT.x1
+    assert group.mask_bbox.y0 <= BUBBLE_TEXT.y0 and group.mask_bbox.y1 >= BUBBLE_TEXT.y1
+    assert group.mask_bbox.x0 >= BUBBLE_BOX.x0 and group.mask_bbox.x1 <= BUBBLE_BOX.x1
+
+
+def test_masking_free_standing_text_never_leaves_its_own_fragments():
+    """No bubble means no backing to appeal to, so the paint stays in the boxes."""
+    masks = page_masks(_synthetic_page())
+    group = TextGroup(bbox=SFX_TEXT, boxes=[SFX_TEXT], kind=ART, plainness=0.2)
+    mask = text_mask(masks, [group], masks.shape, mode=TIGHT, knit_glyphs=0.5)
+
+    allowed = np.zeros(masks.shape, bool)
+    bleed = max(2, round(0.12 * group.glyph_size))
+    grown = SFX_TEXT.padded(bleed, masks.shape[1], masks.shape[0])
+    allowed[grown.y0 : grown.y1, grown.x0 : grown.x1] = True
+    assert not mask[~allowed].any()
+
+
+# ---------------------------------------------------------------------------
 # lettering
 # ---------------------------------------------------------------------------
 
@@ -414,6 +522,21 @@ def test_auto_canvas_size_shrinks_with_the_budget():
 
 def test_auto_canvas_size_never_upscales_a_small_page():
     assert auto_canvas_size(800, 1200, 64 * 1024**3) == 1200
+
+
+def test_auto_canvas_size_makes_room_for_a_magnification():
+    """--mag-ratio is clamped by the canvas, so the canvas has to allow for it.
+
+    Without this the flag silently does nothing on any page smaller than the
+    canvas, which is every page the auto budget has already sized to itself.
+    """
+    plain = auto_canvas_size(800, 1200, 64 * 1024**3, mag_ratio=1.0)
+    magnified = auto_canvas_size(800, 1200, 64 * 1024**3, mag_ratio=2.0)
+    assert plain == 1200
+    assert magnified == 2400
+    # ... but never past the ceiling, and never past what the memory allows.
+    assert auto_canvas_size(2894, 4093, 64 * 1024**3, mag_ratio=4.0) == CANVAS_MAX
+    assert auto_canvas_size(800, 1200, DETECT_BASE_BYTES, mag_ratio=4.0) == CANVAS_MIN
 
 
 def test_auto_canvas_size_stays_within_bounds():

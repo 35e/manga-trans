@@ -355,14 +355,27 @@ def render_page(path, page, out_path, masks, args) -> int:
     import numpy as np  # noqa: PLC0415
     from PIL import Image, ImageDraw, ImageOps  # noqa: PLC0415
 
-    from .erase import erase_text  # noqa: PLC0415
+    from .erase import AUTO, KNIT_GLYPHS, WIPE_GLYPHS, colour, erase_text  # noqa: PLC0415
     from .regions import page_masks  # noqa: PLC0415
 
     image = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
     size = image.size
 
+    # Rendering measures the surface under the text unless told otherwise: it is
+    # about to draw on the result, so a bubble carrying a wash should come back
+    # carrying it. --mask-mode is how you ask for flat colour instead.
+    mode = getattr(args, "mask_mode", None) or AUTO
     lettered = [g for g in page.groups if g.translation.strip()]
-    image = erase_text(image, lettered, masks, args.erase_pad)
+    image = erase_text(
+        image,
+        lettered,
+        masks,
+        args.erase_pad,
+        mode=mode,
+        fill=None if mode == AUTO else colour(args.mask_colour),
+        knit_glyphs=getattr(args, "mask_knit", KNIT_GLYPHS),
+        reach_glyphs=getattr(args, "mask_reach", WIPE_GLYPHS),
+    )
     # Where the type may go is decided against the cleaned page, not the
     # original: the space a bubble offers is the space it has once emptied.
     cleaned = page_masks(np.array(image.convert("L")))
