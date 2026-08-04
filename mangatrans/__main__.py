@@ -21,8 +21,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--out",
         type=Path,
-        default=os.environ.get("MANGA_TRANS_OUT"),
-        help="where overlaid pages are written (default: <pages>/out)",
+        default=Path(os.environ.get("MANGA_TRANS_OUT", "out")),
+        help="where overlaid pages are written (default: out)",
     )
     parser.add_argument("--host", default=os.environ.get("MANGA_TRANS_HOST", "127.0.0.1"))
     parser.add_argument(
@@ -37,7 +37,7 @@ def parse_args(argv=None):
 
 def main(argv=None) -> None:
     args = parse_args(argv)
-    pages = Pages(args.pages, args.out or args.pages / "out")
+    pages = Pages(args.pages, args.out)
     backend = Backend(
         pages,
         model=args.model,

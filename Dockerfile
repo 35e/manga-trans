@@ -31,15 +31,16 @@ RUN if [ "$PREFETCH_MODELS" = "true" ]; then python /app/scripts/fetch_models.py
 
 # uid 10001, group 0 so the image also runs under `--user $(id -u):$(id -g)`.
 RUN useradd --uid 10001 --gid 0 --create-home --home-dir /home/appuser appuser \
-    && mkdir -p /opt/models /pages \
-    && chown -R 10001:0 /opt/models /pages \
-    && chmod -R a+rX,g+rwX /opt/models /pages
+    && mkdir -p /opt/models /pages /out \
+    && chown -R 10001:0 /opt/models /pages /out \
+    && chmod -R a+rX,g+rwX /opt/models /pages /out
 
 USER 10001
 
 # With the weights baked in, transformers must not phone home: it HEAD-requests
 # the model files on every start, which fails outright with no network.
 ENV MANGA_TRANS_PAGES=/pages \
+    MANGA_TRANS_OUT=/out \
     MANGA_TRANS_HOST=0.0.0.0 \
     MANGA_TRANS_PORT=8000 \
     OLLAMA_URL=http://host.containers.internal:11434 \
@@ -47,7 +48,7 @@ ENV MANGA_TRANS_PAGES=/pages \
     HF_HUB_OFFLINE=${PREFETCH_MODELS}
 
 WORKDIR /app
-VOLUME ["/pages"]
+VOLUME ["/pages", "/out"]
 EXPOSE 8000
 
 ENTRYPOINT ["python", "-m", "mangatrans"]

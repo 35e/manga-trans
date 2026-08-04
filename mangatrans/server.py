@@ -158,6 +158,7 @@ def create_app(backend: Backend) -> Flask:
             regions.append(
                 {
                     "box": block.box.as_list(),
+                    "text_box": block.box.as_list(),
                     "confidence": round(block.confidence, 3),
                     "text": text,
                     "translation": "",
@@ -182,17 +183,37 @@ def create_app(backend: Backend) -> Flask:
         )
         return jsonify(translations=translations)
 
+    @app.get("/api/font")
+    def font():
+        """The very font the page is lettered with, for the browser to preview in."""
+        path = render.font_file(backend.font)
+        if path is None:
+            raise FileNotFoundError("no font file: the built-in one is being used")
+        return send_file(path, mimetype="font/ttf")
+
     @app.post("/api/render")
     def render_page():
         name = request.json["page"]
         image, detection = backend.page(name)
         regions = [
-            (Box.from_list(region["box"]), str(region.get("text", "")))
+            render.Region(
+                box=Box.from_list(region["box"]),
+                text=str(region.get("text", "")),
+                text_box=(
+                    Box.from_list(region["text_box"]) if region.get("text_box") else None
+                ),
+            )
             for region in request.json["regions"]
         ]
         result = render.overlay(image, detection.mask, regions, backend.font)
         path = pages.output(name)
-        result.save(path)
-        return jsonify(output=path.name, url=f"/api/output/{name}")
+        result.image.save(path)
+        return jsonify(
+            output=path.name,
+            url=f"/api/output/{name}",
+            blank=result.blank,
+            overflow=result.overflow,
+            tight=result.tight,
+        )
 
     return app

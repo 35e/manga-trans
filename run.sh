@@ -29,7 +29,7 @@ fi
 if [ "$engine" = "podman" ]; then
     image=${MANGA_TRANS_IMAGE:-localhost/manga-trans:latest}
     # Map the host user onto the container's uid/gid so files written to
-    # pages/out/ belong to you rather than to root.
+    # out/ belong to you rather than to root.
     id_args=(--userns="keep-id:uid=10001,gid=10001")
     host_alias=host.containers.internal
 else
@@ -61,17 +61,18 @@ esac
 "$engine" image inspect "$image" >/dev/null 2>&1 || build
 
 port=${PORT:-8000}
-mkdir -p pages/out
-mount=./pages:/pages
-# SELinux hosts (Fedora/RHEL) refuse the mount without a relabel.
+mkdir -p pages out
+suffix=
+# SELinux hosts (Fedora/RHEL) refuse the mounts without a relabel.
 if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled 2>/dev/null; then
-    mount=$mount:Z
+    suffix=:Z
 fi
 
 echo "run.sh: open http://localhost:$port" >&2
 exec "$engine" run --rm --init \
     -p "$port:8000" \
-    -v "$mount" \
+    -v "./pages:/pages$suffix" \
+    -v "./out:/out$suffix" \
     "${id_args[@]}" \
     -e "OLLAMA_URL=${OLLAMA_URL:-http://$host_alias:11434}" \
     ${OLLAMA_MODEL:+-e "OLLAMA_MODEL=$OLLAMA_MODEL"} \

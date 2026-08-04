@@ -10,11 +10,12 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Host folder with the manga pages <-> working directory in the container.
+      # The manga pages go in, the overlaid copies come out.
       # On SELinux hosts (Fedora/RHEL) append :Z -> ./pages:/pages:Z
       - ./pages:/pages
+      - ./out:/out
     # Rootless podman: map your host user onto the container's uid/gid 10001 so
-    # files written to ./pages are owned by you. Remove this line on docker and
+    # files written to ./out are owned by you. Remove this line on docker and
     # use `user: "${UID:-1000}:${GID:-1000}"` instead.
     userns_mode: "keep-id:uid=10001,gid=10001"
     environment:

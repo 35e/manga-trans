@@ -17,7 +17,7 @@ Drop your pages in `pages/`, then:
 ```
 
 Open <http://localhost:8000>. Pick a page on the left; detection, OCR and
-translation run on their own. Then:
+translation run on their own. Then, in **regions**:
 
 - **drag a box** to move it, **drag a handle** to resize it — the crop is read
   again the moment you let go, so making a region larger is how you pick up the
@@ -25,12 +25,23 @@ translation run on their own. Then:
 - **drag on empty picture** to add a region the detector never found
 - **edit the English** in the panel on the right, or write it yourself
 - **untick approve** for anything you want left alone
-- **Overlay approved** covers the Japanese and letters your English into each
-  box, writing the page to `pages/out/`
 
-The box you drag is the whole contract: it is what gets read, what gets covered,
-and where the English is set. A tall narrow bubble gives tall narrow English —
-widen the box and the type grows to match.
+and in **text**, each translation appears set on the page in the font it will be
+printed in, in a box of its own:
+
+- **drag it** to put the English somewhere other than the bubble it came from,
+  **drag a handle** to give it more room; the type resizes as you go
+- the box turns amber when the words only fit by hyphenating, and thickens when
+  they run outside it altogether — both mean give it more room
+- **re-place** on the card puts it back over its region
+
+**Overlay approved** then covers the Japanese and letters your English in,
+writing the page to `out/`, and says which regions to look at again.
+
+A region is cleaned where its box is and lettered where its text box is. Until
+you move one they are the same box, so widening a region still grows the type to
+match; move it and the two come apart, which is how you get a wide line of
+English out of a tall narrow bubble.
 
 ## Install
 
@@ -116,7 +127,7 @@ Every flag has an environment variable, which is what the container uses:
 | flag | variable | default |
 | --- | --- | --- |
 | `--pages` | `MANGA_TRANS_PAGES` | `pages` |
-| `--out` | `MANGA_TRANS_OUT` | `<pages>/out` |
+| `--out` | `MANGA_TRANS_OUT` | `out` |
 | `--host` | `MANGA_TRANS_HOST` | `127.0.0.1` |
 | `--port` | `MANGA_TRANS_PORT` | `8000` |
 | `--model` | `MANGA_TRANS_MODEL` | `~/.cache/manga-trans/comictextdetector.pt.onnx` |

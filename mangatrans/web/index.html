@@ -14,6 +14,10 @@
     <button id="detect" disabled>Detect text</button>
     <button id="translate" disabled>Translate</button>
     <button id="overlay" class="primary" disabled>Overlay approved</button>
+    <span class="seg">
+      <button id="pick-boxes" class="on" title="drag what gets read and cleaned">regions</button>
+      <button id="pick-text" title="drag where the English is set">text</button>
+    </span>
     <span class="spacer"></span>
     <button id="zoom-out" title="zoom out">&minus;</button>
     <button id="zoom-in" title="zoom in">+</button>
@@ -33,9 +37,10 @@
   </aside>
 
   <section id="viewer">
-    <div id="stage">
+    <div id="stage" class="boxes">
       <img id="page" alt="">
       <img id="result" alt="" hidden>
+      <div id="texts"></div>
       <div id="boxes"></div>
     </div>
     <p id="empty">Pick a page on the left. Drag on the picture to add a region.</p>
@@ -45,6 +50,10 @@
     <ul id="regions"></ul>
   </aside>
 </main>
+
+<!-- Off-page, at the page's own scale: where a line of English is measured
+     before it is set, the same way render.py measures it. -->
+<div id="ruler" aria-hidden="true"></div>
 
 <script src="app.js"></script>
 </body>

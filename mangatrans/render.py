@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -30,52 +31,161 @@ SPECK = 0.012
 # anything above this still has artwork in it, and type needs a halo to stay
 # readable on top of it.
 BUSY = 12.0
+# Mean tone below which the cleaned paper counts as dark and the type goes white.
+DARK = 128.0
+# Characters that may not begin a line.
+TAIL = ",.!?;:'\"’”)]}»"
+
+
+@functools.lru_cache(maxsize=8)
+def font_file(path: str | None = None) -> str | None:
+    """The font file that will actually be used, or None for PIL's own.
+
+    The browser is shown the same file, so the preview you drag around is set in
+    the typeface that ends up on the page.
+    """
+    for candidate in [path] if path else FONTS:
+        try:
+            ImageFont.truetype(candidate, 12)
+        except OSError:
+            continue
+        return candidate
+    return None
 
 
 @functools.lru_cache(maxsize=128)
 def load_font(path: str | None, size: int):
-    for candidate in [path] if path else FONTS:
-        try:
-            return ImageFont.truetype(candidate, size)
-        except OSError:
-            continue
-    return ImageFont.load_default(size=size)
+    chosen = font_file(path)
+    if chosen is None:
+        return ImageFont.load_default(size=size)
+    return ImageFont.truetype(chosen, size)
+
+
+@dataclass(frozen=True)
+class Layout:
+    """One block of text set at one size, and how well it took to its box."""
+
+    font: object
+    block: str
+    spacing: float
+    fits: bool
+    whole: bool = True  # no word had to be hyphenated to make the lines
+
+
+@dataclass(frozen=True)
+class Region:
+    """A box to clean, the words to set, and the box to set them in."""
+
+    box: Box
+    text: str = ""
+    text_box: Box | None = None
+
+    @property
+    def where(self) -> Box:
+        """Where the words go, which is over the region unless it was moved."""
+        return self.box if self.text_box is None else self.text_box
+
+
+@dataclass
+class Rendered:
+    """The overlaid page, with the regions that have something to answer for.
+
+    Each list holds the indexes of regions the caller ought to look at again:
+    ones covered with nothing set in them, ones whose words ran outside their
+    box, and ones only fitted by hyphenating. All three are fixed the same way —
+    give the region more room, or fewer words.
+    """
+
+    image: Image.Image
+    blank: list[int] = field(default_factory=list)
+    overflow: list[int] = field(default_factory=list)
+    tight: list[int] = field(default_factory=list)
+
+
+def split(word: str, font, max_width: float) -> list[str]:
+    """Break a word wider than the line, hyphenating where it breaks."""
+    pieces: list[str] = []
+    current = ""
+    for char in word:
+        over = bool(current) and font.getlength(f"{current}{char}-") > max_width
+        if over and char not in TAIL:
+            pieces.append(f"{current}-")
+            current = char
+        else:
+            # Punctuation is let over the edge rather than sent down alone: a
+            # line opening with a comma reads worse than a line a hair too long.
+            current += char
+    pieces.append(current)
+    return pieces
 
 
 def wrap(text: str, font, max_width: float) -> list[str]:
-    """Greedy word wrap measured with the font itself."""
+    """Greedy word wrap measured with the font itself.
+
+    A word too wide for the line is broken rather than left hanging over the
+    edge. One over-wide word used to make a whole translation unfittable, and an
+    unfittable translation was not drawn at all.
+    """
     lines: list[str] = []
     current = ""
     for word in text.split():
         candidate = f"{current} {word}" if current else word
         if current and font.getlength(candidate) > max_width:
             lines.append(current)
-            current = word
-        else:
-            current = candidate
+            candidate = word
+        current = candidate
+        if font.getlength(current) > max_width:
+            *broken, current = split(current, font, max_width)
+            lines.extend(broken)
     if current:
         lines.append(current)
     return lines
 
 
-def fit(draw, text: str, box: Box, font_path: str | None):
-    """Largest font size at which ``text`` wraps inside ``box``."""
-    lo, hi, best = FONT_MIN, max(FONT_MIN, box.h), None
+def measure(draw, layout: Layout):
+    return draw.multiline_textbbox(
+        (0, 0), layout.block, font=layout.font, spacing=layout.spacing, align="center"
+    )
+
+
+def set_at(draw, text: str, box: Box, font_path: str | None, size: int) -> Layout:
+    """Wrap ``text`` to ``box`` at one font size and see whether it lands."""
+    font = load_font(font_path, size)
+    block = "\n".join(wrap(text, font, max(1, box.w)))
+    layout = Layout(font, block, size * LINE_SPACING, fits=True)
+    left, top, right, bottom = measure(draw, layout)
+    return replace(layout, fits=right - left <= box.w and bottom - top <= box.h)
+
+
+def largest(draw, text: str, box: Box, font_path: str | None, whole: bool):
+    """Largest size that lands in ``box``; ``whole`` also forbids splitting a word."""
+    lo, hi = FONT_MIN, max(FONT_MIN, box.h)
+    best = None
     while lo <= hi:
         size = (lo + hi) // 2
-        font = load_font(font_path, size)
-        lines = wrap(text, font, box.w)
-        spacing = size * LINE_SPACING
-        block = "\n".join(lines)
-        left, top, right, bottom = draw.multiline_textbbox(
-            (0, 0), block, font=font, spacing=spacing, align="center"
+        layout = set_at(draw, text, box, font_path, size)
+        splits = whole and any(
+            layout.font.getlength(word) > box.w for word in text.split()
         )
-        if right - left <= box.w and bottom - top <= box.h:
-            best = (font, block, spacing)
-            lo = size + 1
+        if layout.fits and not splits:
+            best, lo = layout, size + 1
         else:
             hi = size - 1
     return best
+
+
+def fit(draw, text: str, box: Box, font_path: str | None) -> Layout:
+    """The way to set ``text`` in ``box``: whole words, else broken, else too big.
+
+    Nothing at all used to be drawn when even the smallest type overran the box,
+    so a bubble the detector drew too tight came out cleaned and empty. Type
+    that runs over its box can at least be read — and then moved.
+    """
+    kept = largest(draw, text, box, font_path, whole=True)
+    if kept is not None:
+        return kept
+    broken = largest(draw, text, box, font_path, whole=False)
+    return replace(broken or set_at(draw, text, box, font_path, FONT_MIN), whole=False)
 
 
 def glyph_size(ink) -> float:
@@ -164,52 +274,64 @@ def cover(pixels, grey, mask, box: Box) -> bool:
     return dark_paper
 
 
-def letter(draw, box: Box, text: str, font_path, dark: bool, busy: bool = False):
-    """Set ``text`` into ``box``, as large as it will go."""
+def letter(draw, box: Box, text: str, font_path, dark: bool, busy: bool = False) -> Layout:
+    """Set ``text`` into ``box``, as large as it will go, and say how it went.
+
+    It is drawn whatever the answer: an unfittable line is still worth reading.
+    """
     inset = max(1, round(INSET * min(box.w, box.h)))
     area = Box(box.x0 + inset, box.y0 + inset, box.x1 - inset, box.y1 - inset)
     if area.w < FONT_MIN or area.h < FONT_MIN:
-        return False
+        area = box  # too small to give any of it away to a margin
 
-    fitted = fit(draw, text, area, font_path)
-    if fitted is None:
-        return False
-
-    font, block, spacing = fitted
-    left, top, right, bottom = draw.multiline_textbbox(
-        (0, 0), block, font=font, spacing=spacing, align="center"
-    )
+    layout = fit(draw, text, area, font_path)
+    left, top, right, bottom = measure(draw, layout)
     ink, paper = ("white", "black") if dark else ("black", "white")
     draw.multiline_text(
         (area.cx - (right - left) / 2 - left, area.cy - (bottom - top) / 2 - top),
-        block,
-        font=font,
+        layout.block,
+        font=layout.font,
         fill=ink,
-        spacing=spacing,
+        spacing=layout.spacing,
         align="center",
-        stroke_width=max(1, font.size // 12) if busy else 0,
+        stroke_width=max(1, layout.font.size // 12) if busy else 0,
         stroke_fill=paper,
     )
-    return True
+    return layout
 
 
-def overlay(image, mask, regions: list[tuple[Box, str]], font_path: str | None = None):
+def overlay(
+    image, mask, regions: list[Region], font_path: str | None = None
+) -> Rendered:
     """Return a copy of ``image`` with each region covered and its text set in it."""
     pixels = np.array(image.convert("RGB"))
     grey = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY)
     height, width = grey.shape[:2]
 
-    boxes = [box.clipped(width, height) for box, _text in regions]
-    dark = [box.area > 0 and cover(pixels, grey, mask, box) for box in boxes]
+    for region in regions:
+        box = region.box.clipped(width, height)
+        if box.area > 0:
+            cover(pixels, grey, mask, box)
 
     out = Image.fromarray(pixels)
     draw = ImageDraw.Draw(out)
-    # Measured on the cleaned page: what is left in a region decides whether the
-    # type needs a halo to sit on it.
+    # Read off the cleaned page, so the colour of the type is decided by the
+    # paper it is actually going onto rather than by a guess at what was there.
     cleaned = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY)
-    for box, (_box, text), dark_paper in zip(boxes, regions, dark):
-        if not text.strip() or box.area <= 0:
+
+    rendered = Rendered(out)
+    for index, region in enumerate(regions):
+        text = region.text.strip()
+        box = region.where.clipped(width, height)
+        if not text or box.area <= 0:
+            rendered.blank.append(index)
             continue
-        busy = float(cleaned[box.y0 : box.y1, box.x0 : box.x1].std()) > BUSY
-        letter(draw, box, text.strip(), font_path, dark_paper, busy)
-    return out
+        patch = cleaned[box.y0 : box.y1, box.x0 : box.x1]
+        dark = float(patch.mean()) < DARK
+        busy = float(patch.std()) > BUSY
+        layout = letter(draw, box, text, font_path, dark, busy)
+        if not layout.fits:
+            rendered.overflow.append(index)
+        elif not layout.whole:
+            rendered.tight.append(index)
+    return rendered
