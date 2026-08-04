@@ -46,17 +46,19 @@ class TestFitting(unittest.TestCase):
 
     def test_wrap_breaks_lines_to_width(self):
         font = render.load_font(None, 20)
-        lines = render.wrap("one two three four five six", font, 120)
+        lines, whole = render.wrap("one two three four five six", font, 120)
         self.assertEqual(" ".join(lines), "one two three four five six")
         self.assertGreater(len(lines), 1)
         self.assertTrue(all(font.getlength(line) <= 120 for line in lines))
+        self.assertTrue(whole)
 
     def test_a_word_too_long_for_the_width_is_broken(self):
         font = render.load_font(None, 20)
-        lines = render.wrap("supercalifragilistic", font, 60)
+        lines, whole = render.wrap("supercalifragilistic", font, 60)
         self.assertGreater(len(lines), 1)
         self.assertTrue(all(font.getlength(line) <= 60 for line in lines))
         self.assertEqual("".join(lines).replace("-", ""), "supercalifragilistic")
+        self.assertFalse(whole)
 
     def test_fit_stays_within_the_box(self):
         box = Box(0, 0, 160, 90)
@@ -82,7 +84,7 @@ class TestFitting(unittest.TestCase):
 
     def test_punctuation_does_not_get_a_line_of_its_own(self):
         font = render.load_font(None, 20)
-        lines = render.wrap("unbelievable, really", font, 60)
+        lines, _ = render.wrap("unbelievable, really", font, 60)
         self.assertFalse(any(line.lstrip().startswith(",") for line in lines))
 
     def test_a_box_too_tight_for_the_words_still_gets_them(self):
@@ -114,9 +116,8 @@ class TestCover(unittest.TestCase):
         pixels = np.array(image)
         grey = np.array(image.convert("L"))
         box = Box(45, 35, 155, 85)
-        dark_paper = render.cover(pixels, grey, None, box)
+        render.cover(pixels, grey, None, box)
         inside = pixels[box.y0 : box.y1, box.x0 : box.x1]
-        self.assertFalse(dark_paper)
         self.assertGreater(inside.min(), 200)
 
     def test_light_text_on_a_dark_plate_is_covered_too(self):
@@ -126,8 +127,8 @@ class TestCover(unittest.TestCase):
             draw.rectangle((x, 42, x + 6, 78), fill="white")
         pixels = np.array(image)
         box = Box(40, 35, 160, 85)
-        dark_paper = render.cover(pixels, np.array(image.convert("L")), None, box)
-        self.assertTrue(dark_paper)
+        render.cover(pixels, np.array(image.convert("L")), None, box)
+        # Only the dark-plate branch fills the box back in with black.
         self.assertLess(pixels[box.y0 : box.y1, box.x0 : box.x1].max(), 60)
 
     def test_nothing_outside_the_box_is_touched(self):
@@ -257,8 +258,6 @@ class TestServer(unittest.TestCase):
         self.assertEqual(body["width"], 200)
         self.assertEqual(len(body["regions"]), 1)
         self.assertEqual(body["regions"][0]["text"], "こんにちは")
-        # The English starts out over the region it was read from.
-        self.assertEqual(body["regions"][0]["text_box"], body["regions"][0]["box"])
         self.assertIsNone(body["warning"])
 
     def test_detect_survives_manga_ocr_missing(self):

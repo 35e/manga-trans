@@ -83,10 +83,8 @@ async function openPage(name) {
   state.counter = 0;
   el.page.src = `/api/image/${encodeURIComponent(name)}`;
   el.empty.hidden = true;
-  el.result.hidden = true;
-  el.boxes.hidden = false;
-  el.texts.hidden = false;
   el.showResult.checked = false;
+  showResult();
   el.showResult.disabled = true;
   el.download.hidden = true;
   enable(true);
@@ -102,7 +100,6 @@ function newRegion(box, extra = {}) {
     id: ++state.counter,
     box,
     textBox: [...box],
-    moved: false,
     text: "",
     translation: "",
     confidence: 1,
@@ -112,6 +109,9 @@ function newRegion(box, extra = {}) {
     ...extra,
   };
 }
+
+/** Whether the English has been put somewhere other than over its region. */
+const moved = (region) => region.textBox.join() !== region.box.join();
 
 async function detect() {
   const data = await run("detecting text…", () => api("/api/detect", { page: state.page }));
@@ -237,23 +237,30 @@ function handles() {
   });
 }
 
+/** A draggable overlay node: tagged with its region, placed, and resizable. */
+function layerNode(className, region, box) {
+  const node = document.createElement("div");
+  node.className = className;
+  node.dataset.id = region.id;
+  node.classList.toggle("active", region.id === state.selected);
+  place(node, box);
+  node.append(...handles());
+  return node;
+}
+
 function drawBoxes() {
   if (!state.width) {
     el.boxes.replaceChildren();
     return;
   }
   el.boxes.replaceChildren(...state.regions.map((region, index) => {
-    const node = document.createElement("div");
-    node.className = "region";
-    node.dataset.id = region.id;
-    node.classList.toggle("active", region.id === state.selected);
+    const node = layerNode("region", region, region.box);
     node.classList.toggle("low", region.confidence < LOW_CONFIDENCE);
     node.classList.toggle("off", !region.approved);
-    place(node, region.box);
     const tag = document.createElement("span");
     tag.className = "tag";
     tag.textContent = index + 1;
-    node.append(tag, ...handles());
+    node.prepend(tag);
     return node;
   }));
 }
@@ -310,15 +317,16 @@ function setType(node, region) {
   const [width, height] = [x1 - x0, y1 - y0];
   const inset = Math.max(1, Math.round(INSET * Math.min(width, height)));
   const room = [width - 2 * inset, height - 2 * inset];
-  const [across, down] = room[0] >= FONT_MIN && room[1] >= FONT_MIN
-    ? room : [width, height];
+  // A box too small to inset is used edge to edge rather than left with no room.
+  const roomy = room[0] >= FONT_MIN && room[1] >= FONT_MIN;
+  const [across, down] = roomy ? room : [width, height];
   const text = region.translation.trim();
   const { size, fits, whole } = typeSize(text, across, down);
 
   const type = node.querySelector(".type");
   const cqw = (value) => `${(value / Math.max(1, width)) * 100}cqw`;
   type.style.fontSize = cqw(size);
-  type.style.padding = `${cqw((height - down) / 2)} ${cqw((width - across) / 2)}`;
+  type.style.padding = cqw(roomy ? inset : 0);
   node.querySelector(".line").textContent = text;
   region.trouble = fits ? (whole ? "" : "hyphenated to fit") : "runs over its box";
   node.classList.toggle("over", !fits);
@@ -335,17 +343,13 @@ function drawTexts() {
   el.texts.replaceChildren(...state.regions
     .filter((region) => region.approved && region.translation.trim())
     .map((region) => {
-      const node = document.createElement("div");
-      node.className = "textbox";
-      node.dataset.id = region.id;
-      node.classList.toggle("active", region.id === state.selected);
-      place(node, region.textBox);
+      const node = layerNode("textbox", region, region.textBox);
       const type = document.createElement("div");
       type.className = "type";
       const line = document.createElement("div");
       line.className = "line";
       type.append(line);
-      node.append(type, ...handles());
+      node.prepend(type);
       setType(node, region);
       return node;
     }));
@@ -397,11 +401,10 @@ function card(region, index) {
   };
 
   const replace = node.querySelector(".replace");
-  replace.hidden = !region.moved;
+  replace.hidden = !moved(region);
   replace.title = "put the English back over its region";
   replace.onclick = () => {
     region.textBox = [...region.box];
-    region.moved = false;
     draw();
   };
 
@@ -453,9 +456,11 @@ function dragged(origin, mode, dx, dy) {
 
 /** Move the region's box, bringing its English along unless that was placed. */
 function moveBox(region, box) {
+  // Asked before the new box lands, or every move would look like a placement.
+  const placed = moved(region);
   region.box = box;
   place(shown(el.boxes, region), box);
-  if (region.moved) return;
+  if (placed) return;
   region.textBox = [...box];
   const text = shown(el.texts, region);
   if (text) {
@@ -466,7 +471,6 @@ function moveBox(region, box) {
 
 function moveText(region, box) {
   region.textBox = box;
-  region.moved = true;
   const text = shown(el.texts, region);
   place(text, box);
   setType(text, region);
@@ -474,7 +478,6 @@ function moveText(region, box) {
 
 function grab(event, mode, origin, apply, drop) {
   const from = imagePoint(event);
-  const before = origin.join();
   event.preventDefault();
   el.stage.setPointerCapture(event.pointerId);
 
@@ -487,7 +490,7 @@ function grab(event, mode, origin, apply, drop) {
     el.stage.removeEventListener("pointermove", onMove);
     el.stage.removeEventListener("pointerup", onUp);
     el.stage.releasePointerCapture(event.pointerId);
-    drop(before);
+    drop();
   };
 
   el.stage.addEventListener("pointermove", onMove);
@@ -504,15 +507,11 @@ el.stage.addEventListener("pointerdown", (event) => {
     if (!hit) return;
     const region = byId(hit.dataset.id);
     const origin = [...region.textBox];
-    const placed = region.moved;
     select(region.id);
     grab(event, event.target.dataset.dir || "move", origin,
       (box) => moveText(region, box),
       () => {
-        if (tooSmall(region.textBox)) {
-          region.textBox = origin;
-          region.moved = placed;
-        }
+        if (tooSmall(region.textBox)) region.textBox = origin;
         draw();
       });
     return;
@@ -536,7 +535,7 @@ el.stage.addEventListener("pointerdown", (event) => {
   }
 
   const origin = [...region.box];
-  grab(event, mode, origin, (box) => moveBox(region, box), (before) => {
+  grab(event, mode, origin, (box) => moveBox(region, box), () => {
     if (tooSmall(region.box)) {
       if (fresh) return removeRegion(region.id);
       moveBox(region, origin);
@@ -544,7 +543,7 @@ el.stage.addEventListener("pointerdown", (event) => {
       return;
     }
     draw();
-    if (region.box.join() !== before) reread(region);
+    if (region.box.join() !== origin.join()) reread(region);
   });
 });
 

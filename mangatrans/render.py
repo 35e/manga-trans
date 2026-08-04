@@ -119,8 +119,8 @@ def split(word: str, font, max_width: float) -> list[str]:
     return pieces
 
 
-def wrap(text: str, font, max_width: float) -> list[str]:
-    """Greedy word wrap measured with the font itself.
+def wrap(text: str, font, max_width: float) -> tuple[list[str], bool]:
+    """Greedy word wrap measured with the font itself, and whether it broke a word.
 
     A word too wide for the line is broken rather than left hanging over the
     edge. One over-wide word used to make a whole translation unfittable, and an
@@ -128,6 +128,7 @@ def wrap(text: str, font, max_width: float) -> list[str]:
     """
     lines: list[str] = []
     current = ""
+    whole = True
     for word in text.split():
         candidate = f"{current} {word}" if current else word
         if current and font.getlength(candidate) > max_width:
@@ -137,9 +138,11 @@ def wrap(text: str, font, max_width: float) -> list[str]:
         if font.getlength(current) > max_width:
             *broken, current = split(current, font, max_width)
             lines.extend(broken)
+            # A word too narrow to break comes back in one piece: nothing split.
+            whole = whole and not broken
     if current:
         lines.append(current)
-    return lines
+    return lines, whole
 
 
 def measure(draw, layout: Layout):
@@ -151,8 +154,8 @@ def measure(draw, layout: Layout):
 def set_at(draw, text: str, box: Box, font_path: str | None, size: int) -> Layout:
     """Wrap ``text`` to ``box`` at one font size and see whether it lands."""
     font = load_font(font_path, size)
-    block = "\n".join(wrap(text, font, max(1, box.w)))
-    layout = Layout(font, block, size * LINE_SPACING, fits=True)
+    lines, unbroken = wrap(text, font, max(1, box.w))
+    layout = Layout(font, "\n".join(lines), size * LINE_SPACING, True, unbroken)
     left, top, right, bottom = measure(draw, layout)
     return replace(layout, fits=right - left <= box.w and bottom - top <= box.h)
 
@@ -164,10 +167,7 @@ def largest(draw, text: str, box: Box, font_path: str | None, whole: bool):
     while lo <= hi:
         size = (lo + hi) // 2
         layout = set_at(draw, text, box, font_path, size)
-        splits = whole and any(
-            layout.font.getlength(word) > box.w for word in text.split()
-        )
-        if layout.fits and not splits:
+        if layout.fits and (layout.whole or not whole):
             best, lo = layout, size + 1
         else:
             hi = size - 1
@@ -185,7 +185,7 @@ def fit(draw, text: str, box: Box, font_path: str | None) -> Layout:
     if kept is not None:
         return kept
     broken = largest(draw, text, box, font_path, whole=False)
-    return replace(broken or set_at(draw, text, box, font_path, FONT_MIN), whole=False)
+    return broken or set_at(draw, text, box, font_path, FONT_MIN)
 
 
 def glyph_size(ink) -> float:
@@ -231,22 +231,22 @@ def _drop_specks(ink, glyph: float):
     return keep[labels]
 
 
-def cover(pixels, grey, mask, box: Box) -> bool:
+def cover(pixels, grey, mask, box: Box) -> None:
     """Paint the surface the lettering sat on back over it.
 
     A greyscale closing removes everything narrower than the brush and darker
     than its surroundings, which is exactly what lettering is, and leaves the
     paper behind with its shading intact. Light text on a dark plate is the same
-    operation the other way up. Returns whether that paper was the dark one.
+    operation the other way up.
     """
     ink = ink_of(grey, mask, box)
     if not ink.any():
-        return False
+        return
 
     glyph = glyph_size(ink) or min(box.w, box.h)
     ink = _drop_specks(ink, glyph)
     if not ink.any():
-        return False
+        return
 
     patch_grey = grey[box.y0 : box.y1, box.x0 : box.x1]
     paper = patch_grey[~ink]
@@ -271,7 +271,6 @@ def cover(pixels, grey, mask, box: Box) -> bool:
     y, x = box.y0 - window.y0, box.x0 - window.x0
     local[y : y + box.h, x : x + box.w] = solid > 0
     patch[local] = background[local]
-    return dark_paper
 
 
 def letter(draw, box: Box, text: str, font_path, dark: bool, busy: bool = False) -> Layout:

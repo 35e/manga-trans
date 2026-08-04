@@ -158,7 +158,6 @@ def create_app(backend: Backend) -> Flask:
             regions.append(
                 {
                     "box": block.box.as_list(),
-                    "text_box": block.box.as_list(),
                     "confidence": round(block.confidence, 3),
                     "text": text,
                     "translation": "",
