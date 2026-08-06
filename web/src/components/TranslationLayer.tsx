@@ -1,6 +1,13 @@
-import { useRef } from 'react'
+import { useMemo, useRef } from 'react'
+import { useLetteringFont } from '../hooks/useLetteringFont'
 import type { Box, Lettering } from '../lib/api'
-import { FONT_STACK, FONT_WEIGHT, LINE_HEIGHT } from '../lib/fit'
+import {
+  FONT_STACK,
+  FONT_WEIGHT,
+  LINE_HEIGHT,
+  linesFor,
+  strokeFor,
+} from '../lib/fit'
 
 /** Which edges a handle moves. */
 type Grip = 'n' | 's' | 'e' | 'w' | 'se'
@@ -76,6 +83,16 @@ function Line({
   const from = useRef<{ x: number; y: number; box: Box } | null>(null)
   const dragged = useRef(false)
   const [x0, y0, x1, y1] = set.box
+
+  // Broken here rather than by the browser: only this knows to leave a hyphen
+  // behind, and the page is drawn from the same call.
+  // Until the face is in there is nothing worth measuring against — the breaks
+  // would be the fallback's, not this font's — so it stays one line until then.
+  const fontIn = useLetteringFont()
+  const lines = useMemo(
+    () => (fontIn ? linesFor(set.text, x1 - x0, set.size) : [set.text.trim()]),
+    [set.text, set.size, x1, x0, fontIn],
+  )
 
   const grab = (event: React.PointerEvent<HTMLElement>) => {
     event.stopPropagation()
@@ -170,7 +187,7 @@ function Line({
         }}
         aria-label={`Translation ${index + 1}: ${set.text}`}
         aria-pressed={active}
-        className={`flex h-full w-full cursor-move touch-none items-center justify-center bg-white/85 px-0.5 text-center wrap-anywhere text-black transition-colors ${
+        className={`flex h-full w-full cursor-move touch-none items-center justify-center text-center text-black transition-colors ${
           active
             ? 'ring-2 ring-indigo-500'
             : 'ring-1 ring-indigo-500/30 hover:ring-indigo-500/70'
@@ -180,9 +197,21 @@ function Line({
           fontWeight: FONT_WEIGHT,
           fontSize: `${set.size * scale}px`,
           lineHeight: LINE_HEIGHT,
+          // White laid under the letters, not over them: without this the words
+          // are unreadable anywhere the art behind them is dark.
+          WebkitTextStrokeWidth: `${strokeFor(set.size) * scale}px`,
+          WebkitTextStrokeColor: '#fff',
+          paintOrder: 'stroke fill',
         }}
       >
-        {set.text}
+        <span className="block w-full">
+          {lines.map((line, at) => (
+            // Already broken to fit, so it must not be broken again.
+            <span key={at} className="block whitespace-pre">
+              {line}
+            </span>
+          ))}
+        </span>
       </button>
 
       {active &&

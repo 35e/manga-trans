@@ -1,5 +1,5 @@
 import type { Lettering } from './api'
-import { LINE_HEIGHT, fontFor, ready, wrap } from './fit'
+import { LINE_HEIGHT, fontFor, linesFor, ready, strokeFor } from './fit'
 
 /**
  * The page with the translations set into it, as a PNG.
@@ -27,8 +27,12 @@ export async function compose(
 
   context.drawImage(page, 0, 0, width, height)
   context.fillStyle = '#000'
+  context.strokeStyle = '#fff'
   context.textAlign = 'center'
   context.textBaseline = 'middle'
+  // Round joins, or the outline grows spikes off the corners of a letter.
+  context.lineJoin = 'round'
+  context.miterLimit = 2
 
   for (const line of lettering) {
     if (line === null || !line.text.trim()) continue
@@ -48,8 +52,11 @@ export async function compose(
 function set(context: CanvasRenderingContext2D, line: Lettering) {
   const [x0, y0, x1, y1] = line.box
   context.font = fontFor(line.size)
+  // Half of a stroke falls inside the letter and half outside, so it is set to
+  // twice the white wanted around it — and drawn under the fill, below.
+  context.lineWidth = strokeFor(line.size) * 2
 
-  const lines = wrap(context, line.text.trim(), x1 - x0)
+  const lines = linesFor(line.text, x1 - x0, line.size)
   const step = line.size * LINE_HEIGHT
   const middleX = (x0 + x1) / 2
   // The whole block is centred on the box, so the first line starts half a
@@ -58,7 +65,11 @@ function set(context: CanvasRenderingContext2D, line: Lettering) {
   const top = (y0 + y1) / 2 - ((lines.length - 1) * step) / 2
 
   lines.forEach((text, index) => {
-    context.fillText(text, middleX, top + index * step)
+    const y = top + index * step
+    // Stroke first, fill over it: the white sits behind the letter rather than
+    // eating into it, which is what `paint-order: stroke fill` does on the board.
+    context.strokeText(text, middleX, y)
+    context.fillText(text, middleX, y)
   })
 }
 
