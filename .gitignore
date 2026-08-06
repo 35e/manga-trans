@@ -3,10 +3,3 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
-
-# Manga pages and overlaid output mounted into the container: keep the folders,
-# ignore what you drop in them.
-pages/*
-!pages/.gitkeep
-out/*
-!out/.gitkeep

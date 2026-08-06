@@ -21,25 +21,12 @@ class Box:
         return self.y1 - self.y0
 
     @property
-    def area(self) -> int:
-        return max(0, self.w) * max(0, self.h)
-
-    @property
     def cx(self) -> float:
         return (self.x0 + self.x1) / 2
 
     @property
     def cy(self) -> float:
         return (self.y0 + self.y1) / 2
-
-    def padded(self, px: float, width: int, height: int) -> Box:
-        px = round(px)
-        return Box(
-            max(0, self.x0 - px),
-            max(0, self.y0 - px),
-            min(width, self.x1 + px),
-            min(height, self.y1 + px),
-        )
 
     def clipped(self, width: int, height: int) -> Box:
         return Box(

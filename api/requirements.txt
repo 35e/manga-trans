@@ -1,0 +1,12 @@
+# Detection runs comic-text-detector through OpenCV's ONNX backend, so no torch
+# and no onnxruntime are needed. The weights are not on PyPI; mangatrans.detect
+# fetches them on first use.
+opencv-python-headless>=4.8
+numpy>=1.26
+# 10.1 for ImageFont.load_default(size=...), used when no system font is found.
+pillow>=10.1
+# The API. 3.1 for MAX_FORM_MEMORY_SIZE, which bounds the JSON sent beside the
+# image; MAX_CONTENT_LENGTH bounds the image itself.
+flask>=3.1
+# A real WSGI server: Flask's own is for development only.
+waitress>=3.0

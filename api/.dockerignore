@@ -1,0 +1,8 @@
+.dockerignore
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# Mounted in when the tests are run, never copied into the image.
+tests/
