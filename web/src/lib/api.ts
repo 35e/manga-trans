@@ -6,6 +6,12 @@ export const API_BASE: string =
 export type Box = [number, number, number, number]
 
 export type Region = {
+  /**
+   * This block, for as long as it exists. Blocks are resized, reordered and
+   * added to by hand, so a place in the list is not a name: anything that goes
+   * away and comes back — a reading, say — finds its block by this.
+   */
+  id: string
   box: Box
   confidence: number
   /** Drawn by hand, because the detector missed it. Never sure, just certain. */
@@ -102,7 +108,20 @@ export async function detect(
   signal?: AbortSignal,
 ): Promise<Detection> {
   const response = await send('/api/detect', file, {}, signal)
-  return response.json() as Promise<Detection>
+  const found = (await response.json()) as {
+    width: number
+    height: number
+    regions: Omit<Region, 'id'>[]
+  }
+  // The API knows nothing of ids — it answers the same page the same way twice.
+  // Blocks are named here, once, as they arrive.
+  return {
+    ...found,
+    regions: found.regions.map((region) => ({
+      ...region,
+      id: crypto.randomUUID(),
+    })),
+  }
 }
 
 /**

@@ -25,7 +25,7 @@ import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, fitSize, ready } from './lib/fit'
 import type { GalleryImage } from './lib/images'
 import { formatBytes, plural } from './lib/images'
-import { insertAt, insertionFor } from './lib/order'
+import { insertAt, insertionFor, moveAt, movedIndex } from './lib/order'
 
 const said = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause)
@@ -311,11 +311,8 @@ function App() {
         held.detection.regions.map((region) => region.box),
         box,
       )
-      const regions = insertAt(held.detection.regions, at, {
-        box,
-        confidence: 1,
-        manual: true,
-      })
+      const added = { id: crypto.randomUUID(), box, confidence: 1, manual: true }
+      const regions = insertAt(held.detection.regions, at, added)
       const texts = insertAt(
         held.texts ?? held.detection.regions.map(() => ''),
         at,
@@ -352,9 +349,10 @@ function App() {
         setAnalyses((current) => {
           const now = current[id]
           if (!now?.texts) return current
-          // Found again by its box: another may have been added in the meantime.
+          // Found again by name: the list may have been added to or reordered
+          // while the reader was working.
           const where = now.detection.regions.findIndex(
-            (region) => region.box.join() === box.join(),
+            (region) => region.id === added.id,
           )
           if (where === -1) return current
           const said = [...now.texts]
@@ -368,6 +366,129 @@ function App() {
       }
     },
     [active, analyses, forPage, spread],
+  )
+
+  /**
+   * A block's box, while it is being dragged or pulled by an edge.
+   *
+   * Only the box moves here. What is inside it is read again once the drag is
+   * over rather than on every frame of it, so this stays cheap enough to run at
+   * the speed of a pointer.
+   */
+  const setRegionBox = useCallback(
+    (index: number, box: Box) => {
+      if (!active) return
+      const { id } = active
+      setAnalyses((current) => {
+        const held = current[id]
+        const region = held?.detection.regions[index]
+        if (!held || !region) return current
+        const regions = [...held.detection.regions]
+        regions[index] = { ...region, box }
+        return {
+          ...current,
+          [id]: { ...held, detection: { ...held.detection, regions } },
+        }
+      })
+    },
+    [active],
+  )
+
+  /**
+   * That drag, once it is over: read what the block says now, and keep the mask
+   * in step — the rectangle it used to cover comes back out, and where it is
+   * now goes in.
+   *
+   * This is what splitting two bubbles the detector ran together comes down to:
+   * pull this one off the second, and what it says is no longer both of them.
+   */
+  const rereadRegion = useCallback(
+    async (index: number, was: Box) => {
+      if (!active) return
+      const { id, file } = active
+      const held = analyses[id]
+      const region = held?.detection.regions[index]
+      if (!held || !region) return
+
+      const { box } = region
+      if (box.join() === was.join()) return
+
+      const mask = forPage(active)
+      if (mask && !mask.empty) {
+        mask.boxes([was], true)
+        if (!held.excluded.includes(index)) {
+          const traced = lettersHeld.current[traceKey(id, spread)]
+          if (traced) mask.letters(traced, [box])
+          else mask.boxes([box])
+        }
+      }
+
+      // Nothing has been read on this page yet, so there is nothing to bring up
+      // to date: detecting will read the lot.
+      if (!held.texts) return
+
+      setError(null)
+      setWorking({ id, stage: 'reading' })
+      try {
+        const [text] = await read(file, [box])
+        setAnalyses((current) => {
+          const now = current[id]
+          if (!now?.texts) return current
+          const where = now.detection.regions.findIndex(
+            (block) => block.id === region.id,
+          )
+          if (where === -1) return current
+          const said = [...now.texts]
+          said[where] = text ?? ''
+          return { ...current, [id]: { ...now, texts: said } }
+        })
+      } catch (cause) {
+        setError(said(cause))
+      } finally {
+        setWorking(null)
+      }
+    },
+    [active, analyses, forPage, spread],
+  )
+
+  /**
+   * A block dragged to a different place in the list.
+   *
+   * The order is a guess the detector makes — down the page, then right to left
+   * across it — and an inset panel or a caption is enough to throw it. It is
+   * also the order the page is translated in, one conversation at a time, so it
+   * is worth being able to say. Everything held against a block by its position
+   * moves along with it.
+   */
+  const moveRegion = useCallback(
+    (from: number, to: number) => {
+      if (!active || from === to) return
+      const { id } = active
+
+      setAnalyses((current) => {
+        const held = current[id]
+        if (!held?.detection.regions[from] || !held.detection.regions[to]) {
+          return current
+        }
+        return {
+          ...current,
+          [id]: {
+            ...held,
+            detection: {
+              ...held.detection,
+              regions: moveAt(held.detection.regions, from, to),
+            },
+            texts: held.texts ? moveAt(held.texts, from, to) : null,
+            excluded: held.excluded.map((index) => movedIndex(index, from, to)),
+          },
+        }
+      })
+      setLettering((current) =>
+        current[id] ? { ...current, [id]: moveAt(current[id], from, to) } : current,
+      )
+      setSelected((now) => (now === null ? now : movedIndex(now, from, to)))
+    },
+    [active],
   )
 
   /**
@@ -724,6 +845,8 @@ function App() {
           onClean={runClean}
           onRunAll={runAll}
           onAddRegion={addRegion}
+          onRegionBox={setRegionBox}
+          onRegionSettled={rereadRegion}
           onToggleExcluded={toggleExcluded}
           letters={active ? (letters[traceKey(active.id, spread)] ?? null) : null}
           onTrace={traceLetters}
@@ -763,6 +886,7 @@ function App() {
             selected={selected}
             onSelect={setSelected}
             onToggleExcluded={toggleExcluded}
+            onMove={moveRegion}
           />
         )}
 

@@ -1,3 +1,20 @@
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import type { DragEndEvent } from '@dnd-kit/core'
+import { restrictToParentElement, restrictToVerticalAxis } from '@dnd-kit/modifiers'
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { useEffect, useRef, useState } from 'react'
 import type { Analysis, Region } from '../lib/api'
 import { UNSURE } from '../lib/api'
@@ -9,6 +26,8 @@ type Props = {
   selected: number | null
   onSelect: (index: number | null) => void
   onToggleExcluded: (index: number) => void
+  /** A block dragged to a different place in the list. */
+  onMove: (from: number, to: number) => void
 }
 
 /** What the detector found and what the reader made of it, block by block. */
@@ -18,6 +37,7 @@ export function RegionsPanel({
   selected,
   onSelect,
   onToggleExcluded,
+  onMove,
 }: Props) {
   const list = useRef<HTMLUListElement>(null)
   const { regions } = analysis.detection
@@ -25,12 +45,27 @@ export function RegionsPanel({
   const excluded = new Set(analysis.excluded)
   const kept = regions.length - excluded.size
 
+  // A drag has to be told apart from a click, or picking a block out by its
+  // handle would start one. Keyboard sorting comes for free with the sensor:
+  // space to lift, arrows to move, space again to drop.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
   useEffect(() => {
     if (selected === null) return
     list.current
       ?.querySelector(`[data-index="${selected}"]`)
       ?.scrollIntoView({ block: 'nearest' })
   }, [selected])
+
+  const dropped = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    const from = regions.findIndex((region) => region.id === active.id)
+    const to = regions.findIndex((region) => region.id === over.id)
+    if (from !== -1 && to !== -1) onMove(from, to)
+  }
 
   return (
     <aside className="flex w-full shrink-0 flex-col border-slate-200 bg-white max-lg:h-72 max-lg:border-t lg:w-72 lg:border-l xl:w-96 dark:border-white/10 dark:bg-slate-950">
@@ -61,21 +96,43 @@ export function RegionsPanel({
           The detector saw no lettering here.
         </p>
       ) : (
-        <ul ref={list} className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3">
-          {regions.map((region, index) => (
-            <Block
-              key={index}
-              region={region}
-              index={index}
-              text={texts?.[index] ?? null}
-              reading={reading}
-              excluded={excluded.has(index)}
-              active={selected === index}
-              onSelect={() => onSelect(selected === index ? null : index)}
-              onToggleExcluded={() => onToggleExcluded(index)}
-            />
-          ))}
-        </ul>
+        <>
+          <p className="shrink-0 border-b border-slate-200 px-4 py-1.5 text-[11px] text-slate-400 dark:border-white/10 dark:text-slate-500">
+            This is the order the page is translated in. Drag one by its handle
+            to move it.
+          </p>
+
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+            onDragEnd={dropped}
+          >
+            <SortableContext
+              items={regions.map((region) => region.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <ul
+                ref={list}
+                className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3"
+              >
+                {regions.map((region, index) => (
+                  <Block
+                    key={region.id}
+                    region={region}
+                    index={index}
+                    text={texts?.[index] ?? null}
+                    reading={reading}
+                    excluded={excluded.has(index)}
+                    active={selected === index}
+                    onSelect={() => onSelect(selected === index ? null : index)}
+                    onToggleExcluded={() => onToggleExcluded(index)}
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
+        </>
       )}
     </aside>
   )
@@ -100,100 +157,147 @@ function Block({
   onSelect: () => void
   onToggleExcluded: () => void
 }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: region.id })
   const [x0, y0, x1, y1] = region.box
   const unsure = region.confidence < UNSURE
 
   return (
-    <li data-index={index} className="group relative">
+    <li
+      ref={setNodeRef}
+      data-index={index}
+      style={{
+        // Translate rather than the whole transform: a row being sorted should
+        // slide past the others, not stretch to their heights.
+        transform: CSS.Translate.toString(transform),
+        transition,
+      }}
+      className={`group flex items-stretch gap-1 ${
+        isDragging ? 'relative z-10 opacity-80' : ''
+      }`}
+    >
       <button
         type="button"
-        onClick={onSelect}
-        aria-pressed={active}
-        className={`w-full rounded-lg border py-2 pr-9 pl-2.5 text-left transition-colors ${
-          excluded
-            ? 'border-dashed border-slate-300 bg-slate-50 dark:border-white/15 dark:bg-white/5'
-            : active
-              ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10'
-              : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 dark:border-white/10 dark:hover:border-white/20 dark:hover:bg-white/5'
-        }`}
-      >
-        <div className="flex items-baseline gap-2">
-          <span className="text-xs font-semibold text-slate-400 tabular-nums dark:text-slate-500">
-            {index + 1}
-          </span>
-
-          {text === null ? (
-            <span className="text-sm text-slate-400 italic dark:text-slate-500">
-              {reading ? 'reading…' : 'not read'}
-            </span>
-          ) : text === '' ? (
-            <span className="text-sm text-slate-400 italic dark:text-slate-500">
-              nothing read here
-            </span>
-          ) : (
-            <p
-              lang="ja"
-              className={`min-w-0 flex-1 text-sm leading-relaxed select-text ${
-                excluded
-                  ? 'text-slate-400 line-through dark:text-slate-500'
-                  : 'text-slate-900 dark:text-white'
-              }`}
-            >
-              {text}
-            </p>
-          )}
-        </div>
-
-        <p className="mt-1 text-[11px] text-slate-400 tabular-nums dark:text-slate-500">
-          {excluded ? (
-            <span className="font-medium text-slate-500 dark:text-slate-400">
-              left alone
-            </span>
-          ) : region.manual ? (
-            <span className="font-medium text-indigo-600 dark:text-indigo-400">
-              added by hand
-            </span>
-          ) : (
-            <span className={unsure ? 'text-amber-600 dark:text-amber-400' : ''}>
-              {Math.round(region.confidence * 100)}%
-            </span>
-          )}{' '}
-          · {x0}, {y0} · {x1 - x0} × {y1 - y0}
-        </p>
-      </button>
-
-      <button
-        type="button"
-        onClick={onToggleExcluded}
-        title={
-          excluded
-            ? 'Clean this block after all'
-            : 'Leave this block alone: do not clean it'
-        }
-        aria-label={
-          excluded
-            ? `Clean block ${index + 1} after all`
-            : `Leave block ${index + 1} alone`
-        }
-        className="absolute top-1.5 right-1.5 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:hover:bg-white/10 dark:hover:text-white"
+        ref={setActivatorNodeRef}
+        {...attributes}
+        {...listeners}
+        title="Drag to reorder"
+        aria-label={`Reorder block ${index + 1}`}
+        className="flex w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 active:cursor-grabbing dark:text-slate-600 dark:hover:bg-white/10 dark:hover:text-slate-300"
       >
         <svg
           aria-hidden="true"
           viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.9"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+          fill="currentColor"
           className="size-3.5"
         >
-          {excluded ? (
-            <path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4" />
-          ) : (
-            <path d="M6 6l12 12M18 6 6 18" />
-          )}
+          <circle cx="9" cy="6" r="1.6" />
+          <circle cx="15" cy="6" r="1.6" />
+          <circle cx="9" cy="12" r="1.6" />
+          <circle cx="15" cy="12" r="1.6" />
+          <circle cx="9" cy="18" r="1.6" />
+          <circle cx="15" cy="18" r="1.6" />
         </svg>
       </button>
+
+      <div className="relative min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-pressed={active}
+          className={`w-full rounded-lg border py-2 pr-9 pl-2.5 text-left transition-colors ${
+            excluded
+              ? 'border-dashed border-slate-300 bg-slate-50 dark:border-white/15 dark:bg-white/5'
+              : active
+                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10'
+                : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 dark:border-white/10 dark:hover:border-white/20 dark:hover:bg-white/5'
+          }`}
+        >
+          <div className="flex items-baseline gap-2">
+            <span className="text-xs font-semibold text-slate-400 tabular-nums dark:text-slate-500">
+              {index + 1}
+            </span>
+
+            {text === null ? (
+              <span className="text-sm text-slate-400 italic dark:text-slate-500">
+                {reading ? 'reading…' : 'not read'}
+              </span>
+            ) : text === '' ? (
+              <span className="text-sm text-slate-400 italic dark:text-slate-500">
+                nothing read here
+              </span>
+            ) : (
+              <p
+                lang="ja"
+                className={`min-w-0 flex-1 text-sm leading-relaxed select-text ${
+                  excluded
+                    ? 'text-slate-400 line-through dark:text-slate-500'
+                    : 'text-slate-900 dark:text-white'
+                }`}
+              >
+                {text}
+              </p>
+            )}
+          </div>
+
+          <p className="mt-1 text-[11px] text-slate-400 tabular-nums dark:text-slate-500">
+            {excluded ? (
+              <span className="font-medium text-slate-500 dark:text-slate-400">
+                left alone
+              </span>
+            ) : region.manual ? (
+              <span className="font-medium text-indigo-600 dark:text-indigo-400">
+                added by hand
+              </span>
+            ) : (
+              <span className={unsure ? 'text-amber-600 dark:text-amber-400' : ''}>
+                {Math.round(region.confidence * 100)}%
+              </span>
+            )}{' '}
+            · {x0}, {y0} · {x1 - x0} × {y1 - y0}
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleExcluded}
+          title={
+            excluded
+              ? 'Clean this block after all'
+              : 'Leave this block alone: do not clean it'
+          }
+          aria-label={
+            excluded
+              ? `Clean block ${index + 1} after all`
+              : `Leave block ${index + 1} alone`
+          }
+          className="absolute top-1.5 right-1.5 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:hover:bg-white/10 dark:hover:text-white"
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="size-3.5"
+          >
+            {excluded ? (
+              <path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4" />
+            ) : (
+              <path d="M6 6l12 12M18 6 6 18" />
+            )}
+          </svg>
+        </button>
+      </div>
     </li>
   )
 }

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { useBoxDrag } from '../hooks/useBoxDrag'
 import type { Analysis, BoardMode, Box, Detection, Lettering, Stage } from '../lib/api'
 import { UNSURE } from '../lib/api'
 import type { GalleryImage } from '../lib/images'
 import type { Brush, Mask, Point } from '../lib/mask'
+import { BoxGrips } from './BoxGrips'
 import { MaskTools } from './MaskTools'
 import { Steps } from './Steps'
 import { TranslateTools } from './TranslateTools'
@@ -38,6 +40,10 @@ type Props = {
   onClean: (mask: Blob) => void
   onRunAll: () => void
   onAddRegion: (box: Box) => void
+  /** A block's box while it is being dragged: every frame of it. */
+  onRegionBox: (index: number, box: Box) => void
+  /** The same drag, once it is over, with the box as it was before. */
+  onRegionSettled: (index: number, was: Box) => void
   onToggleExcluded: (index: number) => void
   /** The traced lettering for this page, once it has been asked for. */
   letters: ImageBitmap | null
@@ -66,6 +72,8 @@ export function Board({
   onClean,
   onRunAll,
   onAddRegion,
+  onRegionBox,
+  onRegionSettled,
   onToggleExcluded,
   letters,
   onTrace,
@@ -330,7 +338,7 @@ export function Board({
           <span className="text-xs text-slate-500 dark:text-slate-400">
             {adding
               ? 'Drag across the bubble it missed. It is read and put in reading order.'
-              : 'Click one to pick it out; delete drops it from the clean.'}
+              : 'Click one to pick it out, drag it to move, pull an edge to resize; delete drops it from the clean.'}
           </span>
         </div>
       )}
@@ -437,20 +445,25 @@ export function Board({
               mode === 'inspect' &&
               detection?.regions.map((region, index) => (
                 <RegionBox
-                  key={index}
+                  key={region.id}
                   region={region}
                   index={index}
                   page={detection}
+                  scale={page.scale}
                   text={analysis?.texts?.[index] ?? null}
                   excluded={excluded.has(index)}
                   active={selected === index}
                   onSelect={() => onSelect(selected === index ? null : index)}
+                  onBox={(box) => onRegionBox(index, box)}
+                  onSettled={(was) => onRegionSettled(index, was)}
                 />
               ))}
 
             {mode === 'inspect' && adding && (
+              // Over the blocks, not under them: while a block is being drawn
+              // the whole page is the drawing surface.
               <div
-                className="absolute inset-0 cursor-crosshair touch-none"
+                className="absolute inset-0 z-30 cursor-crosshair touch-none"
                 onPointerDown={(event) => {
                   event.currentTarget.setPointerCapture(event.pointerId)
                   const rect = event.currentTarget.getBoundingClientRect()
@@ -657,69 +670,100 @@ function Spinner() {
   )
 }
 
+/**
+ * One block the detector found, over the lettering it found.
+ *
+ * Draggable and pullable by its edges, because the detector runs two speech
+ * bubbles together often enough to matter: the fix is to pull this one back off
+ * the second and draw a block around what is left.
+ */
 function RegionBox({
   region,
   index,
   page,
+  scale,
   text,
   excluded,
   active,
   onSelect,
+  onBox,
+  onSettled,
 }: {
   region: Detection['regions'][number]
   index: number
   page: { width: number; height: number }
+  scale: number
   text: string | null
   excluded: boolean
   active: boolean
   onSelect: () => void
+  onBox: (box: Box) => void
+  onSettled: (was: Box) => void
 }) {
+  const drag = useBoxDrag({ box: region.box, page, scale, onBox, onSettled })
   const [x0, y0, x1, y1] = region.box
   const unsure = region.confidence < UNSURE
 
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      title={excluded ? `${text ?? ''} — left alone`.trim() : text || undefined}
-      aria-label={
-        excluded
-          ? `Block ${index + 1}, left alone`
-          : text
-            ? `Block ${index + 1}: ${text}`
-            : `Text block ${index + 1}`
-      }
-      aria-pressed={active}
+    <div
       style={{
         left: `${(x0 / page.width) * 100}%`,
         top: `${(y0 / page.height) * 100}%`,
         width: `${((x1 - x0) / page.width) * 100}%`,
         height: `${((y1 - y0) / page.height) * 100}%`,
       }}
-      className={`absolute border-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
-        excluded
-          ? 'border-dashed border-slate-400/80 hover:bg-slate-400/15'
-          : active
-            ? 'border-indigo-500 bg-indigo-500/20'
-            : unsure
-              ? 'border-amber-500/80 hover:bg-amber-500/15'
-              : 'border-indigo-500/70 hover:bg-indigo-500/15'
-      }`}
+      className={`absolute ${active ? 'z-20' : 'z-10'}`}
     >
-      <span
-        className={`absolute -top-px -left-px px-1 text-[10px] leading-4 font-semibold text-white tabular-nums ${
+      <button
+        type="button"
+        onPointerDown={drag.grab}
+        onPointerMove={drag.shift}
+        onPointerUp={drag.release}
+        onPointerCancel={drag.release}
+        onClick={() => {
+          // The click that ends a drag is not a click on the box.
+          if (drag.dragged.current) {
+            drag.dragged.current = false
+            return
+          }
+          onSelect()
+        }}
+        title={excluded ? `${text ?? ''} — left alone`.trim() : text || undefined}
+        aria-label={
           excluded
-            ? 'bg-slate-500/80 line-through'
+            ? `Block ${index + 1}, left alone`
+            : text
+              ? `Block ${index + 1}: ${text}`
+              : `Text block ${index + 1}`
+        }
+        aria-pressed={active}
+        className={`h-full w-full cursor-move touch-none border-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+          excluded
+            ? 'border-dashed border-slate-400/80 hover:bg-slate-400/15'
             : active
-              ? 'bg-indigo-500'
+              ? 'border-indigo-500 bg-indigo-500/20'
               : unsure
-                ? 'bg-amber-500'
-                : 'bg-indigo-500/80'
+                ? 'border-amber-500/80 hover:bg-amber-500/15'
+                : 'border-indigo-500/70 hover:bg-indigo-500/15'
         }`}
       >
-        {index + 1}
-      </span>
-    </button>
+        <span
+          className={`absolute -top-px -left-px px-1 text-[10px] leading-4 font-semibold text-white tabular-nums ${
+            excluded
+              ? 'bg-slate-500/80 line-through'
+              : active
+                ? 'bg-indigo-500'
+                : unsure
+                  ? 'bg-amber-500'
+                  : 'bg-indigo-500/80'
+          }`}
+        >
+          {index + 1}
+        </span>
+      </button>
+
+      {active && <BoxGrips drag={drag} />}
+    </div>
   )
 }
 

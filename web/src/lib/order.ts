@@ -29,3 +29,24 @@ export function insertAt<T>(list: T[], at: number, value: T): T[] {
   next.splice(at, 0, value)
   return next
 }
+
+/** The same list with whatever is at `from` taken out and put back in at `to`. */
+export function moveAt<T>(list: T[], from: number, to: number): T[] {
+  const next = [...list]
+  const [held] = next.splice(from, 1)
+  next.splice(to, 0, held)
+  return next
+}
+
+/**
+ * Where an index ends up after that same move.
+ *
+ * Blocks are pointed at by their place in the list — which ones are left alone,
+ * which one is picked out — so every one of those pointers has to be carried
+ * across a reorder rather than left aiming at whoever moved into the slot.
+ */
+export function movedIndex(index: number, from: number, to: number): number {
+  if (index === from) return to
+  if (from < to) return index > from && index <= to ? index - 1 : index
+  return index >= to && index < from ? index + 1 : index
+}
