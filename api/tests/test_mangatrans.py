@@ -21,14 +21,29 @@ def page(width: int = 200, height: int = 140, colour=DARK) -> Image.Image:
     return Image.new("RGB", (width, height), colour)
 
 
-def payload(image: Image.Image, **fields) -> dict:
-    """A multipart body: the image, and any JSON fields sent beside it."""
+def payload(image: Image.Image, mask: Image.Image | None = None, **fields) -> dict:
+    """A multipart body: the image, a mask if there is one, and JSON beside them."""
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
     body = {"image": (buffer, "page.png")}
+    if mask is not None:
+        stencil = io.BytesIO()
+        mask.save(stencil, format="PNG")
+        stencil.seek(0)
+        body["mask"] = (stencil, "mask.png")
     body.update({name: json.dumps(value) for name, value in fields.items()})
     return body
+
+
+def stencil(box: Box | None = None, fill: int = 255, size=(200, 140)) -> Image.Image:
+    """A greyscale mask: black everywhere, ``fill`` inside ``box``."""
+    mask = Image.new("L", size, 0)
+    if box is not None:
+        ImageDraw.Draw(mask).rectangle(
+            (box.x0, box.y0, box.x1 - 1, box.y1 - 1), fill=fill
+        )
+    return mask
 
 
 def opened(response) -> Image.Image:
@@ -102,6 +117,30 @@ class TestCover(unittest.TestCase):
     def test_an_empty_box_paints_nothing(self):
         out = render.cover(page(), [Box(10, 10, 10, 40)])
         self.assertFalse((np.array(out) == 255).any())
+
+
+class TestCoverMask(unittest.TestCase):
+    box = Box(10, 10, 60, 40)
+
+    def test_white_in_the_mask_is_painted_out(self):
+        out = render.cover_mask(page(), stencil(self.box))
+        self.assertTrue((patch(out, self.box) == 255).all())
+        self.assertEqual(tuple(np.array(out)[0, 0]), DARK)
+
+    def test_black_in_the_mask_leaves_the_page_alone(self):
+        out = render.cover_mask(page(), stencil())
+        self.assertTrue((np.array(out) == np.array(page())).all())
+
+    def test_grey_lays_on_only_some_of_the_white(self):
+        out = render.cover_mask(page(), stencil(self.box, fill=128))
+        inside = patch(out, Box(20, 20, 50, 30))
+        self.assertTrue((inside > DARK[0]).all(), "no white was laid on")
+        self.assertTrue((inside < 255).all(), "all of it was laid on")
+
+    def test_the_original_is_left_alone(self):
+        original = page()
+        render.cover_mask(original, stencil(Box(0, 0, 200, 140)))
+        self.assertEqual(tuple(np.array(original)[0, 0]), DARK)
 
 
 class TestOverlay(unittest.TestCase):
@@ -240,10 +279,39 @@ class TestApi(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue((np.array(opened(response)) == 255).all())
 
-    def test_clean_needs_boxes(self):
+    def test_clean_hides_what_the_mask_marks(self):
+        response = client().post(
+            "/api/clean", data=payload(page(), mask=stencil(Box(10, 10, 60, 40)))
+        )
+        self.assertEqual(response.status_code, 200)
+        out = opened(response)
+        self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
+        self.assertEqual(tuple(np.array(out)[0, 0]), DARK)
+
+    def test_clean_takes_a_mask_and_boxes_together(self):
+        response = client().post(
+            "/api/clean",
+            data=payload(
+                page(), mask=stencil(Box(10, 10, 60, 40)), boxes=[[100, 100, 140, 130]]
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        out = opened(response)
+        self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
+        self.assertTrue((patch(out, Box(100, 100, 140, 130)) == 255).all())
+
+    def test_clean_rejects_a_mask_that_is_not_the_page_size(self):
+        response = client().post(
+            "/api/clean", data=payload(page(), mask=stencil(size=(50, 50)))
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("mask", response.json["error"])
+
+    def test_clean_needs_boxes_or_a_mask(self):
         response = client().post("/api/clean", data=payload(page()))
         self.assertEqual(response.status_code, 400)
         self.assertIn("boxes", response.json["error"])
+        self.assertIn("mask", response.json["error"])
 
     def test_clean_rejects_boxes_that_are_not_json(self):
         buffer = io.BytesIO()

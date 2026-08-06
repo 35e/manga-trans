@@ -39,11 +39,18 @@ USER 10001
 # (~95 MB) and the reader (~450 MB).
 # Build with --build-arg PREFETCH_MODEL=false to fetch them on first use instead.
 ARG PREFETCH_MODEL=true
-COPY mangatrans /app/mangatrans
+
+# Only the four modules the fetchers themselves need. Copying the whole package
+# here instead would send every later build back for half a gigabyte of weights
+# over an edit to the server.
+COPY mangatrans/__init__.py mangatrans/geometry.py \
+     mangatrans/detect.py mangatrans/read.py /app/mangatrans/
 RUN if [ "$PREFETCH_MODEL" = "true" ]; then \
         python -c "from mangatrans.detect import ensure_model; ensure_model()" \
         && python -c "from mangatrans.read import ensure_model; ensure_model()"; \
     fi
+
+COPY mangatrans /app/mangatrans
 
 ENV MANGA_TRANS_HOST=0.0.0.0 \
     MANGA_TRANS_PORT=8000

@@ -52,7 +52,7 @@ port can call it.
 | --- | --- | --- |
 | `POST` | `/api/detect` | `image` → every block of lettering, boxed |
 | `POST` | `/api/read` | `image`, `boxes` → what each box says |
-| `POST` | `/api/clean` | `image`, `boxes` → the page with the boxes whited out |
+| `POST` | `/api/clean` | `image`, `boxes` and/or `mask` → the page with them whited out |
 | `POST` | `/api/render` | `image`, `regions` → the same, with text set in them |
 
 ```bash
@@ -66,6 +66,9 @@ curl -sX POST localhost:8000/api/read -F image=@001.png \
 
 curl -X POST localhost:8000/api/clean -F image=@001.png \
      -F 'boxes=[[812,96,949,324]]' -o clean.png
+
+curl -X POST localhost:8000/api/clean -F image=@001.png \
+     -F mask=@mask.png -o clean.png       # white where it should be hidden
 
 curl -X POST localhost:8000/api/render -F image=@001.png \
      -F 'regions=[{"box":[812,96,949,324],"text":"Good morning!"}]' -o out.png
@@ -82,7 +85,14 @@ back as `""`, and the box is given a few pixels of air before it goes to the
 model. It translates nothing: what the text should say instead is still for the
 caller to decide.
 
-**`/api/clean`** paints each box white and hands the page back as a PNG.
+**`/api/clean`** paints each box white and hands the page back as a PNG. It also
+takes a `mask`: a greyscale image the size of the page, white where the page
+should be painted out and black where it should be left alone, sent as a second
+file field. The greys between are how much white to lay on, so a brushed edge
+comes out soft rather than as a staircase. A box can only ever say "all of this
+rectangle"; a mask can say "this bubble except that corner", which is what a
+front end with a brush in it needs. Send boxes, a mask, or both — but not
+neither.
 
 **`/api/render`** does the same and sets each region's `text` in its box: wrapped
 to the width, centred, black, at the largest size that lands inside it. Text too
@@ -116,8 +126,12 @@ api/
     geometry.py   Box
   tests/
 web/
-  src/            the dashboard: drop pages in, detect, read
+  src/            the dashboard: drop pages in, detect, read, mask, clean
 ```
+
+The dashboard puts a page on a board, boxes its lettering and reads it, then
+lets the boxes be brushed into a mask by hand — drawn wider, erased back — and
+sends that to `/api/clean`.
 
 The dashboard is a Vite app. `cd web && pnpm install && pnpm dev` serves it on
 port 5173, pointed at `http://localhost:8000` unless `VITE_API_URL` says

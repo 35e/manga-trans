@@ -50,6 +50,23 @@ def sent(field: str) -> list:
     return value
 
 
+def mask_in(image: Image.Image) -> Image.Image | None:
+    """The mask sent beside the image, if one was: greyscale, the page's size."""
+    upload = request.files.get("mask")
+    if upload is None:
+        return None
+    try:
+        mask = Image.open(upload.stream).convert("L")
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise BadRequest(f"the mask is not a usable image: {exc}") from exc
+    if mask.size != image.size:
+        raise BadRequest(
+            f"the mask is {mask.width}×{mask.height} "
+            f"but the page is {image.width}×{image.height}"
+        )
+    return mask
+
+
 def box_in(values, image: Image.Image) -> Box:
     """One [x0, y0, x1, y1] from a request, clipped to the page."""
     try:
@@ -131,10 +148,24 @@ def create_app(
 
     @app.post("/api/clean")
     def clean():
-        """The page back with white over every box: the lettering hidden."""
+        """The page back with white over what was marked: the lettering hidden.
+
+        What is marked can be boxes, a mask, or both. A mask is a greyscale page
+        of the same size, and it is the only way to say "this bubble but not
+        that corner of it".
+        """
         image = page()
-        boxes = [box_in(values, image) for values in sent("boxes")]
-        return png(render.cover(image, boxes))
+        mask = mask_in(image)
+        boxes = (
+            [box_in(values, image) for values in sent("boxes")]
+            if "boxes" in request.form
+            else []
+        )
+        if mask is None and not boxes:
+            raise BadRequest("nothing to hide: send 'boxes', a 'mask', or both")
+
+        out = render.cover(image, boxes)
+        return png(out if mask is None else render.cover_mask(out, mask))
 
     @app.post("/api/render")
     def overlay():

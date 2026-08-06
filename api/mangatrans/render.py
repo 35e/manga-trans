@@ -119,6 +119,21 @@ def cover(image: Image.Image, boxes: list[Box]) -> Image.Image:
     return out
 
 
+def cover_mask(image: Image.Image, mask: Image.Image) -> Image.Image:
+    """A copy of the page with white laid over it wherever the mask is light.
+
+    The mask is a greyscale page of the same size: white is painted out, black
+    is left alone, and the greys between are how much white to lay on — which is
+    what keeps a brushed edge from coming out as a staircase.
+
+    Boxes cannot say "all of this bubble except that corner"; a mask can, which
+    is the whole reason for it.
+    """
+    out = image.convert("RGB")
+    out.paste(WHITE, (0, 0, out.width, out.height), mask.convert("L"))
+    return out
+
+
 def letter(draw, box: Box, text: str, font_path: str | None = None) -> Layout:
     """Set ``text`` centred in ``box``, as large as it will go."""
     inset = max(1, round(INSET * min(box.w, box.h)))

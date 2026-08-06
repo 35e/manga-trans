@@ -20,25 +20,36 @@ export type Detection = {
 export type Analysis = {
   detection: Detection
   texts: string[] | null
+  /**
+   * Blocks to leave alone: their indices in `detection.regions`. A detector
+   * that boxed something worth keeping — a sound effect, a signature, a stray
+   * bit of art — is corrected here rather than by re-detecting.
+   */
+  excluded: number[]
 }
 
-/** Detecting comes first, then reading what was detected. */
-export type Stage = 'detecting' | 'reading'
+/** Detecting comes first, then reading what was detected, then hiding it. */
+export type Stage = 'detecting' | 'reading' | 'cleaning'
 
 /** Below this the detector is guessing; the README says look twice. */
 export const UNSURE = 0.6
 
-/** One page up, JSON back. Every error the API raises comes back as {"error"}. */
-async function post<T>(
+/**
+ * One page up, one answer back. Anything that is not a Blob goes up as JSON,
+ * which is how the API takes boxes; every error it raises comes back as
+ * {"error": "..."}.
+ */
+async function send(
   path: string,
   file: File,
-  fields: Record<string, unknown>,
+  parts: Record<string, unknown>,
   signal?: AbortSignal,
-): Promise<T> {
+): Promise<Response> {
   const body = new FormData()
   body.append('image', file, file.name)
-  for (const [name, value] of Object.entries(fields)) {
-    body.append(name, JSON.stringify(value))
+  for (const [name, value] of Object.entries(parts)) {
+    if (value instanceof Blob) body.append(name, value, `${name}.png`)
+    else body.append(name, JSON.stringify(value))
   }
 
   let response: Response
@@ -57,12 +68,16 @@ async function post<T>(
     throw new Error(said ?? `The API answered ${response.status}`)
   }
 
-  return response.json() as Promise<T>
+  return response
 }
 
 /** Every block of lettering the detector finds on one page. */
-export function detect(file: File, signal?: AbortSignal): Promise<Detection> {
-  return post<Detection>('/api/detect', file, {}, signal)
+export async function detect(
+  file: File,
+  signal?: AbortSignal,
+): Promise<Detection> {
+  const response = await send('/api/detect', file, {}, signal)
+  return response.json() as Promise<Detection>
 }
 
 /**
@@ -75,11 +90,20 @@ export async function read(
   signal?: AbortSignal,
 ): Promise<string[]> {
   if (boxes.length === 0) return []
-  const { texts } = await post<{ texts: string[] }>(
-    '/api/read',
-    file,
-    { boxes },
-    signal,
-  )
+  const response = await send('/api/read', file, { boxes }, signal)
+  const { texts } = (await response.json()) as { texts: string[] }
   return texts
+}
+
+/**
+ * The page with everything the mask marks painted out, as a PNG. The mask is a
+ * page-sized image, white where the lettering should go.
+ */
+export async function clean(
+  file: File,
+  mask: Blob,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await send('/api/clean', file, { mask }, signal)
+  return response.blob()
 }

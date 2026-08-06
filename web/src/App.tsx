@@ -5,14 +5,23 @@ import { Gallery } from './components/Gallery'
 import { RegionsPanel } from './components/RegionsPanel'
 import { useFileDrop } from './hooks/useFileDrop'
 import { useImageLibrary } from './hooks/useImageLibrary'
+import { useMasks } from './hooks/useMasks'
+import { useObjectUrls } from './hooks/useObjectUrls'
 import type { Analysis, Stage } from './lib/api'
-import { API_BASE, detect, read } from './lib/api'
+import { API_BASE, clean, detect, read } from './lib/api'
 import { formatBytes, plural } from './lib/images'
 
 function App() {
   const { images, add, remove, clear, busy, notice, dismissNotice } =
     useImageLibrary()
   const dragging = useFileDrop(add)
+  const { forPage, drop: dropMask, clear: clearMasks } = useMasks()
+  const {
+    urls: cleanedPages,
+    set: setCleaned,
+    drop: dropCleaned,
+    clear: clearCleaned,
+  } = useObjectUrls()
 
   const [activeId, setActiveId] = useState<string | null>(null)
   const active = images.find((image) => image.id === activeId) ?? null
@@ -43,20 +52,24 @@ function App() {
   const removeImage = useCallback(
     (id: string) => {
       remove(id)
+      dropMask(id)
+      dropCleaned(id)
       setAnalyses((current) =>
         Object.fromEntries(
           Object.entries(current).filter(([key]) => key !== id),
         ),
       )
     },
-    [remove],
+    [remove, dropMask, dropCleaned],
   )
 
   const clearAll = useCallback(() => {
     clear()
+    clearMasks()
+    clearCleaned()
     setAnalyses({})
     setActiveId(null)
-  }, [clear])
+  }, [clear, clearMasks, clearCleaned])
 
   /** Find the lettering, then read it. The boxes show as soon as they land. */
   const runDetect = useCallback(async () => {
@@ -68,7 +81,10 @@ function App() {
     setWorking({ id, stage: 'detecting' })
     try {
       const detection = await detect(file)
-      setAnalyses((current) => ({ ...current, [id]: { detection, texts: null } }))
+      setAnalyses((current) => ({
+        ...current,
+        [id]: { detection, texts: null, excluded: [] },
+      }))
       if (detection.regions.length === 0) return
 
       setWorking({ id, stage: 'reading' })
@@ -79,7 +95,9 @@ function App() {
       // Only if the page is still in the library: it may have been deleted
       // while the reader was working.
       setAnalyses((current) =>
-        id in current ? { ...current, [id]: { detection, texts } } : current,
+        id in current
+          ? { ...current, [id]: { ...current[id], detection, texts } }
+          : current,
       )
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -87,6 +105,55 @@ function App() {
       setWorking(null)
     }
   }, [active])
+
+  /**
+   * Take one block out of what will be cleaned, or put it back. The mask is
+   * kept in step: a block dropped is erased from it, a block restored is
+   * stamped back in, so what is marked always matches what the list says.
+   */
+  const toggleExcluded = useCallback(
+    (index: number) => {
+      if (!active) return
+      const held = analyses[active.id]
+      const box = held?.detection.regions[index]?.box
+      if (!held || !box) return
+
+      const excluded = new Set(held.excluded)
+      const mask = forPage(active)
+      if (excluded.has(index)) {
+        excluded.delete(index)
+        if (mask && !mask.empty) mask.boxes([box])
+      } else {
+        excluded.add(index)
+        mask?.boxes([box], true)
+      }
+
+      setAnalyses((current) => ({
+        ...current,
+        [active.id]: { ...held, excluded: [...excluded] },
+      }))
+    },
+    [active, analyses, forPage],
+  )
+
+  /** Hide everything the mask marks, and keep the page that comes back. */
+  const runClean = useCallback(
+    async (marks: Blob) => {
+      if (!active) return
+      const { id, file } = active
+
+      setError(null)
+      setWorking({ id, stage: 'cleaning' })
+      try {
+        setCleaned(id, await clean(file, marks))
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setWorking(null)
+      }
+    },
+    [active, setCleaned],
+  )
 
   const total = images.reduce((sum, image) => sum + image.size, 0)
 
@@ -141,11 +208,15 @@ function App() {
         <Board
           image={active}
           analysis={analysis}
+          mask={forPage(active)}
+          cleaned={active ? (cleanedPages[active.id] ?? null) : null}
           stage={stage}
           error={error}
           selected={selected}
           onSelect={setSelected}
           onDetect={runDetect}
+          onClean={runClean}
+          onToggleExcluded={toggleExcluded}
         />
 
         {active && analysis && (
@@ -154,6 +225,7 @@ function App() {
             reading={stage === 'reading'}
             selected={selected}
             onSelect={setSelected}
+            onToggleExcluded={toggleExcluded}
           />
         )}
       </div>
