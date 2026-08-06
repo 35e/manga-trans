@@ -29,15 +29,52 @@ export type Analysis = {
 }
 
 /** Detecting comes first, then reading what was detected, then hiding it. */
-export type Stage = 'detecting' | 'reading' | 'tracing' | 'cleaning'
+export type Stage =
+  | 'detecting'
+  | 'reading'
+  | 'tracing'
+  | 'cleaning'
+  | 'translating'
+
+/** What the board is being used for: looking, hiding, or lettering. */
+export type BoardMode = 'inspect' | 'mask' | 'translate'
+
+/**
+ * One translated line, set where the original was. The box starts as the block
+ * the detector found and the size as whatever fits it, and both are the reader's
+ * to change after that: a translation is rarely as long as what it replaces.
+ */
+export type Lettering = {
+  text: string
+  box: Box
+  size: number
+}
 
 /** Below this the detector is guessing; the README says look twice. */
 export const UNSURE = 0.6
 
+/** Every error the API raises comes back as {"error": "..."}. */
+async function refuse(response: Response): Promise<never> {
+  const said = await response
+    .json()
+    .then((body: { error?: string }) => body.error)
+    .catch(() => undefined)
+  throw new Error(said ?? `The API answered ${response.status}`)
+}
+
+/** A fetch that says where it was trying to go when there is nothing there. */
+async function reach(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${API_BASE}${path}`, init)
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
+    throw new Error(`Could not reach the API at ${API_BASE}`, { cause })
+  }
+}
+
 /**
  * One page up, one answer back. Anything that is not a Blob goes up as JSON,
- * which is how the API takes boxes; every error it raises comes back as
- * {"error": "..."}.
+ * which is how the API takes boxes.
  */
 async function send(
   path: string,
@@ -52,22 +89,8 @@ async function send(
     else body.append(name, JSON.stringify(value))
   }
 
-  let response: Response
-  try {
-    response = await fetch(`${API_BASE}${path}`, { method: 'POST', body, signal })
-  } catch (cause) {
-    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
-    throw new Error(`Could not reach the API at ${API_BASE}`, { cause })
-  }
-
-  if (!response.ok) {
-    const said = await response
-      .json()
-      .then((body: { error?: string }) => body.error)
-      .catch(() => undefined)
-    throw new Error(said ?? `The API answered ${response.status}`)
-  }
-
+  const response = await reach(path, { method: 'POST', body, signal })
+  if (!response.ok) await refuse(response)
   return response
 }
 
@@ -93,6 +116,38 @@ export async function read(
   const response = await send('/api/read', file, { boxes }, signal)
   const { texts } = (await response.json()) as { texts: string[] }
   return texts
+}
+
+/** Every model the API's Ollama has to translate with. */
+export async function models(signal?: AbortSignal): Promise<string[]> {
+  const response = await reach('/api/models', { signal })
+  if (!response.ok) await refuse(response)
+  const answer = (await response.json()) as { models: string[] }
+  return answer.models
+}
+
+/**
+ * One translation per text, in the order they were given. The whole page goes
+ * over at once: a line of manga read on its own often cannot be translated at
+ * all, having no idea who is speaking or about what.
+ */
+export async function translate(
+  texts: string[],
+  model: string,
+  target: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (texts.length === 0) return []
+
+  const body = new FormData()
+  body.append('texts', JSON.stringify(texts))
+  body.append('model', model)
+  body.append('target', target)
+
+  const response = await reach('/api/translate', { method: 'POST', body, signal })
+  if (!response.ok) await refuse(response)
+  const answer = (await response.json()) as { texts: string[] }
+  return answer.texts
 }
 
 /**

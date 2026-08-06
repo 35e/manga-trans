@@ -1,11 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Analysis, Detection, Stage } from '../lib/api'
+import type { Analysis, BoardMode, Box, Detection, Lettering, Stage } from '../lib/api'
 import { UNSURE } from '../lib/api'
 import type { GalleryImage } from '../lib/images'
 import type { Brush, Mask, Point } from '../lib/mask'
 import { MaskTools } from './MaskTools'
+import { TranslateTools } from './TranslateTools'
+import { TranslationLayer } from './TranslationLayer'
 
-type Mode = 'inspect' | 'mask'
+/** Everything the translate tab needs, kept together rather than spread out. */
+export type Translating = {
+  models: string[]
+  model: string
+  onModel: (model: string) => void
+  target: string
+  onTarget: (target: string) => void
+  onTranslate: () => void
+  onFitAll: () => void
+  lettering: (Lettering | null)[]
+  onBox: (index: number, box: Box) => void
+  onSize: (index: number, by: number) => void
+  onApply: () => void
+  applying: boolean
+  note: string | null
+}
 
 type Props = {
   image: GalleryImage | null
@@ -22,6 +39,12 @@ type Props = {
   /** The traced lettering for this page, once it has been asked for. */
   letters: ImageBitmap | null
   onTrace: () => Promise<ImageBitmap | null>
+  mode: BoardMode
+  onMode: (mode: BoardMode) => void
+  /** Whether the board is showing the cleaned page or the one that came in. */
+  showCleaned: boolean
+  onShowCleaned: (showing: boolean) => void
+  translating: Translating
 }
 
 export function Board({
@@ -38,6 +61,11 @@ export function Board({
   onToggleExcluded,
   letters,
   onTrace,
+  mode,
+  onMode,
+  showCleaned,
+  onShowCleaned,
+  translating,
 }: Props) {
   const surface = useRef<HTMLDivElement>(null)
   const overlay = useRef<HTMLCanvasElement>(null)
@@ -45,10 +73,8 @@ export function Board({
   const drawing = useRef<Point | null>(null)
 
   const page = useFittedPage(surface, image)
-  const [mode, setMode] = useState<Mode>('inspect')
   const [brush, setBrush] = useState<Brush>({ radius: 16, erase: false })
   const [showBoxes, setShowBoxes] = useState(true)
-  const [showCleaned, setShowCleaned] = useState(false)
   // Brushing draws straight onto the canvas; this is only so the buttons that
   // care whether anything is marked catch up when a stroke ends.
   const [edits, setEdits] = useState(0)
@@ -64,11 +90,6 @@ export function Board({
   const excluded = new Set(excludedList)
   const toClean = (regions: Detection['regions']) =>
     regions.filter((_, index) => !excluded.has(index)).map((region) => region.box)
-
-  useEffect(() => setShowCleaned(false), [image?.id])
-  useEffect(() => {
-    if (cleaned) setShowCleaned(true)
-  }, [cleaned])
 
   // The canvas is blank whenever it is remounted or resized, so the mask is
   // drawn back on after anything that could have done either — including a
@@ -113,19 +134,33 @@ export function Board({
     }
   }, [masking, mask, detection])
 
-  // A block picked out on the board is dropped with the delete key.
+  // The keys that work on whichever block is picked out: delete drops it from
+  // the clean, and on the translate tab the arrows set its type larger and
+  // smaller. Neither fires while something is being typed into.
+  const nudge = translating.onSize
   useEffect(() => {
     if (selected === null) return
+
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Delete' && event.key !== 'Backspace') return
       const typing = event.target as HTMLElement | null
       if (typing && ['INPUT', 'TEXTAREA', 'SELECT'].includes(typing.tagName)) return
+
+      if (mode === 'translate') {
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        event.preventDefault()
+        const step = event.shiftKey ? 5 : 1
+        nudge(selected, event.key === 'ArrowUp' ? step : -step)
+        return
+      }
+
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
       event.preventDefault()
       onToggleExcluded(selected)
     }
+
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selected, onToggleExcluded])
+  }, [selected, mode, onToggleExcluded, nudge])
 
   const at = (event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -173,12 +208,17 @@ export function Board({
             <Segment
               label="Inspect"
               active={mode === 'inspect'}
-              onClick={() => setMode('inspect')}
+              onClick={() => onMode('inspect')}
             />
             <Segment
               label="Mask"
               active={mode === 'mask'}
-              onClick={() => setMode('mask')}
+              onClick={() => onMode('mask')}
+            />
+            <Segment
+              label="Translate"
+              active={mode === 'translate'}
+              onClick={() => onMode('translate')}
             />
           </div>
         )}
@@ -257,6 +297,26 @@ export function Board({
         />
       )}
 
+      {mode === 'translate' && image && (
+        <TranslateTools
+          models={translating.models}
+          model={translating.model}
+          onModel={translating.onModel}
+          target={translating.target}
+          onTarget={translating.onTarget}
+          onTranslate={translating.onTranslate}
+          translating={stage === 'translating'}
+          canTranslate={Boolean(
+            translating.model && analysis?.texts?.some((text) => text),
+          )}
+          onFitAll={translating.onFitAll}
+          canFit={translating.lettering.some(Boolean)}
+          onApply={translating.onApply}
+          applying={translating.applying}
+          note={translating.note}
+        />
+      )}
+
       {cleaned && (
         <div className="flex flex-wrap items-center gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
           <span className="font-medium">The page has been cleaned.</span>
@@ -264,12 +324,12 @@ export function Board({
             <Segment
               label="Original"
               active={!showCleaned}
-              onClick={() => setShowCleaned(false)}
+              onClick={() => onShowCleaned(false)}
             />
             <Segment
               label="Cleaned"
               active={showCleaned}
-              onClick={() => setShowCleaned(true)}
+              onClick={() => onShowCleaned(true)}
             />
           </div>
           <a
@@ -323,7 +383,18 @@ export function Board({
                 />
               ))}
 
-            {!showCleaned && (
+            {mode === 'translate' && (
+              <TranslationLayer
+                page={{ width: image.width, height: image.height }}
+                scale={page.scale}
+                lettering={translating.lettering}
+                selected={selected}
+                onSelect={onSelect}
+                onBox={translating.onBox}
+              />
+            )}
+
+            {mode === 'mask' && !showCleaned && (
               <canvas
                 ref={overlay}
                 width={image.width}

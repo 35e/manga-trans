@@ -3,12 +3,23 @@ import { Board } from './components/Board'
 import { Dropzone } from './components/Dropzone'
 import { Gallery } from './components/Gallery'
 import { RegionsPanel } from './components/RegionsPanel'
+import { TranslationsPanel } from './components/TranslationsPanel'
 import { useFileDrop } from './hooks/useFileDrop'
 import { useImageLibrary } from './hooks/useImageLibrary'
 import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
-import type { Analysis, Stage } from './lib/api'
-import { API_BASE, clean, detect, letterMask, read } from './lib/api'
+import type { Analysis, BoardMode, Box, Lettering, Stage } from './lib/api'
+import {
+  API_BASE,
+  clean,
+  detect,
+  letterMask,
+  models as listModels,
+  read,
+  translate,
+} from './lib/api'
+import { compose, save } from './lib/compose'
+import { SIZE_MAX, SIZE_MIN, fitSize, ready } from './lib/fit'
 import { formatBytes, plural } from './lib/images'
 
 function App() {
@@ -34,6 +45,45 @@ function App() {
   )
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
+  const [mode, setMode] = useState<BoardMode>('inspect')
+
+  // The translated lines, one set per page, aligned with that page's blocks.
+  const [lettering, setLettering] = useState<Record<string, (Lettering | null)[]>>(
+    {},
+  )
+  const [ollamaModels, setOllamaModels] = useState<string[]>([])
+  const [model, setModel] = useState('')
+  const [target, setTarget] = useState('English')
+  const [noModels, setNoModels] = useState<string | null>(null)
+  const [applying, setApplying] = useState(false)
+  const [showCleaned, setShowCleaned] = useState(false)
+
+  // Fetched early: a font is only asked for when something needs it, and the
+  // first thing that needs this one is measuring where the lettering breaks.
+  useEffect(() => {
+    void ready()
+  }, [])
+
+  // What Ollama has to translate with, asked for once.
+  useEffect(() => {
+    let dropped = false
+    listModels().then(
+      (found) => {
+        if (dropped) return
+        setOllamaModels(found)
+        setModel((chosen) => chosen || found[0] || '')
+        setNoModels(found.length === 0 ? 'Ollama has no models pulled' : null)
+      },
+      (cause: unknown) => {
+        if (!dropped) {
+          setNoModels(cause instanceof Error ? cause.message : String(cause))
+        }
+      },
+    )
+    return () => {
+      dropped = true
+    }
+  }, [])
 
   // The traced lettering, one bitmap per page. Held here rather than fetched
   // twice: tracing is another pass of the detector, so it is worth keeping.
@@ -61,6 +111,19 @@ function App() {
     setError(null)
   }, [activeId])
 
+  const cleanedPage = active ? (cleanedPages[active.id] ?? null) : null
+
+  // A page arrives showing what came in; once it has been cleaned, and whenever
+  // lettering is being set over it, the board shows the cleaned one. Declared in
+  // this order so the later word wins.
+  useEffect(() => setShowCleaned(false), [activeId])
+  useEffect(() => {
+    if (cleanedPage) setShowCleaned(true)
+  }, [cleanedPage])
+  useEffect(() => {
+    if (mode === 'translate' && cleanedPage) setShowCleaned(true)
+  }, [mode, cleanedPage])
+
   const removeImage = useCallback(
     (id: string) => {
       remove(id)
@@ -68,6 +131,11 @@ function App() {
       dropCleaned(id)
       lettersHeld.current[id]?.close()
       setLetters((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([key]) => key !== id),
+        ),
+      )
+      setLettering((current) =>
         Object.fromEntries(
           Object.entries(current).filter(([key]) => key !== id),
         ),
@@ -87,6 +155,7 @@ function App() {
     clearCleaned()
     for (const bitmap of Object.values(lettersHeld.current)) bitmap.close()
     setLetters({})
+    setLettering({})
     setAnalyses({})
     setActiveId(null)
   }, [clear, clearMasks, clearCleaned])
@@ -105,6 +174,13 @@ function App() {
         ...current,
         [id]: { detection, texts: null, excluded: [] },
       }))
+      // Lettering is held per block; these are new blocks, so what was set
+      // against the old ones no longer means anything.
+      setLettering((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([key]) => key !== id),
+        ),
+      )
       if (detection.regions.length === 0) return
 
       setWorking({ id, stage: 'reading' })
@@ -201,6 +277,144 @@ function App() {
     [active, setCleaned],
   )
 
+  const pageLettering = active ? (lettering[active.id] ?? []) : []
+
+  /**
+   * Translate the page: every block that was read and not left alone, sent
+   * together. Each line lands in the box its original came out of, set at
+   * whatever size fits that box.
+   */
+  const runTranslate = useCallback(async () => {
+    if (!active || !model) return
+    const held = analyses[active.id]
+    if (!held?.texts) return
+
+    const { id } = active
+    const skip = new Set(held.excluded)
+    const wanted = held.texts
+      .map((text, index) => ({ text, index }))
+      .filter(({ text, index }) => text.trim() && !skip.has(index))
+    if (wanted.length === 0) return
+
+    setError(null)
+    setWorking({ id, stage: 'translating' })
+    try {
+      const [got] = await Promise.all([
+        translate(
+          wanted.map((line) => line.text),
+          model,
+          target,
+        ),
+        // Sizes are about to be worked out by measuring: the face has to be in.
+        ready(),
+      ])
+      const set: (Lettering | null)[] = held.detection.regions.map(() => null)
+      wanted.forEach((line, at) => {
+        const text = (got[at] ?? '').trim()
+        if (!text) return
+        const box = held.detection.regions[line.index].box
+        set[line.index] = {
+          text,
+          box,
+          size: fitSize(text, box[2] - box[0], box[3] - box[1]),
+        }
+      })
+      setLettering((current) => ({ ...current, [id]: set }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setWorking(null)
+    }
+  }, [active, analyses, model, target])
+
+  const changeLettering = useCallback(
+    (index: number, patch: Partial<Lettering>) => {
+      if (!active) return
+      const { id } = active
+      setLettering((current) => {
+        const page = current[id]
+        const line = page?.[index]
+        if (!line) return current
+        const next = [...page]
+        next[index] = { ...line, ...patch }
+        return { ...current, [id]: next }
+      })
+    },
+    [active],
+  )
+
+  const setLetteringBox = useCallback(
+    (index: number, box: Box) => changeLettering(index, { box }),
+    [changeLettering],
+  )
+
+  const fitOne = useCallback(
+    (index: number) => {
+      const line = active ? lettering[active.id]?.[index] : null
+      if (!line) return
+      const [x0, y0, x1, y1] = line.box
+      changeLettering(index, { size: fitSize(line.text, x1 - x0, y1 - y0) })
+    },
+    [active, lettering, changeLettering],
+  )
+
+  /** Arrow keys on the board: one point at a time, five with shift. */
+  const nudgeSize = useCallback(
+    (index: number, by: number) => {
+      const line = active ? lettering[active.id]?.[index] : null
+      if (!line) return
+      changeLettering(index, {
+        size: Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(line.size) + by)),
+      })
+    },
+    [active, lettering, changeLettering],
+  )
+
+  /** Set the lettering into the page and hand it over as a PNG. */
+  const applyToImage = useCallback(async () => {
+    if (!active) return
+    const set = lettering[active.id]
+    if (!set?.some(Boolean)) return
+
+    setApplying(true)
+    setError(null)
+    try {
+      // Exactly what the board is showing under the lettering, so what comes
+      // out is what was arranged.
+      const base = showCleaned && cleanedPage ? cleanedPage : active.url
+      const page = await compose(base, active.width, active.height, set)
+      save(page, `${active.name.replace(/\.[^.]+$/, '')}-lettered.png`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setApplying(false)
+    }
+  }, [active, lettering, cleanedPage, showCleaned])
+
+  const fitAll = useCallback(() => {
+    if (!active) return
+    const { id } = active
+    setLettering((current) => {
+      const page = current[id]
+      if (!page) return current
+      return {
+        ...current,
+        [id]: page.map((line) =>
+          line === null
+            ? null
+            : {
+                ...line,
+                size: fitSize(
+                  line.text,
+                  line.box[2] - line.box[0],
+                  line.box[3] - line.box[1],
+                ),
+              },
+        ),
+      }
+    })
+  }, [active])
+
   const total = images.reduce((sum, image) => sum + image.size, 0)
 
   return (
@@ -255,7 +469,7 @@ function App() {
           image={active}
           analysis={analysis}
           mask={forPage(active)}
-          cleaned={active ? (cleanedPages[active.id] ?? null) : null}
+          cleaned={cleanedPage}
           stage={stage}
           error={error}
           selected={selected}
@@ -265,15 +479,49 @@ function App() {
           onToggleExcluded={toggleExcluded}
           letters={active ? (letters[active.id] ?? null) : null}
           onTrace={traceLetters}
+          mode={mode}
+          onMode={setMode}
+          showCleaned={showCleaned}
+          onShowCleaned={setShowCleaned}
+          translating={{
+            models: ollamaModels,
+            model,
+            onModel: setModel,
+            target,
+            onTarget: setTarget,
+            onTranslate: runTranslate,
+            onFitAll: fitAll,
+            lettering: pageLettering,
+            onBox: setLetteringBox,
+            onSize: nudgeSize,
+            onApply: applyToImage,
+            applying,
+            note:
+              noModels ??
+              (pageLettering.some(Boolean) && !cleanedPage
+                ? 'this page has not been cleaned yet'
+                : null),
+          }}
         />
 
-        {active && analysis && (
+        {active && analysis && mode !== 'translate' && (
           <RegionsPanel
             analysis={analysis}
             reading={stage === 'reading'}
             selected={selected}
             onSelect={setSelected}
             onToggleExcluded={toggleExcluded}
+          />
+        )}
+
+        {active && analysis && mode === 'translate' && (
+          <TranslationsPanel
+            originals={analysis.texts ?? analysis.detection.regions.map(() => null)}
+            lettering={pageLettering}
+            selected={selected}
+            onSelect={setSelected}
+            onChange={changeLettering}
+            onFit={fitOne}
           />
         )}
       </div>

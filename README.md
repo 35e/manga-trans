@@ -53,6 +53,8 @@ port can call it.
 | `POST` | `/api/detect` | `image` → every block of lettering, boxed |
 | `POST` | `/api/letters` | `image` → the lettering itself, pixel by pixel |
 | `POST` | `/api/read` | `image`, `boxes` → what each box says |
+| `GET` | `/api/models` | → the models Ollama has to translate with |
+| `POST` | `/api/translate` | `texts`, `model` → the same lines in another language |
 | `POST` | `/api/clean` | `image`, `boxes` and/or `mask` → the page with them whited out |
 | `POST` | `/api/render` | `image`, `regions` → the same, with text set in them |
 
@@ -97,6 +99,21 @@ back as `""`, and the box is given a few pixels of air before it goes to the
 model. It translates nothing: what the text should say instead is still for the
 caller to decide.
 
+**`/api/translate`** is the one thing here that works on words alone — no image
+goes with it. `texts` is a JSON list, `model` is one of the names `/api/models`
+gives back, and `target` is the language to translate into (English unless
+said). The whole page goes over in one request rather than one line at a time:
+that is both far quicker and better translation, since a line of manga read on
+its own often cannot be translated at all, having no idea who is speaking or
+about what. The model is held to a JSON schema so the answers come back
+countable, and if it loses count anyway the lines are asked about one at a time,
+where it cannot. One translation comes back per text, in order; a text that was
+empty stays empty.
+
+The model runs under [Ollama](https://ollama.com) on your own machine, and
+nothing is sent anywhere else. Set `MANGA_TRANS_OLLAMA` if it is not on this
+one. Both endpoints answer `503` when there is nothing listening there.
+
 **`/api/clean`** paints each box white and hands the page back as a PNG. It also
 takes a `mask`: a greyscale image the size of the page, white where the page
 should be painted out and black where it should be left alone, sent as a second
@@ -126,6 +143,7 @@ Everything is set by environment variable:
 | `MANGA_TRANS_ORIGIN` | `*` — who may call the API from a browser |
 | `MANGA_TRANS_MODEL` | `~/.cache/manga-trans/comictextdetector.pt.onnx` |
 | `MANGA_TRANS_OCR_MODEL` | `kha-white/manga-ocr-base` |
+| `MANGA_TRANS_OLLAMA` | `http://localhost:11434`, or `http://host.containers.internal:11434` in the container |
 | `HF_HOME` | where the reader's weights are cached; `/opt/models/hf` in the container |
 | `MANGA_TRANS_FONT` | DejaVu Sans Bold, or Pillow's default |
 
@@ -137,6 +155,7 @@ api/
     detect.py     comic-text-detector on OpenCV's ONNX backend: blocks, and
                   the per-pixel mask of the lettering inside them
     read.py       manga-ocr, and the cropping that feeds it
+    ollama.py     translating a page by a model on this machine
     render.py     whiting out the old lettering, fitting and setting the new
     server.py     the API itself
     geometry.py   Box
@@ -145,10 +164,24 @@ web/
   src/            the dashboard: drop pages in, detect, read, mask, clean
 ```
 
-The dashboard puts a page on a board, boxes its lettering and reads it, then
-marks the lettering itself for hiding — not the boxes around it. That mask can
-be brushed by hand, drawn wider or erased back, and blocks worth keeping can be
-dropped from it one at a time. What is left goes to `/api/clean`.
+The dashboard puts a page on a board and works it in three tabs. **Inspect**
+boxes the lettering and reads it. **Mask** marks the lettering itself for
+hiding — not the boxes around it — and that mask can be brushed by hand, drawn
+wider or erased back, with blocks worth keeping dropped from it one at a time.
+**Translate** sets each translated line back where its original was, in Anime
+Ace, in a box that can be dragged about, pulled wider or narrower by its edges,
+and sized with the arrow keys. **Apply to image** draws the lot into the page
+and saves it — in the browser, with the same font, sizes and wrapping shown on
+the board, so what comes out is what was arranged. `/api/render` letters a page
+too, and letters it with PIL: it takes boxes and text and finds its own sizes,
+which is the endpoint to reach for from something that is not this dashboard.
+
+Translating needs Ollama running with a model pulled:
+
+```bash
+ollama pull gemma4:12b
+podman run --rm --init -p 8000:8000 manga-trans   # reaches Ollama on the host
+```
 
 The dashboard is a Vite app. `cd web && pnpm install && pnpm dev` serves it on
 port 5173, pointed at `http://localhost:8000` unless `VITE_API_URL` says

@@ -1,5 +1,31 @@
 @import "tailwindcss";
 
+/* The lettering face. Comic dialogue is set in the regular; the bold and the
+   italic are here so emphasis has somewhere to go. */
+@font-face {
+  font-family: "Anime Ace";
+  src: url("./fonts/anime-ace/animeace.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Anime Ace";
+  src: url("./fonts/anime-ace/animeace_b.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Anime Ace";
+  src: url("./fonts/anime-ace/animeace_i.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
 /* The board the page is laid on: dots, so the page's own edges read clearly. */
 .board {
   --board-dot: oklch(0.55 0.02 260 / 0.28);

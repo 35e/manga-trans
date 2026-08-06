@@ -14,9 +14,9 @@ import threading
 import numpy as np
 from flask import Flask, jsonify, request, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
-from werkzeug.exceptions import BadRequest, HTTPException
+from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
 
-from . import render
+from . import ollama, render
 from .detect import GROW, Detector
 from .geometry import Box
 from .read import Reader
@@ -148,8 +148,33 @@ def create_app(
         """The front end is served from somewhere else, so it needs letting in."""
         response.headers["Access-Control-Allow-Origin"] = ORIGIN
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return response
+
+    @app.get("/api/models")
+    def models():
+        """Every model Ollama has to translate with."""
+        try:
+            return jsonify(models=ollama.models())
+        except ollama.Unreachable as exc:
+            raise ServiceUnavailable(str(exc)) from exc
+
+    @app.post("/api/translate")
+    def translate():
+        """One translation per text, in the order they were given.
+
+        No image: this is the one thing here that works on words alone. Which
+        model does it is the caller's choice out of /api/models.
+        """
+        texts = [str(text) for text in sent("texts")]
+        model = request.form.get("model", "").strip()
+        if not model:
+            raise BadRequest("nothing to translate with (form field 'model')")
+        target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
+        try:
+            return jsonify(texts=ollama.translate(texts, model, target))
+        except ollama.Unreachable as exc:
+            raise ServiceUnavailable(str(exc)) from exc
 
     @app.post("/api/detect")
     def detect():

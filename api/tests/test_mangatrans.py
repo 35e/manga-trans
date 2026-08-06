@@ -10,7 +10,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image, ImageDraw
 
-from mangatrans import detect, read, render, server
+from mangatrans import detect, ollama, read, render, server
 from mangatrans.detect import Block
 from mangatrans.geometry import Box
 
@@ -244,6 +244,82 @@ class TestOverlay(unittest.TestCase):
         self.assertTrue((self.rendered("WAY TOO MANY WORDS " * 30) < 128).any())
 
 
+def reply(content: str = "", thinking: str = "") -> dict:
+    """One answer from Ollama, shaped the way it shapes them."""
+    return {"message": {"role": "assistant", "content": content, "thinking": thinking}}
+
+
+def translations(*texts) -> str:
+    return json.dumps({"translations": list(texts)})
+
+
+class TestOllama(unittest.TestCase):
+    """The talking to Ollama. Nothing here goes near the network."""
+
+    def test_models_come_back_named_and_sorted(self):
+        listing = {"models": [{"name": "qwen3:8b"}, {"name": "gemma4:12b"}]}
+        with mock.patch.object(ollama, "ask", return_value=listing):
+            self.assertEqual(ollama.models(), ["gemma4:12b", "qwen3:8b"])
+
+    def test_a_page_goes_over_in_one_request(self):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append((path, body))
+            return reply(translations("Good morning", "What is this?"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            got = ollama.translate(["おはよう", "なにこれ"], "gemma4:12b")
+        self.assertEqual(got, ["Good morning", "What is this?"])
+        self.assertEqual(len(asked), 1, "the lines were not sent together")
+        self.assertEqual(asked[0][0], "/api/chat")
+        self.assertIn("1. おはよう", asked[0][1]["messages"][1]["content"])
+
+    def test_the_answer_is_taken_from_thinking_when_content_is_empty(self):
+        # Some builds file a schema-held answer under 'thinking' instead.
+        with mock.patch.object(
+            ollama, "ask", return_value=reply("", translations("Good morning"))
+        ):
+            self.assertEqual(ollama.translate(["おはよう"], "m"), ["Good morning"])
+
+    def test_a_fenced_answer_is_still_read(self):
+        fenced = f"```json\n{translations('Good morning')}\n```"
+        with mock.patch.object(ollama, "ask", return_value=reply(fenced)):
+            self.assertEqual(ollama.translate(["おはよう"], "m"), ["Good morning"])
+
+    def test_losing_count_falls_back_to_one_line_at_a_time(self):
+        answers = [
+            reply(translations("only one")),  # two were asked about
+            reply(translations("first")),
+            reply(translations("second")),
+        ]
+        with mock.patch.object(ollama, "ask", side_effect=answers) as ask:
+            got = ollama.translate(["いち", "に"], "m")
+        self.assertEqual(got, ["first", "second"])
+        self.assertEqual(ask.call_count, 3, "it did not ask again line by line")
+
+    def test_an_empty_line_stays_empty_and_is_never_sent(self):
+        def ask(path, body=None, **kwargs):
+            sent_lines = body["messages"][1]["content"].splitlines()
+            self.assertEqual(
+                sent_lines,
+                ["1. おはよう", "2. 行こう"],
+                "the blank was sent over, or the rest were not renumbered",
+            )
+            return reply(translations("Good morning", "Let's go"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            got = ollama.translate(["おはよう", "   ", "行こう"], "m")
+        self.assertEqual(got, ["Good morning", "", "Let's go"])
+
+    def test_nothing_to_translate_asks_nothing(self):
+        with mock.patch.object(ollama, "ask", side_effect=AssertionError("asked")):
+            self.assertEqual(ollama.translate(["", "  "], "m"), ["", ""])
+
+    def test_where_ollama_is_can_be_said(self):
+        self.assertEqual(ollama.base("http://elsewhere:11434/"), "http://elsewhere:11434")
+
+
 class TestRead(unittest.TestCase):
     """The cropping and the loop. The model itself is never stood up here."""
 
@@ -457,6 +533,52 @@ class TestApi(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("box", response.json["error"])
+
+    def test_models_are_listed(self):
+        with mock.patch.object(
+            server.ollama, "models", return_value=["gemma4:12b"]
+        ):
+            response = client().get("/api/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"models": ["gemma4:12b"]})
+
+    def test_models_says_so_when_ollama_is_not_there(self):
+        with mock.patch.object(
+            server.ollama, "models", side_effect=server.ollama.Unreachable("no ollama")
+        ):
+            response = client().get("/api/models")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("ollama", response.json["error"])
+
+    def test_translate_answers_with_one_text_per_text(self):
+        with mock.patch.object(
+            server.ollama, "translate", return_value=["Good morning"]
+        ) as translating:
+            response = client().post(
+                "/api/translate",
+                data={"texts": json.dumps(["おはよう"]), "model": "gemma4:12b"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"texts": ["Good morning"]})
+        self.assertEqual(translating.call_args.args[1], "gemma4:12b")
+
+    def test_translate_takes_the_language_to_translate_into(self):
+        with mock.patch.object(server.ollama, "translate", return_value=[""]) as into:
+            client().post(
+                "/api/translate",
+                data={"texts": "[]", "model": "m", "target": "Dutch"},
+            )
+        self.assertEqual(into.call_args.args[2], "Dutch")
+
+    def test_translate_needs_a_model(self):
+        response = client().post("/api/translate", data={"texts": "[]"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("model", response.json["error"])
+
+    def test_translate_needs_texts(self):
+        response = client().post("/api/translate", data={"model": "m"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("texts", response.json["error"])
 
     def test_every_answer_may_be_read_from_a_browser(self):
         response = client().post(
