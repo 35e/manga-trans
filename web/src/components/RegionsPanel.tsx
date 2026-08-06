@@ -149,6 +149,10 @@ function Block({
             <span className="font-medium text-slate-500 dark:text-slate-400">
               left alone
             </span>
+          ) : region.manual ? (
+            <span className="font-medium text-indigo-600 dark:text-indigo-400">
+              added by hand
+            </span>
           ) : (
             <span className={unsure ? 'text-amber-600 dark:text-amber-400' : ''}>
               {Math.round(region.confidence * 100)}%

@@ -8,6 +8,8 @@ export type Box = [number, number, number, number]
 export type Region = {
   box: Box
   confidence: number
+  /** Drawn by hand, because the detector missed it. Never sure, just certain. */
+  manual?: boolean
 }
 
 export type Detection = {

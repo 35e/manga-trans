@@ -37,6 +37,7 @@ type Props = {
   onDetect: () => void
   onClean: (mask: Blob) => void
   onRunAll: () => void
+  onAddRegion: (box: Box) => void
   onToggleExcluded: (index: number) => void
   /** The traced lettering for this page, once it has been asked for. */
   letters: ImageBitmap | null
@@ -61,6 +62,7 @@ export function Board({
   onDetect,
   onClean,
   onRunAll,
+  onAddRegion,
   onToggleExcluded,
   letters,
   onTrace,
@@ -78,6 +80,9 @@ export function Board({
   const page = useFittedPage(surface, image)
   const [brush, setBrush] = useState<Brush>({ radius: 16, erase: false })
   const [showBoxes, setShowBoxes] = useState(true)
+  const [adding, setAdding] = useState(false)
+  const [drawn, setDrawn] = useState<Box | null>(null)
+  const drawnFrom = useRef<Point | null>(null)
   // Brushing draws straight onto the canvas; this is only so the buttons that
   // care whether anything is marked catch up when a stroke ends.
   const [edits, setEdits] = useState(0)
@@ -194,6 +199,14 @@ export function Board({
     if (overlay.current && mask) mask.showOn(overlay.current)
   }
 
+  /** A box dragged out on the page, in the page's own pixels, corners in order. */
+  const between = (from: Point, to: Point): Box => [
+    Math.max(0, Math.round(Math.min(from.x, to.x))),
+    Math.max(0, Math.round(Math.min(from.y, to.y))),
+    Math.min(image?.width ?? 0, Math.round(Math.max(from.x, to.x))),
+    Math.min(image?.height ?? 0, Math.round(Math.max(from.y, to.y))),
+  ]
+
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-4 py-2.5 dark:border-white/10 dark:bg-slate-950">
@@ -295,8 +308,24 @@ export function Board({
             />
             Show the boxes
           </label>
+          <button
+            type="button"
+            onClick={() => setAdding((armed) => !armed)}
+            aria-pressed={adding}
+            title="Draw a block the detector missed"
+            className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              adding
+                ? 'border-indigo-600 bg-indigo-600 text-white'
+                : 'border-slate-300 text-slate-700 hover:bg-white dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10'
+            }`}
+          >
+            {adding ? 'Drawing a block…' : 'Add a block'}
+          </button>
+
           <span className="text-xs text-slate-500 dark:text-slate-400">
-            Click one to pick it out; delete drops it from the clean.
+            {adding
+              ? 'Drag across the bubble it missed. It is read and put in reading order.'
+              : 'Click one to pick it out; delete drops it from the clean.'}
           </span>
         </div>
       )}
@@ -411,6 +440,55 @@ export function Board({
                   onSelect={() => onSelect(selected === index ? null : index)}
                 />
               ))}
+
+            {mode === 'inspect' && adding && (
+              <div
+                className="absolute inset-0 cursor-crosshair touch-none"
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId)
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  drawnFrom.current = {
+                    x: ((event.clientX - rect.left) / rect.width) * image.width,
+                    y: ((event.clientY - rect.top) / rect.height) * image.height,
+                  }
+                }}
+                onPointerMove={(event) => {
+                  const from = drawnFrom.current
+                  if (!from) return
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  setDrawn(
+                    between(from, {
+                      x: ((event.clientX - rect.left) / rect.width) * image.width,
+                      y: ((event.clientY - rect.top) / rect.height) * image.height,
+                    }),
+                  )
+                }}
+                onPointerUp={(event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId)
+                  }
+                  drawnFrom.current = null
+                  // A stray click is not a block: it takes a real drag.
+                  if (drawn && drawn[2] - drawn[0] > 6 && drawn[3] - drawn[1] > 6) {
+                    onAddRegion(drawn)
+                  }
+                  setDrawn(null)
+                }}
+              >
+                {drawn && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      left: `${(drawn[0] / image.width) * 100}%`,
+                      top: `${(drawn[1] / image.height) * 100}%`,
+                      width: `${((drawn[2] - drawn[0]) / image.width) * 100}%`,
+                      height: `${((drawn[3] - drawn[1]) / image.height) * 100}%`,
+                    }}
+                    className="absolute border-2 border-dashed border-indigo-500 bg-indigo-500/20"
+                  />
+                )}
+              </div>
+            )}
 
             {mode === 'translate' && (
               <TranslationLayer

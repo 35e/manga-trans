@@ -25,6 +25,7 @@ import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, fitSize, ready } from './lib/fit'
 import type { GalleryImage } from './lib/images'
 import { formatBytes, plural } from './lib/images'
+import { insertAt, insertionFor } from './lib/order'
 
 const said = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause)
@@ -271,6 +272,84 @@ function App() {
         ...current,
         [active.id]: { ...held, excluded: [...excluded] },
       }))
+    },
+    [active, analyses, forPage],
+  )
+
+  /**
+   * A block the detector missed, drawn by hand.
+   *
+   * It goes in at the point reading order puts it, not on the end, so the page
+   * still translates as one conversation in the right sequence. Everything held
+   * against a block by its position — what was read, what was left alone, what
+   * was lettered — is moved along with it.
+   */
+  const addRegion = useCallback(
+    async (box: Box) => {
+      if (!active) return
+      const { id, file } = active
+      const held = analyses[id]
+      if (!held) return
+
+      const at = insertionFor(
+        held.detection.regions.map((region) => region.box),
+        box,
+      )
+      const regions = insertAt(held.detection.regions, at, {
+        box,
+        confidence: 1,
+        manual: true,
+      })
+      const texts = insertAt(
+        held.texts ?? held.detection.regions.map(() => ''),
+        at,
+        '',
+      )
+
+      setAnalyses((current) => ({
+        ...current,
+        [id]: {
+          ...held,
+          detection: { ...held.detection, regions },
+          texts,
+          // Indices at or past the new one all moved up by one.
+          excluded: held.excluded.map((index) => (index >= at ? index + 1 : index)),
+        },
+      }))
+      setLettering((current) =>
+        current[id] ? { ...current, [id]: insertAt(current[id], at, null) } : current,
+      )
+      setSelected(at)
+
+      // Marked for hiding along with the rest, if the rest already are.
+      const mask = forPage(active)
+      if (mask && !mask.empty) {
+        const traced = lettersHeld.current[id]
+        if (traced) mask.letters(traced, [box])
+        else mask.boxes([box])
+      }
+
+      setError(null)
+      setWorking({ id, stage: 'reading' })
+      try {
+        const [text] = await read(file, [box])
+        setAnalyses((current) => {
+          const now = current[id]
+          if (!now?.texts) return current
+          // Found again by its box: another may have been added in the meantime.
+          const where = now.detection.regions.findIndex(
+            (region) => region.box.join() === box.join(),
+          )
+          if (where === -1) return current
+          const said = [...now.texts]
+          said[where] = text ?? ''
+          return { ...current, [id]: { ...now, texts: said } }
+        })
+      } catch (cause) {
+        setError(said(cause))
+      } finally {
+        setWorking(null)
+      }
     },
     [active, analyses, forPage],
   )
@@ -627,6 +706,7 @@ function App() {
           onDetect={runDetect}
           onClean={runClean}
           onRunAll={runAll}
+          onAddRegion={addRegion}
           onToggleExcluded={toggleExcluded}
           letters={active ? (letters[active.id] ?? null) : null}
           onTrace={traceLetters}
