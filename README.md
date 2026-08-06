@@ -175,6 +175,11 @@ web/
   src/            the dashboard: drop pages in, detect, read, mask, clean
 ```
 
+Pages go in by dropping them, pasting them, or picking them — and a chapter can
+go in as a `.zip` or `.cbz`, which is opened in the browser. The pages come out
+in the order their names put them, counting properly: page 2 before page 10.
+Folders, dotfiles and the `__MACOSX` rubbish a Mac packs in are left behind.
+
 The dashboard puts a page on a board and works it in three tabs. **Inspect**
 boxes the lettering and reads it. **Mask** marks the lettering itself for
 hiding — not the boxes around it — and that mask can be brushed by hand, drawn

@@ -23,7 +23,7 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
       <input
         ref={input}
         type="file"
-        accept="image/*"
+        accept="image/*,.zip,.cbz,application/zip"
         multiple
         className="sr-only"
         onChange={(event) => {
@@ -55,7 +55,7 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
         {busy ? 'Reading…' : dragging ? 'Drop to add' : 'Drop pages or browse'}
       </span>
       <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
-        paste works too
+        a zip of them works too, and so does pasting
       </span>
     </button>
   )

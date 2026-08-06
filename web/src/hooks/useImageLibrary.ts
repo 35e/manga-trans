@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GalleryImage } from '../lib/images'
 import { fingerprint, isImage, loadImage, plural } from '../lib/images'
+import { expand, isZip } from '../lib/zip'
 
 export type LibraryNotice = { id: string; text: string }
 
@@ -30,13 +31,34 @@ export function useImageLibrary() {
 
   const add = useCallback(
     async (incoming: FileList | File[] | null) => {
-      const files = Array.from(incoming ?? [])
-      if (files.length === 0) return
+      const dropped = Array.from(incoming ?? [])
+      if (dropped.length === 0) return
+
+      setBusy(true)
+
+      // An archive is opened where it was dropped, so a zip among loose pages
+      // leaves everything in the order it arrived in.
+      const files: File[] = []
+      const unopenable: string[] = []
+      const hollow: string[] = []
+
+      for (const file of dropped) {
+        if (!isZip(file)) {
+          files.push(file)
+          continue
+        }
+        try {
+          const inside = await expand(file)
+          if (inside.length === 0) hollow.push(file.name)
+          files.push(...inside)
+        } catch {
+          unopenable.push(file.name)
+        }
+      }
 
       const rejected = files.filter((file) => !isImage(file))
       const candidates = files.filter(isImage)
 
-      setBusy(true)
       const loaded = (await Promise.all(candidates.map(loadImage))).filter(
         (image) => image !== null,
       )
@@ -63,6 +85,10 @@ export function useImageLibrary() {
 
       const broken = candidates.length - loaded.length
       const problems = [
+        unopenable.length > 0 &&
+          `${plural(unopenable.length, 'archive')} could not be opened`,
+        hollow.length > 0 &&
+          `${plural(hollow.length, 'archive')} held no images`,
         rejected.length > 0 && `${plural(rejected.length, 'file')} skipped`,
         broken > 0 && `${plural(broken, 'image')} could not be read`,
         duplicates > 0 && `${plural(duplicates, 'duplicate')} skipped`,
