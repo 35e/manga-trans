@@ -3,15 +3,18 @@ import { Board } from './components/Board'
 import { Dropzone } from './components/Dropzone'
 import { Gallery } from './components/Gallery'
 import { RegionsPanel } from './components/RegionsPanel'
+import { Settings } from './components/Settings'
 import { TranslationsPanel } from './components/TranslationsPanel'
 import { useFileDrop } from './hooks/useFileDrop'
 import { useImageLibrary } from './hooks/useImageLibrary'
 import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
+import { useSettings } from './hooks/useSettings'
 import type { Analysis, BoardMode, Box, Lettering, Stage } from './lib/api'
 import {
   API_BASE,
   clean,
+  defaultPrompt,
   detect,
   letterMask,
   models as listModels,
@@ -67,6 +70,24 @@ function App() {
   const [target, setTarget] = useState('English')
   const [noModels, setNoModels] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
+
+  const { prompt, setPrompt } = useSettings()
+  const [builtInPrompt, setBuiltInPrompt] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // The API's own prompt, to show as the starting point and to go back to.
+  useEffect(() => {
+    let dropped = false
+    defaultPrompt().then(
+      (found) => {
+        if (!dropped) setBuiltInPrompt(found)
+      },
+      () => undefined,
+    )
+    return () => {
+      dropped = true
+    }
+  }, [])
   const [showCleaned, setShowCleaned] = useState(false)
 
   // Fetched early: a font is only asked for when something needs it, and the
@@ -353,6 +374,7 @@ function App() {
             wanted.map((line) => line.text),
             model,
             target,
+            prompt,
           ),
           // Sizes are about to be worked out by measuring: the face has to be in.
           ready(),
@@ -377,7 +399,7 @@ function App() {
         setWorking(null)
       }
     },
-    [model, target],
+    [model, target, prompt],
   )
 
   // The three steps as the buttons on the board call them, each moving on to
@@ -515,10 +537,44 @@ function App() {
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-4 py-2.5 dark:border-white/10">
         <h1 className="text-sm font-semibold tracking-tight">manga-trans</h1>
-        <p className="truncate text-xs text-slate-400 dark:text-slate-500">
-          {API_BASE}
-        </p>
+        <div className="flex min-w-0 items-center gap-3">
+          <p className="truncate text-xs text-slate-400 dark:text-slate-500">
+            {API_BASE}
+          </p>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+            title="Settings"
+            className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="size-4"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+        </div>
       </header>
+
+      {settingsOpen && (
+        <Settings
+          onClose={() => setSettingsOpen(false)}
+          prompt={prompt}
+          fallback={builtInPrompt}
+          onSave={setPrompt}
+          apiBase={API_BASE}
+          models={ollamaModels}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <aside className="flex shrink-0 flex-col border-slate-200 bg-white max-lg:h-64 max-lg:border-b lg:w-60 lg:border-r xl:w-72 dark:border-white/10 dark:bg-slate-950">

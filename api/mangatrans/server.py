@@ -159,20 +159,32 @@ def create_app(
         except ollama.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 
+    @app.get("/api/prompt")
+    def prompt():
+        """What the model is told to do, unless a caller says otherwise.
+
+        Handed out so a front end can show it, let it be edited, and send the
+        edit back — nothing is kept here.
+        """
+        return jsonify(prompt=ollama.SYSTEM_DEFAULT)
+
     @app.post("/api/translate")
     def translate():
         """One translation per text, in the order they were given.
 
         No image: this is the one thing here that works on words alone. Which
-        model does it is the caller's choice out of /api/models.
+        model does it is the caller's choice out of /api/models, and so is what
+        the model is told — send `system` to say something other than the
+        default, with `{target}` anywhere the language should go.
         """
         texts = [str(text) for text in sent("texts")]
         model = request.form.get("model", "").strip()
         if not model:
             raise BadRequest("nothing to translate with (form field 'model')")
         target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
+        system = request.form.get("system", "").strip() or None
         try:
-            return jsonify(texts=ollama.translate(texts, model, target))
+            return jsonify(texts=ollama.translate(texts, model, target, system=system))
         except ollama.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 

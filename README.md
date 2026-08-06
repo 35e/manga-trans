@@ -54,6 +54,7 @@ port can call it.
 | `POST` | `/api/letters` | `image` → the lettering itself, pixel by pixel |
 | `POST` | `/api/read` | `image`, `boxes` → what each box says |
 | `GET` | `/api/models` | → the models Ollama has to translate with |
+| `GET` | `/api/prompt` | → what the model is told, unless told otherwise |
 | `POST` | `/api/translate` | `texts`, `model` → the same lines in another language |
 | `POST` | `/api/clean` | `image`, `boxes` and/or `mask` → the page with them whited out |
 | `POST` | `/api/render` | `image`, `regions` → the same, with text set in them |
@@ -110,9 +111,19 @@ countable, and if it loses count anyway the lines are asked about one at a time,
 where it cannot. One translation comes back per text, in order; a text that was
 empty stays empty.
 
+What the model is told is the caller's too: send `system`, with `{target}`
+wherever the language should go, and `GET /api/prompt` hands back the default to
+start from. Nothing is kept — every request carries its own — so a front end
+that wants its own prompt remembers it and sends it each time, which is what the
+dashboard's settings do.
+
+Bear in mind that the answers are held to a JSON schema, and a model under a
+schema follows a prompt loosely. Asking for a voice — casual, formal, terse —
+comes through; asking it to reformat what it returns mostly does not.
+
 The model runs under [Ollama](https://ollama.com) on your own machine, and
 nothing is sent anywhere else. Set `MANGA_TRANS_OLLAMA` if it is not on this
-one. Both endpoints answer `503` when there is nothing listening there.
+one. All three endpoints answer `503` when there is nothing listening there.
 
 **`/api/clean`** paints each box white and hands the page back as a PNG. It also
 takes a `mask`: a greyscale image the size of the page, white where the page

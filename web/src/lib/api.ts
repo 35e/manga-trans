@@ -127,14 +127,29 @@ export async function models(signal?: AbortSignal): Promise<string[]> {
 }
 
 /**
+ * What the API tells the model to do when it is not told anything else. Held
+ * nowhere but here: the API keeps no settings, so a front end that wants its
+ * own asks for this, lets it be edited, and sends the edit back each time.
+ */
+export async function defaultPrompt(signal?: AbortSignal): Promise<string> {
+  const response = await reach('/api/prompt', { signal })
+  if (!response.ok) await refuse(response)
+  const answer = (await response.json()) as { prompt: string }
+  return answer.prompt
+}
+
+/**
  * One translation per text, in the order they were given. The whole page goes
  * over at once: a line of manga read on its own often cannot be translated at
  * all, having no idea who is speaking or about what.
+ *
+ * `system` is what the model is told; leave it out for the API's own.
  */
 export async function translate(
   texts: string[],
   model: string,
   target: string,
+  system?: string | null,
   signal?: AbortSignal,
 ): Promise<string[]> {
   if (texts.length === 0) return []
@@ -143,6 +158,7 @@ export async function translate(
   body.append('texts', JSON.stringify(texts))
   body.append('model', model)
   body.append('target', target)
+  if (system) body.append('system', system)
 
   const response = await reach('/api/translate', { method: 'POST', body, signal })
   if (!response.ok) await refuse(response)

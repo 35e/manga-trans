@@ -31,6 +31,23 @@ SCHEMA = {
     "required": ["translations"],
 }
 
+# What the model is told it is doing, unless the caller says otherwise.
+# ``{target}`` is replaced by the language being translated into.
+#
+# The JSON it asks for is not what makes the answer JSON — the schema above does
+# that, whatever the prompt says. What the wording is really holding up is the
+# count and the order, and if a rewritten prompt loses those the lines are asked
+# about one at a time instead. So this can be changed freely: at worst it costs
+# time, not alignment.
+SYSTEM_DEFAULT = (
+    "You translate manga dialogue into {target}. You are given the lines of one "
+    "page, in order, and they are one conversation: read them together. Reply "
+    "with a JSON object holding one translation per line, in the same order, the "
+    "same number of them. Keep it short enough to letter back into a speech "
+    "bubble. Translate only: no notes, no romaji, no quotation marks around the "
+    "line."
+)
+
 
 class Unreachable(RuntimeError):
     """Ollama is not answering where it was expected to be."""
@@ -99,7 +116,18 @@ def answered(message: dict) -> list | None:
     return None
 
 
-def request_for(lines: list[str], model: str, target: str) -> dict:
+def briefing(target: str, system: str | None = None) -> str:
+    """What the model is told, with the language filled in.
+
+    Replaced rather than formatted: a prompt written by hand may well have
+    braces of its own in it, and str.format would choke on them.
+    """
+    return (system or SYSTEM_DEFAULT).replace("{target}", target)
+
+
+def request_for(
+    lines: list[str], model: str, target: str, system: str | None = None
+) -> dict:
     return {
         "model": model,
         "stream": False,
@@ -110,18 +138,7 @@ def request_for(lines: list[str], model: str, target: str) -> dict:
         "options": {"temperature": 0.2},
         "format": SCHEMA,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    f"You translate manga dialogue into {target}. You are given the "
-                    "lines of one page, in order, and they are one conversation: "
-                    "read them together. Reply with a JSON object holding one "
-                    "translation per line, in the same order, the same number of "
-                    "them. Keep it short enough to letter back into a speech "
-                    "bubble. Translate only: no notes, no romaji, no quotation "
-                    "marks around the line."
-                ),
-            },
+            {"role": "system", "content": briefing(target, system)},
             {
                 "role": "user",
                 "content": "\n".join(
@@ -133,7 +150,11 @@ def request_for(lines: list[str], model: str, target: str) -> dict:
 
 
 def translate(
-    texts: list[str], model: str, target: str = TARGET_DEFAULT, host=None
+    texts: list[str],
+    model: str,
+    target: str = TARGET_DEFAULT,
+    host=None,
+    system: str | None = None,
 ) -> list[str]:
     """One translation per text, in the order they were given.
 
@@ -146,21 +167,23 @@ def translate(
         return done
 
     lines = [text for _, text in wanted]
-    got = answered(ask("/api/chat", request_for(lines, model, target), host=host)["message"])
+    sent = ask("/api/chat", request_for(lines, model, target, system), host=host)
+    got = answered(sent["message"])
 
     if got is None or len(got) != len(lines):
         # It lost count. Asked one line at a time it cannot, though it loses the
         # rest of the page as context.
-        got = [one(line, model, target, host) for line in lines]
+        got = [one(line, model, target, host, system) for line in lines]
 
     for (at, _), answer in zip(wanted, got):
         done[at] = str(answer).strip()
     return done
 
 
-def one(text: str, model: str, target: str, host=None) -> str:
+def one(text: str, model: str, target: str, host=None, system: str | None = None) -> str:
     """One line on its own, for when a whole page came back miscounted."""
-    message = ask("/api/chat", request_for([text], model, target), host=host)["message"]
+    sent = ask("/api/chat", request_for([text], model, target, system), host=host)
+    message = sent["message"]
     got = answered(message)
     if got:
         return str(got[0]).strip()

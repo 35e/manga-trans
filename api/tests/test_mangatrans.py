@@ -316,6 +316,43 @@ class TestOllama(unittest.TestCase):
         with mock.patch.object(ollama, "ask", side_effect=AssertionError("asked")):
             self.assertEqual(ollama.translate(["", "  "], "m"), ["", ""])
 
+    def test_the_briefing_says_what_to_translate_into(self):
+        self.assertIn("Dutch", ollama.briefing("Dutch"))
+
+    def test_a_briefing_of_your_own_is_used_instead(self):
+        said = ollama.briefing("Dutch", "Turn this into {target}, in pirate.")
+        self.assertEqual(said, "Turn this into Dutch, in pirate.")
+
+    def test_a_briefing_may_have_braces_of_its_own(self):
+        # Substituted rather than formatted: str.format would choke on these.
+        said = ollama.briefing("Dutch", 'Answer like {"a": 1} but in {target}.')
+        self.assertEqual(said, 'Answer like {"a": 1} but in Dutch.')
+
+    def test_the_briefing_reaches_the_request(self):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][0]["content"])
+            return reply(translations("Goedemorgen"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(["おはよう"], "m", "Dutch", system="Be brief in {target}.")
+        self.assertEqual(asked, ["Be brief in Dutch."])
+
+    def test_the_briefing_holds_when_it_falls_back_to_one_at_a_time(self):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][0]["content"])
+            # Miscounted the first time, so each line is asked about alone.
+            return reply(translations("only one")) if len(asked) == 1 else reply(
+                translations("a line")
+            )
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(["いち", "に"], "m", "Dutch", system="Mine.")
+        self.assertEqual(asked, ["Mine.", "Mine.", "Mine."])
+
     def test_where_ollama_is_can_be_said(self):
         self.assertEqual(ollama.base("http://elsewhere:11434/"), "http://elsewhere:11434")
 
@@ -569,6 +606,25 @@ class TestApi(unittest.TestCase):
                 data={"texts": "[]", "model": "m", "target": "Dutch"},
             )
         self.assertEqual(into.call_args.args[2], "Dutch")
+
+    def test_the_default_prompt_is_handed_out(self):
+        response = client().get("/api/prompt")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"prompt": server.ollama.SYSTEM_DEFAULT})
+        self.assertIn("{target}", response.json["prompt"])
+
+    def test_translate_passes_a_prompt_of_your_own_on(self):
+        with mock.patch.object(server.ollama, "translate", return_value=[""]) as told:
+            client().post(
+                "/api/translate",
+                data={"texts": "[]", "model": "m", "system": "Be brief."},
+            )
+        self.assertEqual(told.call_args.kwargs["system"], "Be brief.")
+
+    def test_translate_without_a_prompt_leaves_the_default_alone(self):
+        with mock.patch.object(server.ollama, "translate", return_value=[""]) as told:
+            client().post("/api/translate", data={"texts": "[]", "model": "m"})
+        self.assertIsNone(told.call_args.kwargs["system"])
 
     def test_translate_needs_a_model(self):
         response = client().post("/api/translate", data={"texts": "[]"})
