@@ -4,6 +4,7 @@ import { UNSURE } from '../lib/api'
 import type { GalleryImage } from '../lib/images'
 import type { Brush, Mask, Point } from '../lib/mask'
 import { MaskTools } from './MaskTools'
+import { Steps } from './Steps'
 import { TranslateTools } from './TranslateTools'
 import { TranslationLayer } from './TranslationLayer'
 
@@ -35,6 +36,7 @@ type Props = {
   onSelect: (index: number | null) => void
   onDetect: () => void
   onClean: (mask: Blob) => void
+  onRunAll: () => void
   onToggleExcluded: (index: number) => void
   /** The traced lettering for this page, once it has been asked for. */
   letters: ImageBitmap | null
@@ -58,6 +60,7 @@ export function Board({
   onSelect,
   onDetect,
   onClean,
+  onRunAll,
   onToggleExcluded,
   letters,
   onTrace,
@@ -83,6 +86,10 @@ export function Board({
   const busy = stage !== null
   const masking = mode === 'mask' && !showCleaned
   const marked = Boolean(mask && !mask.empty)
+
+  // Where this page has got to, which is what the steps show.
+  const read = analysis?.texts != null
+  const lettered = translating.lettering.some(Boolean)
 
   // The array changes identity only when a block is dropped or put back, which
   // is what the effects below want to hear about.
@@ -204,26 +211,81 @@ export function Board({
         </div>
 
         {image && (
-          <div className="flex rounded-lg border border-slate-300 p-0.5 dark:border-white/15">
-            <Segment
-              label="Inspect"
-              active={mode === 'inspect'}
-              onClick={() => onMode('inspect')}
-            />
-            <Segment
-              label="Mask"
-              active={mode === 'mask'}
-              onClick={() => onMode('mask')}
-            />
-            <Segment
-              label="Translate"
-              active={mode === 'translate'}
-              onClick={() => onMode('translate')}
-            />
-          </div>
+          <Steps
+            current={mode}
+            onPick={onMode}
+            steps={[
+              { id: 'inspect', label: 'Text', done: read, open: true },
+              { id: 'mask', label: 'Clean', done: Boolean(cleaned), open: read },
+              {
+                id: 'translate',
+                label: 'Translate',
+                done: lettered,
+                open: read,
+              },
+            ]}
+          />
         )}
 
-        {detection && mode === 'inspect' && (
+        {image && (
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={onRunAll}
+              disabled={busy}
+              title="Detect the text, hide it, and letter the page"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
+            >
+              Do all three
+            </button>
+
+            {mode === 'inspect' && (
+              <Action onClick={onDetect} disabled={busy} stage={stage}>
+                {detection ? 'Read again' : 'Detect text'}
+              </Action>
+            )}
+
+            {mode === 'mask' && (
+              <Action
+                onClick={() => {
+                  if (mask && !mask.empty) mask.toBlob().then(onClean)
+                }}
+                disabled={busy || !marked}
+                stage={stage}
+                title={marked ? undefined : 'Mark something to hide first'}
+              >
+                {cleaned ? 'Clean again' : 'Clean page'}
+              </Action>
+            )}
+
+            {mode === 'translate' && (
+              <Action
+                onClick={lettered ? translating.onApply : translating.onTranslate}
+                disabled={
+                  busy ||
+                  translating.applying ||
+                  (!lettered && !(translating.model && read))
+                }
+                stage={stage}
+                title={
+                  lettered
+                    ? 'Set the lettering into the page and save it'
+                    : undefined
+                }
+              >
+                {translating.applying
+                  ? 'Applying…'
+                  : lettered
+                    ? 'Apply to image'
+                    : 'Translate page'}
+              </Action>
+            )}
+          </div>
+        )}
+      </div>
+
+      {mode === 'inspect' && detection && (
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 dark:border-white/10 dark:bg-white/5">
           <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-600 select-none dark:text-slate-300">
             <input
               type="checkbox"
@@ -231,40 +293,13 @@ export function Board({
               onChange={(event) => setShowBoxes(event.target.checked)}
               className="size-3.5 accent-indigo-600"
             />
-            Boxes
+            Show the boxes
           </label>
-        )}
-
-        <button
-          type="button"
-          onClick={onDetect}
-          disabled={!image || busy}
-          className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
-        >
-          {stage === 'detecting' && <Spinner />}
-          {stage === 'reading' && <Spinner />}
-          {stage === 'detecting'
-            ? 'Detecting…'
-            : stage === 'reading'
-              ? 'Reading…'
-              : detection
-                ? 'Read again'
-                : 'Detect text'}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            if (mask && !mask.empty) mask.toBlob().then(onClean)
-          }}
-          disabled={!image || busy || !marked}
-          title={marked ? undefined : 'Mark something to hide first'}
-          className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {stage === 'cleaning' && <Spinner />}
-          {stage === 'cleaning' ? 'Cleaning…' : 'Clean page'}
-        </button>
-      </div>
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            Click one to pick it out; delete drops it from the clean.
+          </span>
+        </div>
+      )}
 
       {masking && (
         <MaskTools
@@ -294,6 +329,7 @@ export function Board({
             setEdits((count) => count + 1)
           }}
           canClear={marked}
+          note={read ? null : 'find the text first, or brush the page by hand'}
         />
       )}
 
@@ -304,15 +340,8 @@ export function Board({
           onModel={translating.onModel}
           target={translating.target}
           onTarget={translating.onTarget}
-          onTranslate={translating.onTranslate}
-          translating={stage === 'translating'}
-          canTranslate={Boolean(
-            translating.model && analysis?.texts?.some((text) => text),
-          )}
           onFitAll={translating.onFitAll}
-          canFit={translating.lettering.some(Boolean)}
-          onApply={translating.onApply}
-          applying={translating.applying}
+          canFit={lettered}
           note={translating.note}
         />
       )}
@@ -449,6 +478,49 @@ export function Board({
   )
 }
 
+/** What each stage is called while it is happening. */
+const LABELS: Record<Stage, string> = {
+  detecting: 'Detecting…',
+  reading: 'Reading…',
+  tracing: 'Tracing…',
+  cleaning: 'Cleaning…',
+  translating: 'Translating…',
+}
+
+/** The one button that does the thing this step is for. */
+function Action({
+  onClick,
+  disabled,
+  stage,
+  title,
+  children,
+}: {
+  onClick: () => void
+  disabled: boolean
+  stage: Stage | null
+  title?: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {stage ? (
+        <>
+          <Spinner />
+          {LABELS[stage]}
+        </>
+      ) : (
+        children
+      )}
+    </button>
+  )
+}
+
 function Segment({
   label,
   active,
@@ -582,8 +654,11 @@ function BoardEmpty() {
           <rect x="4" y="3" width="16" height="18" rx="2" />
           <path d="M8 8h5M8 12h8M8 16h6" />
         </svg>
-        <p className="mt-4 text-sm font-medium text-slate-500 dark:text-slate-400">
+        <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-300">
           Click a page in the gallery to put it on the board
+        </p>
+        <p className="mt-1 text-sm text-slate-400 dark:text-slate-500">
+          Then: find the text, hide it, letter it back in.
         </p>
       </div>
     </div>

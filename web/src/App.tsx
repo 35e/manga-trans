@@ -20,7 +20,18 @@ import {
 } from './lib/api'
 import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, fitSize, ready } from './lib/fit'
+import type { GalleryImage } from './lib/images'
 import { formatBytes, plural } from './lib/images'
+
+const said = (cause: unknown) =>
+  cause instanceof Error ? cause.message : String(cause)
+
+/** The same record without one key. */
+function without<T>(record: Record<string, T>, key: string): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(record).filter(([held]) => held !== key),
+  )
+}
 
 function App() {
   const { images, add, remove, clear, busy, notice, dismissNotice } =
@@ -113,6 +124,21 @@ function App() {
 
   const cleanedPage = active ? (cleanedPages[active.id] ?? null) : null
 
+  // A page opens on the first thing left to do with it, so picking one up again
+  // lands where it was left rather than back at the beginning.
+  const analysesNow = useRef(analyses)
+  analysesNow.current = analyses
+  const cleanedNow = useRef(cleanedPages)
+  cleanedNow.current = cleanedPages
+
+  useEffect(() => {
+    if (!activeId) return
+    const found = analysesNow.current[activeId]
+    setMode(
+      !found?.texts ? 'inspect' : !cleanedNow.current[activeId] ? 'mask' : 'translate',
+    )
+  }, [activeId])
+
   // A page arrives showing what came in; once it has been cleaned, and whenever
   // lettering is being set over it, the board shows the cleaned one. Declared in
   // this order so the later word wins.
@@ -130,21 +156,9 @@ function App() {
       dropMask(id)
       dropCleaned(id)
       lettersHeld.current[id]?.close()
-      setLetters((current) =>
-        Object.fromEntries(
-          Object.entries(current).filter(([key]) => key !== id),
-        ),
-      )
-      setLettering((current) =>
-        Object.fromEntries(
-          Object.entries(current).filter(([key]) => key !== id),
-        ),
-      )
-      setAnalyses((current) =>
-        Object.fromEntries(
-          Object.entries(current).filter(([key]) => key !== id),
-        ),
-      )
+      setLetters((current) => without(current, id))
+      setLettering((current) => without(current, id))
+      setAnalyses((current) => without(current, id))
     },
     [remove, dropMask, dropCleaned],
   )
@@ -160,47 +174,55 @@ function App() {
     setActiveId(null)
   }, [clear, clearMasks, clearCleaned])
 
-  /** Find the lettering, then read it. The boxes show as soon as they land. */
-  const runDetect = useCallback(async () => {
-    if (!active) return
-    const { id, file } = active
+  /**
+   * Find the lettering and read it, and hand back what was found.
+   *
+   * Every step below takes the page it works on and returns its answer rather
+   * than only leaving it in state, so that one of them can be run straight into
+   * the next — which is what the whole page in one go does.
+   */
+  const detectAndRead = useCallback(
+    async (page: GalleryImage): Promise<Analysis | null> => {
+      const { id, file } = page
 
-    setError(null)
-    setSelected(null)
-    setWorking({ id, stage: 'detecting' })
-    try {
-      const detection = await detect(file)
-      setAnalyses((current) => ({
-        ...current,
-        [id]: { detection, texts: null, excluded: [] },
-      }))
-      // Lettering is held per block; these are new blocks, so what was set
-      // against the old ones no longer means anything.
-      setLettering((current) =>
-        Object.fromEntries(
-          Object.entries(current).filter(([key]) => key !== id),
-        ),
-      )
-      if (detection.regions.length === 0) return
+      setError(null)
+      setSelected(null)
+      setWorking({ id, stage: 'detecting' })
+      try {
+        const detection = await detect(file)
+        let found: Analysis = {
+          detection,
+          texts: detection.regions.length === 0 ? [] : null,
+          excluded: [],
+        }
+        setAnalyses((current) => ({ ...current, [id]: found }))
+        // Lettering is held per block; these are new blocks, so what was set
+        // against the old ones no longer means anything.
+        setLettering((current) => without(current, id))
 
-      setWorking({ id, stage: 'reading' })
-      const texts = await read(
-        file,
-        detection.regions.map((region) => region.box),
-      )
-      // Only if the page is still in the library: it may have been deleted
-      // while the reader was working.
-      setAnalyses((current) =>
-        id in current
-          ? { ...current, [id]: { ...current[id], detection, texts } }
-          : current,
-      )
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setWorking(null)
-    }
-  }, [active])
+        if (detection.regions.length > 0) {
+          setWorking({ id, stage: 'reading' })
+          const texts = await read(
+            file,
+            detection.regions.map((region) => region.box),
+          )
+          found = { ...found, texts }
+          // Only if the page is still in the library: it may have been deleted
+          // while the reader was working.
+          setAnalyses((current) =>
+            id in current ? { ...current, [id]: found } : current,
+          )
+        }
+        return found
+      } catch (cause) {
+        setError(said(cause))
+        return null
+      } finally {
+        setWorking(null)
+      }
+    },
+    [],
+  )
 
   /**
    * Take one block out of what will be cleaned, or put it back. The mask is
@@ -237,44 +259,73 @@ function App() {
    * and leave the art they were drawn over. Another pass of the detector, so it
    * is asked for once per page and then kept.
    */
-  const traceLetters = useCallback(async (): Promise<ImageBitmap | null> => {
-    if (!active) return null
-    const { id, file } = active
-
-    const held = lettersHeld.current[id]
-    if (held) return held
-
-    setError(null)
-    setWorking({ id, stage: 'tracing' })
-    try {
-      const traced = await createImageBitmap(await letterMask(file))
-      setLetters((current) => ({ ...current, [id]: traced }))
-      return traced
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-      return null
-    } finally {
-      setWorking(null)
-    }
-  }, [active])
-
-  /** Hide everything the mask marks, and keep the page that comes back. */
-  const runClean = useCallback(
-    async (marks: Blob) => {
-      if (!active) return
-      const { id, file } = active
+  const tracePage = useCallback(
+    async (page: GalleryImage): Promise<ImageBitmap | null> => {
+      const held = lettersHeld.current[page.id]
+      if (held) return held
 
       setError(null)
-      setWorking({ id, stage: 'cleaning' })
+      setWorking({ id: page.id, stage: 'tracing' })
       try {
-        setCleaned(id, await clean(file, marks))
+        const traced = await createImageBitmap(await letterMask(page.file))
+        setLetters((current) => ({ ...current, [page.id]: traced }))
+        return traced
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(said(cause))
+        return null
       } finally {
         setWorking(null)
       }
     },
-    [active, setCleaned],
+    [],
+  )
+
+  const traceLetters = useCallback(
+    () => (active ? tracePage(active) : Promise.resolve(null)),
+    [active, tracePage],
+  )
+
+  /**
+   * What to hide: whatever has been marked by hand, or — if nothing has been —
+   * the lettering itself, inside the blocks that were not left alone.
+   */
+  const marksFor = useCallback(
+    async (page: GalleryImage, found: Analysis): Promise<Blob | null> => {
+      const mask = forPage(page)
+      if (!mask) return null
+
+      if (mask.empty) {
+        const skip = new Set(found.excluded)
+        const boxes = found.detection.regions
+          .filter((_, index) => !skip.has(index))
+          .map((region) => region.box)
+        if (boxes.length === 0) return null
+
+        const traced = await tracePage(page)
+        if (traced) mask.letters(traced, boxes)
+        else mask.boxes(boxes)
+      }
+      return mask.toBlob()
+    },
+    [forPage, tracePage],
+  )
+
+  /** Hide everything the mask marks, and keep the page that comes back. */
+  const cleanPage = useCallback(
+    async (page: GalleryImage, marks: Blob): Promise<boolean> => {
+      setError(null)
+      setWorking({ id: page.id, stage: 'cleaning' })
+      try {
+        setCleaned(page.id, await clean(page.file, marks))
+        return true
+      } catch (cause) {
+        setError(said(cause))
+        return false
+      } finally {
+        setWorking(null)
+      }
+    },
+    [setCleaned],
   )
 
   const pageLettering = active ? (lettering[active.id] ?? []) : []
@@ -284,48 +335,91 @@ function App() {
    * together. Each line lands in the box its original came out of, set at
    * whatever size fits that box.
    */
+  const translatePage = useCallback(
+    async (page: GalleryImage, found: Analysis): Promise<boolean> => {
+      if (!model || !found.texts) return false
+
+      const skip = new Set(found.excluded)
+      const wanted = found.texts
+        .map((text, index) => ({ text, index }))
+        .filter(({ text, index }) => text.trim() && !skip.has(index))
+      if (wanted.length === 0) return false
+
+      setError(null)
+      setWorking({ id: page.id, stage: 'translating' })
+      try {
+        const [got] = await Promise.all([
+          translate(
+            wanted.map((line) => line.text),
+            model,
+            target,
+          ),
+          // Sizes are about to be worked out by measuring: the face has to be in.
+          ready(),
+        ])
+        const set: (Lettering | null)[] = found.detection.regions.map(() => null)
+        wanted.forEach((line, at) => {
+          const text = (got[at] ?? '').trim()
+          if (!text) return
+          const box = found.detection.regions[line.index].box
+          set[line.index] = {
+            text,
+            box,
+            size: fitSize(text, box[2] - box[0], box[3] - box[1]),
+          }
+        })
+        setLettering((current) => ({ ...current, [page.id]: set }))
+        return true
+      } catch (cause) {
+        setError(said(cause))
+        return false
+      } finally {
+        setWorking(null)
+      }
+    },
+    [model, target],
+  )
+
+  // The three steps as the buttons on the board call them, each moving on to
+  // the next once it has something to move on with.
+  const runDetect = useCallback(async () => {
+    if (!active) return
+    if (await detectAndRead(active)) setMode('mask')
+  }, [active, detectAndRead])
+
+  const runClean = useCallback(
+    async (marks: Blob) => {
+      if (!active) return
+      if (await cleanPage(active, marks)) setMode('translate')
+    },
+    [active, cleanPage],
+  )
+
   const runTranslate = useCallback(async () => {
-    if (!active || !model) return
-    const held = analyses[active.id]
-    if (!held?.texts) return
+    const found = active ? analyses[active.id] : null
+    if (active && found) await translatePage(active, found)
+  }, [active, analyses, translatePage])
 
-    const { id } = active
-    const skip = new Set(held.excluded)
-    const wanted = held.texts
-      .map((text, index) => ({ text, index }))
-      .filter(({ text, index }) => text.trim() && !skip.has(index))
-    if (wanted.length === 0) return
+  /**
+   * The usual way through, in one go: find the words, hide them, letter the
+   * page. Each step feeds the next, and any of them can still be run on its own.
+   */
+  const runAll = useCallback(async () => {
+    if (!active) return
+    const page = active
 
-    setError(null)
-    setWorking({ id, stage: 'translating' })
-    try {
-      const [got] = await Promise.all([
-        translate(
-          wanted.map((line) => line.text),
-          model,
-          target,
-        ),
-        // Sizes are about to be worked out by measuring: the face has to be in.
-        ready(),
-      ])
-      const set: (Lettering | null)[] = held.detection.regions.map(() => null)
-      wanted.forEach((line, at) => {
-        const text = (got[at] ?? '').trim()
-        if (!text) return
-        const box = held.detection.regions[line.index].box
-        set[line.index] = {
-          text,
-          box,
-          size: fitSize(text, box[2] - box[0], box[3] - box[1]),
-        }
-      })
-      setLettering((current) => ({ ...current, [id]: set }))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setWorking(null)
+    const found = await detectAndRead(page)
+    if (!found) return
+
+    setMode('mask')
+    const marks = await marksFor(page, found)
+    if (marks && !(await cleanPage(page, marks))) return
+
+    setMode('translate')
+    if (model && found.texts?.some((text) => text.trim())) {
+      await translatePage(page, found)
     }
-  }, [active, analyses, model, target])
+  }, [active, detectAndRead, marksFor, cleanPage, translatePage, model])
 
   const changeLettering = useCallback(
     (index: number, patch: Partial<Lettering>) => {
@@ -476,6 +570,7 @@ function App() {
           onSelect={setSelected}
           onDetect={runDetect}
           onClean={runClean}
+          onRunAll={runAll}
           onToggleExcluded={toggleExcluded}
           letters={active ? (letters[active.id] ?? null) : null}
           onTrace={traceLetters}
@@ -498,9 +593,11 @@ function App() {
             applying,
             note:
               noModels ??
-              (pageLettering.some(Boolean) && !cleanedPage
-                ? 'this page has not been cleaned yet'
-                : null),
+              (!analysis?.texts
+                ? 'find the text first: there is nothing to translate yet'
+                : pageLettering.some(Boolean) && !cleanedPage
+                  ? 'this page has not been cleaned yet'
+                  : null),
           }}
         />
 

@@ -9,6 +9,7 @@ type Props = {
   tracing: boolean
   onClear: () => void
   canClear: boolean
+  note: string | null
 }
 
 const SIZES = { min: 4, max: 160 }
@@ -23,6 +24,7 @@ export function MaskTools({
   tracing,
   onClear,
   canClear,
+  note,
 }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-slate-50 px-4 py-2 dark:border-white/10 dark:bg-white/5">
@@ -54,6 +56,10 @@ export function MaskTools({
         />
         <span className="w-10 text-right tabular-nums">{brush.radius * 2}px</span>
       </label>
+
+      {note && (
+        <span className="text-xs text-amber-700 dark:text-amber-400">{note}</span>
+      )}
 
       <div className="ml-auto flex items-center gap-2">
         <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
