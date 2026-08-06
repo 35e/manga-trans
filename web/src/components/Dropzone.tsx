@@ -10,11 +10,14 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
   const input = useRef<HTMLInputElement>(null)
 
   return (
-    <div
-      className={`relative rounded-2xl border-2 border-dashed p-10 text-center transition-colors ${
+    <button
+      type="button"
+      onClick={() => input.current?.click()}
+      disabled={busy}
+      className={`w-full rounded-xl border-2 border-dashed px-3 py-4 text-center transition-colors ${
         dragging
           ? 'border-indigo-500 bg-indigo-50 dark:border-indigo-400 dark:bg-indigo-500/10'
-          : 'border-slate-300 bg-white hover:border-slate-400 dark:border-white/15 dark:bg-white/5 dark:hover:border-white/25'
+          : 'border-slate-300 hover:border-slate-400 hover:bg-slate-50 dark:border-white/15 dark:hover:border-white/25 dark:hover:bg-white/5'
       }`}
     >
       <input
@@ -38,7 +41,7 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
-        className={`mx-auto size-10 transition-colors ${
+        className={`mx-auto size-6 transition-colors ${
           dragging
             ? 'text-indigo-500 dark:text-indigo-400'
             : 'text-slate-400 dark:text-slate-500'
@@ -48,21 +51,12 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
         <path d="M3 15v3a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-3" />
       </svg>
 
-      <p className="mt-4 text-base font-medium text-slate-900 dark:text-white">
-        {dragging ? 'Drop to add them' : 'Drag pages in from anywhere'}
-      </p>
-      <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-        or paste from the clipboard
-      </p>
-
-      <button
-        type="button"
-        onClick={() => input.current?.click()}
-        disabled={busy}
-        className="mt-5 inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:opacity-60 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
-      >
-        {busy ? 'Reading…' : 'Browse files'}
-      </button>
-    </div>
+      <span className="mt-2 block text-xs font-medium text-slate-900 dark:text-white">
+        {busy ? 'Reading…' : dragging ? 'Drop to add' : 'Drop pages or browse'}
+      </span>
+      <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
+        paste works too
+      </span>
+    </button>
   )
 }

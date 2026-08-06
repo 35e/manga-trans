@@ -19,6 +19,7 @@ from werkzeug.exceptions import BadRequest, HTTPException
 from . import render
 from .detect import Detector
 from .geometry import Box
+from .read import Reader
 
 MAX_UPLOAD = 32 * 1024 * 1024
 ORIGIN = os.environ.get("MANGA_TRANS_ORIGIN", "*")
@@ -65,21 +66,33 @@ def png(image: Image.Image):
     return send_file(buffer, mimetype="image/png", download_name="page.png")
 
 
-def create_app(font: str | None = None, model: str | None = None) -> Flask:
+def create_app(
+    font: str | None = None, model: str | None = None, ocr_model: str | None = None
+) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD
     font = font or os.environ.get("MANGA_TRANS_FONT")
 
-    # The weights are ~95 MB and take a moment to load, so the first request
-    # pays for them and the rest share the one detector.
+    # Both models take a moment to load — the detector's ~95 MB, the reader's
+    # ~450 MB and the torch behind it — so the first request that needs one pays
+    # for it and the rest share it. An API only ever asked to detect never
+    # stands the reader up at all.
     loading = threading.Lock()
     loaded: list[Detector] = []
+    reading = threading.Lock()
+    readers: list[Reader] = []
 
     def detector() -> Detector:
         with loading:
             if not loaded:
                 loaded.append(Detector(model))
             return loaded[0]
+
+    def reader() -> Reader:
+        with reading:
+            if not readers:
+                readers.append(Reader(ocr_model))
+            return readers[0]
 
     @app.errorhandler(Exception)
     def on_error(exc):
@@ -108,6 +121,13 @@ def create_app(font: str | None = None, model: str | None = None) -> Flask:
                 for block in blocks
             ],
         )
+
+    @app.post("/api/read")
+    def read():
+        """What the lettering in each box says, in the order they were given."""
+        image = page()
+        boxes = [box_in(values, image) for values in sent("boxes")]
+        return jsonify(texts=reader()(image, boxes))
 
     @app.post("/api/clean")
     def clean():

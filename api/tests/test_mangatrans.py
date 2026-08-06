@@ -10,7 +10,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image, ImageDraw
 
-from mangatrans import render, server
+from mangatrans import read, render, server
 from mangatrans.detect import Block
 from mangatrans.geometry import Box
 
@@ -50,6 +50,16 @@ class StubDetector:
     def __call__(self, image):
         assert image.ndim == 3 and image.shape[2] == 3, "expects an RGB array"
         return [self.found]
+
+
+class StubReader:
+    """The size of whatever it was handed, so the crop can be checked."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def __call__(self, image, boxes):
+        return [f"{box.w}×{box.h}" for box in boxes]
 
 
 def client():
@@ -129,6 +139,43 @@ class TestOverlay(unittest.TestCase):
         self.assertTrue((self.rendered("WAY TOO MANY WORDS " * 30) < 128).any())
 
 
+class TestRead(unittest.TestCase):
+    """The cropping and the loop. The model itself is never stood up here."""
+
+    def test_a_box_is_given_air_around_it(self):
+        padded = read.padded(Box(50, 50, 100, 100), 200, 140)
+        self.assertLess(padded.x0, 50)
+        self.assertGreater(padded.x1, 100)
+
+    def test_padding_never_runs_off_the_page(self):
+        padded = read.padded(Box(150, 100, 200, 140), 200, 140)
+        self.assertEqual((padded.x1, padded.y1), (200, 140))
+        self.assertEqual(padded, padded.clipped(200, 140))
+
+    def test_each_box_is_read_and_its_answer_stripped(self):
+        reader = read.Reader(ocr=lambda image: "  こんにちは  ")
+        self.assertEqual(reader(page(), [Box(10, 10, 60, 40)]), ["こんにちは"])
+
+    def test_the_crop_handed_over_is_the_padded_box(self):
+        sizes = []
+        reader = read.Reader(ocr=lambda image: sizes.append(image.size) or "")
+        reader(page(), [Box(50, 50, 100, 100)])
+        wanted = read.padded(Box(50, 50, 100, 100), 200, 140)
+        self.assertEqual(sizes, [(wanted.w, wanted.h)])
+
+    def test_a_box_too_small_to_hold_lettering_is_not_read(self):
+        asked = []
+        reader = read.Reader(ocr=lambda image: asked.append(image.size) or "text")
+        self.assertEqual(reader(page(), [Box(10, 10, 12, 12)]), [""])
+        self.assertEqual(asked, [], "the model was asked about three pixels")
+
+    def test_the_answers_come_back_in_the_order_the_boxes_were_given(self):
+        reader = read.Reader(ocr=lambda image: str(image.size[0]))
+        texts = reader(page(), [Box(0, 0, 60, 40), Box(0, 0, 20, 20), Box(0, 0, 40, 40)])
+        self.assertEqual(len(texts), 3)
+        self.assertGreater(int(texts[0]), int(texts[1]))
+
+
 class TestApi(unittest.TestCase):
     def test_detect_answers_with_the_boxes(self):
         with mock.patch.object(server, "Detector", StubDetector):
@@ -154,6 +201,27 @@ class TestApi(unittest.TestCase):
         with mock.patch.object(server, "Detector", StubDetector):
             response = client().post("/api/detect", data=body)
         self.assertEqual(response.status_code, 400)
+
+    def test_read_answers_with_one_text_per_box_in_order(self):
+        with mock.patch.object(server, "Reader", StubReader):
+            response = client().post(
+                "/api/read",
+                data=payload(page(), boxes=[[10, 10, 60, 40], [70, 10, 90, 30]]),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"texts": ["50×30", "20×20"]})
+
+    def test_read_needs_boxes(self):
+        with mock.patch.object(server, "Reader", StubReader):
+            response = client().post("/api/read", data=payload(page()))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("boxes", response.json["error"])
+
+    def test_read_needs_an_image(self):
+        with mock.patch.object(server, "Reader", StubReader):
+            response = client().post("/api/read", data={"boxes": "[]"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("image", response.json["error"])
 
     def test_clean_hides_the_boxes(self):
         response = client().post(

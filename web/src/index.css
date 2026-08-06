@@ -1,1 +1,19 @@
 @import "tailwindcss";
+
+/* The board the page is laid on: dots, so the page's own edges read clearly. */
+.board {
+  --board-dot: oklch(0.55 0.02 260 / 0.28);
+  background-image: radial-gradient(
+    circle,
+    var(--board-dot) 1.25px,
+    transparent 1.25px
+  );
+  background-size: 22px 22px;
+  background-position: center;
+}
+
+@media (prefers-color-scheme: dark) {
+  .board {
+    --board-dot: oklch(1 0 0 / 0.09);
+  }
+}

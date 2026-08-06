@@ -10,3 +10,9 @@ pillow>=10.1
 flask>=3.1
 # A real WSGI server: Flask's own is for development only.
 waitress>=3.0
+# Reading the lettering. manga-ocr is trained on manga, so it copes with
+# vertical lines and stylised fonts that general OCR does not. It brings torch
+# and transformers with it: the one heavy dependency here, and the reason the
+# image is a few gigabytes rather than a few hundred megabytes. The Dockerfile
+# installs torch from PyTorch's CPU index first so pip does not pull CUDA in.
+manga-ocr>=0.1.14
