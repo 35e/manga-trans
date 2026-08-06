@@ -30,6 +30,12 @@ import { insertAt, insertionFor } from './lib/order'
 const said = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause)
 
+/**
+ * A traced page is held under how far it was grown as well as which page it is:
+ * ask for more spread and it is a different tracing, not the same one again.
+ */
+const traceKey = (id: string, spread: number) => `${id}@${spread}`
+
 /** The same record without one key. */
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
   return Object.fromEntries(
@@ -71,6 +77,9 @@ function App() {
   const [target, setTarget] = useState('English')
   const [noModels, setNoModels] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
+  // How far past the ink the traced mask reaches. What is enough depends on the
+  // scan, so it is the reader's to raise when edges are being left behind.
+  const [spread, setSpread] = useState(4)
 
   const { prompt, setPrompt } = useSettings()
   const [builtInPrompt, setBuiltInPrompt] = useState<string | null>(null)
@@ -177,8 +186,15 @@ function App() {
       remove(id)
       dropMask(id)
       dropCleaned(id)
-      lettersHeld.current[id]?.close()
-      setLetters((current) => without(current, id))
+      // One page may have been traced at several spreads; all of them go.
+      for (const [key, bitmap] of Object.entries(lettersHeld.current)) {
+        if (key.startsWith(`${id}@`)) bitmap.close()
+      }
+      setLetters((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([key]) => !key.startsWith(`${id}@`)),
+        ),
+      )
       setLettering((current) => without(current, id))
       setAnalyses((current) => without(current, id))
     },
@@ -324,7 +340,7 @@ function App() {
       // Marked for hiding along with the rest, if the rest already are.
       const mask = forPage(active)
       if (mask && !mask.empty) {
-        const traced = lettersHeld.current[id]
+        const traced = lettersHeld.current[traceKey(id, spread)]
         if (traced) mask.letters(traced, [box])
         else mask.boxes([box])
       }
@@ -351,7 +367,7 @@ function App() {
         setWorking(null)
       }
     },
-    [active, analyses, forPage],
+    [active, analyses, forPage, spread],
   )
 
   /**
@@ -361,14 +377,15 @@ function App() {
    */
   const tracePage = useCallback(
     async (page: GalleryImage): Promise<ImageBitmap | null> => {
-      const held = lettersHeld.current[page.id]
+      const key = traceKey(page.id, spread)
+      const held = lettersHeld.current[key]
       if (held) return held
 
       setError(null)
       setWorking({ id: page.id, stage: 'tracing' })
       try {
-        const traced = await createImageBitmap(await letterMask(page.file))
-        setLetters((current) => ({ ...current, [page.id]: traced }))
+        const traced = await createImageBitmap(await letterMask(page.file, spread))
+        setLetters((current) => ({ ...current, [key]: traced }))
         return traced
       } catch (cause) {
         setError(said(cause))
@@ -377,7 +394,7 @@ function App() {
         setWorking(null)
       }
     },
-    [],
+    [spread],
   )
 
   const traceLetters = useCallback(
@@ -708,8 +725,10 @@ function App() {
           onRunAll={runAll}
           onAddRegion={addRegion}
           onToggleExcluded={toggleExcluded}
-          letters={active ? (letters[active.id] ?? null) : null}
+          letters={active ? (letters[traceKey(active.id, spread)] ?? null) : null}
           onTrace={traceLetters}
+          spread={spread}
+          onSpread={setSpread}
           mode={mode}
           onMode={setMode}
           showCleaned={showCleaned}

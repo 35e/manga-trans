@@ -42,6 +42,9 @@ type Props = {
   /** The traced lettering for this page, once it has been asked for. */
   letters: ImageBitmap | null
   onTrace: () => Promise<ImageBitmap | null>
+  /** How far past the ink a tracing reaches, in page pixels. */
+  spread: number
+  onSpread: (spread: number) => void
   mode: BoardMode
   onMode: (mode: BoardMode) => void
   /** Whether the board is showing the cleaned page or the one that came in. */
@@ -66,6 +69,8 @@ export function Board({
   onToggleExcluded,
   letters,
   onTrace,
+  spread,
+  onSpread,
   mode,
   onMode,
   showCleaned,
@@ -358,6 +363,8 @@ export function Board({
             setEdits((count) => count + 1)
           }}
           canClear={marked}
+          spread={spread}
+          onSpread={onSpread}
           note={read ? null : 'find the text first, or brush the page by hand'}
         />
       )}

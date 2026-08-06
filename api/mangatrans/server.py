@@ -17,7 +17,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
 
 from . import ollama, render
-from .detect import GROW, Detector
+from .detect import GROW, GROW_MAX, Detector
 from .geometry import Box
 from .read import Reader
 
@@ -211,7 +211,7 @@ def create_app(
         back to /api/clean to hide the letters and leave the art they sit on.
         """
         image = page()
-        grow = number("grow", GROW, 0, 50)
+        grow = number("grow", GROW, 0, GROW_MAX)
         mask = Image.fromarray(detector().letters(np.array(image), grow), mode="L")
         out = Image.new("RGBA", mask.size, (255, 255, 255, 0))
         out.putalpha(mask)

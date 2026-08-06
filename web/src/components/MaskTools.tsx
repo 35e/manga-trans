@@ -9,8 +9,12 @@ type Props = {
   tracing: boolean
   onClear: () => void
   canClear: boolean
+  spread: number
+  onSpread: (spread: number) => void
   note: string | null
 }
+
+const SPREADS = [0, 2, 4, 6, 8, 12, 16]
 
 const SIZES = { min: 4, max: 160 }
 
@@ -24,6 +28,8 @@ export function MaskTools({
   tracing,
   onClear,
   canClear,
+  spread,
+  onSpread,
   note,
 }: Props) {
   return (
@@ -74,6 +80,24 @@ export function MaskTools({
         >
           Letters
         </button>
+        <label
+          className="flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400"
+          title="How far past the ink the mask reaches, in page pixels. Raise it if edges are left behind."
+        >
+          +
+          <select
+            value={spread}
+            onChange={(event) => onSpread(Number(event.target.value))}
+            aria-label="How far past the ink to mark"
+            className="rounded-lg border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-900 dark:border-white/15 dark:bg-slate-900 dark:text-white"
+          >
+            {SPREADS.map((size) => (
+              <option key={size} value={size}>
+                {size}px
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
           onClick={onFill}

@@ -88,9 +88,13 @@ curl -X POST localhost:8000/api/render -F image=@001.png \
 it: a page-sized PNG, opaque white on the ink and clear everywhere else, which
 is the same detector's segmentation head — the one that answers per pixel rather
 than per block. Sent on to `/api/clean` it hides the words and leaves the art
-they were drawn over, which a rectangle cannot do. `grow` (default 2, up to 50)
+they were drawn over, which a rectangle cannot do. `grow` (default 4, up to 64)
 is how many pixels to spread the mask by, so no halo is left ringing a letter
-that has been hidden; a bolder or blurrier scan wants more.
+that has been hidden. On clean black-on-white lettering two is already enough at
+any size of page; what needs more is scanned material — screentone, the ring
+JPEG leaves around a hard edge, the pale rim of an outlined letter — and how
+much more depends on the scan, which is why the dashboard puts it next to the
+button rather than deciding for you.
 
 **`/api/read`** says what it says: one string per box, in the order the boxes
 were given, so they line up with the regions `/api/detect` returned. Reading is

@@ -32,10 +32,17 @@ NMS_THRESHOLD = 0.35
 
 # The segmentation head answers per pixel, between 0 and 1.
 SEG_THRESHOLD = 0.5
-# Letters are drawn with soft edges, and the mask stops at the ink. A couple of
-# pixels of growth covers the halo that would otherwise be left ringing the
-# place a letter used to be.
-GROW = 2
+# Letters are drawn with soft edges, and the mask stops at the ink. Growing it
+# covers the halo that would otherwise be left ringing the place a letter used
+# to be — screentone, the ring JPEG leaves around a hard edge, the pale rim of
+# an outlined letter, none of which the segmentation calls text.
+#
+# Four is a starting point, not a finding: on clean black-on-white lettering two
+# already leaves nothing behind at any size of page. What it is really covering
+# is scanned material, where the right amount depends on the scan. Callers say
+# `grow` when they want more.
+GROW = 4
+GROW_MAX = 64
 
 
 @dataclass(frozen=True)
