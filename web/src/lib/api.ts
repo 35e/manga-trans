@@ -29,7 +29,7 @@ export type Analysis = {
 }
 
 /** Detecting comes first, then reading what was detected, then hiding it. */
-export type Stage = 'detecting' | 'reading' | 'cleaning'
+export type Stage = 'detecting' | 'reading' | 'tracing' | 'cleaning'
 
 /** Below this the detector is guessing; the README says look twice. */
 export const UNSURE = 0.6
@@ -93,6 +93,25 @@ export async function read(
   const response = await send('/api/read', file, { boxes }, signal)
   const { texts } = (await response.json()) as { texts: string[] }
   return texts
+}
+
+/**
+ * The lettering itself, pixel by pixel: a page-sized PNG, opaque white on the
+ * ink and clear everywhere else. `grow` is how many pixels to spread it by, so
+ * nothing is left ringing a letter that has been hidden.
+ */
+export async function letterMask(
+  file: File,
+  grow?: number,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await send(
+    '/api/letters',
+    file,
+    grow === undefined ? {} : { grow },
+    signal,
+  )
+  return response.blob()
 }
 
 /**

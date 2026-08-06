@@ -55,6 +55,27 @@ export class Mask {
     }
   }
 
+  /**
+   * Mark the lettering itself rather than the boxes around it.
+   *
+   * `source` is the mask the API traced — white on clear, the size of the page
+   * — and it is drawn only inside `boxes`, so a block left alone stays out of
+   * it and stray ink the detector never boxed does not creep in. Pass null for
+   * boxes to take the whole page.
+   */
+  letters(source: CanvasImageSource, boxes: Box[] | null) {
+    const areas = boxes ?? [[0, 0, this.width, this.height] as Box]
+    const drawable = areas.filter(([x0, y0, x1, y1]) => x1 > x0 && y1 > y0)
+    if (drawable.length === 0) return
+
+    this.into(false)
+    for (const [x0, y0, x1, y1] of drawable) {
+      const width = x1 - x0
+      const height = y1 - y0
+      this.ctx.drawImage(source, x0, y0, width, height, x0, y0, width, height)
+    }
+  }
+
   dot(at: Point, brush: Brush) {
     this.into(brush.erase)
     this.ctx.beginPath()

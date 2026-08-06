@@ -4,7 +4,9 @@ type Props = {
   brush: Brush
   onBrush: (brush: Brush) => void
   onFill: () => void
+  onFillLetters: () => void
   canFill: boolean
+  tracing: boolean
   onClear: () => void
   canClear: boolean
 }
@@ -16,7 +18,9 @@ export function MaskTools({
   brush,
   onBrush,
   onFill,
+  onFillLetters,
   canFill,
+  tracing,
   onClear,
   canClear,
 }: Props) {
@@ -52,14 +56,26 @@ export function MaskTools({
       </label>
 
       <div className="ml-auto flex items-center gap-2">
+        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+          {tracing ? 'Tracing the lettering…' : 'Fill from'}
+        </span>
+        <button
+          type="button"
+          onClick={onFillLetters}
+          disabled={!canFill || tracing}
+          title="Mark the lettering itself, leaving the art it sits on"
+          className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-white disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
+        >
+          Letters
+        </button>
         <button
           type="button"
           onClick={onFill}
           disabled={!canFill}
-          title="Mark every block the detector found"
+          title="Mark the whole box around every block the detector found"
           className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-white disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
         >
-          Fill from blocks
+          Blocks
         </button>
         <button
           type="button"

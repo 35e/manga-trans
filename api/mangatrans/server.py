@@ -17,7 +17,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import BadRequest, HTTPException
 
 from . import render
-from .detect import Detector
+from .detect import GROW, Detector
 from .geometry import Box
 from .read import Reader
 
@@ -50,15 +50,41 @@ def sent(field: str) -> list:
     return value
 
 
+def number(field: str, default: int, low: int, high: int) -> int:
+    """A whole number sent beside the image, clamped to what makes sense."""
+    raw = request.form.get(field)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise BadRequest(f"'{field}' must be a whole number") from exc
+    return max(low, min(high, value))
+
+
 def mask_in(image: Image.Image) -> Image.Image | None:
     """The mask sent beside the image, if one was: greyscale, the page's size."""
     upload = request.files.get("mask")
     if upload is None:
         return None
     try:
-        mask = Image.open(upload.stream).convert("L")
+        sent_mask = Image.open(upload.stream)
+        sent_mask.load()
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise BadRequest(f"the mask is not a usable image: {exc}") from exc
+
+    # A mask that carries transparency means it: white on clear is what
+    # /api/letters hands out, and reading that by brightness alone would say
+    # "hide the whole page".
+    #
+    # But an alpha channel is not the same as transparency. A browser canvas
+    # always exports one whether or not anything was made see-through, and a
+    # mask drawn white on black comes back opaque from edge to edge: going by
+    # its alpha would paint out every pixel. So alpha is only believed when
+    # some of it is actually clear.
+    alpha = sent_mask.getchannel("A") if "A" in sent_mask.getbands() else None
+    shaped = alpha is not None and alpha.getextrema()[0] < 255
+    mask = alpha if shaped else sent_mask.convert("L")
     if mask.size != image.size:
         raise BadRequest(
             f"the mask is {mask.width}×{mask.height} "
@@ -138,6 +164,21 @@ def create_app(
                 for block in blocks
             ],
         )
+
+    @app.post("/api/letters")
+    def letters():
+        """A mask of the lettering itself, pixel by pixel, as a PNG.
+
+        White on clear: opaque where the ink is, transparent everywhere else, so
+        it can be laid straight over the page or drawn into a canvas. Send it
+        back to /api/clean to hide the letters and leave the art they sit on.
+        """
+        image = page()
+        grow = number("grow", GROW, 0, 50)
+        mask = Image.fromarray(detector().letters(np.array(image), grow), mode="L")
+        out = Image.new("RGBA", mask.size, (255, 255, 255, 0))
+        out.putalpha(mask)
+        return png(out)
 
     @app.post("/api/read")
     def read():

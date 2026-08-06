@@ -51,6 +51,7 @@ port can call it.
 | | | |
 | --- | --- | --- |
 | `POST` | `/api/detect` | `image` → every block of lettering, boxed |
+| `POST` | `/api/letters` | `image` → the lettering itself, pixel by pixel |
 | `POST` | `/api/read` | `image`, `boxes` → what each box says |
 | `POST` | `/api/clean` | `image`, `boxes` and/or `mask` → the page with them whited out |
 | `POST` | `/api/render` | `image`, `regions` → the same, with text set in them |
@@ -59,6 +60,9 @@ port can call it.
 curl -sX POST localhost:8000/api/detect -F image=@001.png
 # {"width": 1114, "height": 1600,
 #  "regions": [{"box": [812, 96, 949, 324], "confidence": 0.93}, ...]}
+
+curl -X POST localhost:8000/api/letters -F image=@001.png -o letters.png
+curl -X POST localhost:8000/api/letters -F image=@001.png -F grow=6 -o fatter.png
 
 curl -sX POST localhost:8000/api/read -F image=@001.png \
      -F 'boxes=[[812,96,949,324]]'
@@ -77,6 +81,14 @@ curl -X POST localhost:8000/api/render -F image=@001.png \
 **`/api/detect`** boxes every piece of lettering it finds. A `confidence` under
 0.6 is worth a second look. It says where the text is, not what it says.
 
+**`/api/letters`** answers with the lettering itself rather than the box around
+it: a page-sized PNG, opaque white on the ink and clear everywhere else, which
+is the same detector's segmentation head — the one that answers per pixel rather
+than per block. Sent on to `/api/clean` it hides the words and leaves the art
+they were drawn over, which a rectangle cannot do. `grow` (default 2, up to 50)
+is how many pixels to spread the mask by, so no halo is left ringing a letter
+that has been hidden; a bolder or blurrier scan wants more.
+
 **`/api/read`** says what it says: one string per box, in the order the boxes
 were given, so they line up with the regions `/api/detect` returned. Reading is
 a separate call because the boxes are worth correcting first — a box that clips
@@ -89,7 +101,10 @@ caller to decide.
 takes a `mask`: a greyscale image the size of the page, white where the page
 should be painted out and black where it should be left alone, sent as a second
 file field. The greys between are how much white to lay on, so a brushed edge
-comes out soft rather than as a staircase. A box can only ever say "all of this
+comes out soft rather than as a staircase. A mask that is see-through in places
+— which is what `/api/letters` hands back — is read by its transparency
+instead. Not by merely having an alpha channel: a browser canvas always exports
+one, so it has to be a channel some of which is actually clear. A box can only ever say "all of this
 rectangle"; a mask can say "this bubble except that corner", which is what a
 front end with a brush in it needs. Send boxes, a mask, or both — but not
 neither.
@@ -119,7 +134,8 @@ Everything is set by environment variable:
 ```
 api/
   mangatrans/
-    detect.py     comic-text-detector on OpenCV's ONNX backend
+    detect.py     comic-text-detector on OpenCV's ONNX backend: blocks, and
+                  the per-pixel mask of the lettering inside them
     read.py       manga-ocr, and the cropping that feeds it
     render.py     whiting out the old lettering, fitting and setting the new
     server.py     the API itself
@@ -130,8 +146,9 @@ web/
 ```
 
 The dashboard puts a page on a board, boxes its lettering and reads it, then
-lets the boxes be brushed into a mask by hand — drawn wider, erased back — and
-sends that to `/api/clean`.
+marks the lettering itself for hiding — not the boxes around it. That mask can
+be brushed by hand, drawn wider or erased back, and blocks worth keeping can be
+dropped from it one at a time. What is left goes to `/api/clean`.
 
 The dashboard is a Vite app. `cd web && pnpm install && pnpm dev` serves it on
 port 5173, pointed at `http://localhost:8000` unless `VITE_API_URL` says

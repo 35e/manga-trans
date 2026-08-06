@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Board } from './components/Board'
 import { Dropzone } from './components/Dropzone'
 import { Gallery } from './components/Gallery'
@@ -8,7 +8,7 @@ import { useImageLibrary } from './hooks/useImageLibrary'
 import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
 import type { Analysis, Stage } from './lib/api'
-import { API_BASE, clean, detect, read } from './lib/api'
+import { API_BASE, clean, detect, letterMask, read } from './lib/api'
 import { formatBytes, plural } from './lib/images'
 
 function App() {
@@ -35,6 +35,18 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
 
+  // The traced lettering, one bitmap per page. Held here rather than fetched
+  // twice: tracing is another pass of the detector, so it is worth keeping.
+  const [letters, setLetters] = useState<Record<string, ImageBitmap>>({})
+  const lettersHeld = useRef(letters)
+  lettersHeld.current = letters
+
+  useEffect(() => {
+    return () => {
+      for (const bitmap of Object.values(lettersHeld.current)) bitmap.close()
+    }
+  }, [])
+
   const analysis = active ? (analyses[active.id] ?? null) : null
   const stage = working?.id === active?.id ? (working?.stage ?? null) : null
 
@@ -54,6 +66,12 @@ function App() {
       remove(id)
       dropMask(id)
       dropCleaned(id)
+      lettersHeld.current[id]?.close()
+      setLetters((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([key]) => key !== id),
+        ),
+      )
       setAnalyses((current) =>
         Object.fromEntries(
           Object.entries(current).filter(([key]) => key !== id),
@@ -67,6 +85,8 @@ function App() {
     clear()
     clearMasks()
     clearCleaned()
+    for (const bitmap of Object.values(lettersHeld.current)) bitmap.close()
+    setLetters({})
     setAnalyses({})
     setActiveId(null)
   }, [clear, clearMasks, clearCleaned])
@@ -135,6 +155,32 @@ function App() {
     },
     [active, analyses, forPage],
   )
+
+  /**
+   * The lettering itself, traced pixel by pixel, so a clean can hide the words
+   * and leave the art they were drawn over. Another pass of the detector, so it
+   * is asked for once per page and then kept.
+   */
+  const traceLetters = useCallback(async (): Promise<ImageBitmap | null> => {
+    if (!active) return null
+    const { id, file } = active
+
+    const held = lettersHeld.current[id]
+    if (held) return held
+
+    setError(null)
+    setWorking({ id, stage: 'tracing' })
+    try {
+      const traced = await createImageBitmap(await letterMask(file))
+      setLetters((current) => ({ ...current, [id]: traced }))
+      return traced
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      return null
+    } finally {
+      setWorking(null)
+    }
+  }, [active])
 
   /** Hide everything the mask marks, and keep the page that comes back. */
   const runClean = useCallback(
@@ -217,6 +263,8 @@ function App() {
           onDetect={runDetect}
           onClean={runClean}
           onToggleExcluded={toggleExcluded}
+          letters={active ? (letters[active.id] ?? null) : null}
+          onTrace={traceLetters}
         />
 
         {active && analysis && (

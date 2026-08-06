@@ -10,7 +10,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image, ImageDraw
 
-from mangatrans import read, render, server
+from mangatrans import detect, read, render, server
 from mangatrans.detect import Block
 from mangatrans.geometry import Box
 
@@ -55,9 +55,10 @@ def patch(pixels, box: Box) -> np.ndarray:
 
 
 class StubDetector:
-    """One block, whatever the page."""
+    """One block, and some ink inside it, whatever the page."""
 
     found = Block(Box(10, 10, 60, 40), 0.912)
+    ink = Box(20, 15, 50, 35)
 
     def __init__(self, *args, **kwargs) -> None:
         pass
@@ -65,6 +66,12 @@ class StubDetector:
     def __call__(self, image):
         assert image.ndim == 3 and image.shape[2] == 3, "expects an RGB array"
         return [self.found]
+
+    def letters(self, image, grow=2):
+        assert image.ndim == 3 and image.shape[2] == 3, "expects an RGB array"
+        mask = np.zeros(image.shape[:2], np.uint8)
+        mask[self.ink.y0 : self.ink.y1, self.ink.x0 : self.ink.x1] = 255
+        return mask
 
 
 class StubReader:
@@ -117,6 +124,65 @@ class TestCover(unittest.TestCase):
     def test_an_empty_box_paints_nothing(self):
         out = render.cover(page(), [Box(10, 10, 10, 40)])
         self.assertFalse((np.array(out) == 255).any())
+
+
+class TestPageMask(unittest.TestCase):
+    """The padded square the model answers with, put back onto the page."""
+
+    size = (200, 140)
+
+    def pads(self):
+        _, pad_w, pad_h = detect.letterbox(np.zeros((140, 200, 3), np.uint8))
+        return pad_w, pad_h
+
+    def seg(self, box: Box | None = None, value: float = 1.0):
+        """A per-pixel map with ``box`` — in page pixels — lit."""
+        seg = np.zeros((detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
+        if box is not None:
+            scale = detect.INPUT_SIZE / 200  # the page's long side fills the square
+            seg[
+                round(box.y0 * scale) : round(box.y1 * scale),
+                round(box.x0 * scale) : round(box.x1 * scale),
+            ] = value
+        return seg
+
+    def test_the_mask_comes_back_the_size_of_the_page(self):
+        pad_w, pad_h = self.pads()
+        mask = detect.page_mask(self.seg(), 200, 140, pad_w, pad_h)
+        self.assertEqual(mask.shape, (140, 200))
+
+    def test_the_lit_part_lands_where_it_was(self):
+        pad_w, pad_h = self.pads()
+        mask = detect.page_mask(self.seg(Box(10, 10, 60, 40)), 200, 140, pad_w, pad_h, 0)
+        self.assertEqual(mask[25, 35], 255, "the middle of the ink is not marked")
+        self.assertEqual(mask[120, 180], 0, "the far corner of the page is marked")
+
+    def test_the_padding_is_taken_back_off(self):
+        # Everything the model saw is lit, so every page pixel should be, and
+        # nothing should be lost to the black bars letterbox() added.
+        pad_w, pad_h = self.pads()
+        seg = np.zeros((detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
+        seg[: detect.INPUT_SIZE - pad_h, : detect.INPUT_SIZE - pad_w] = 1.0
+        mask = detect.page_mask(seg, 200, 140, pad_w, pad_h, 0)
+        self.assertTrue((mask == 255).all())
+
+    def test_the_model_has_to_be_sure_enough(self):
+        pad_w, pad_h = self.pads()
+        unsure = detect.page_mask(
+            self.seg(Box(10, 10, 60, 40), value=0.4), 200, 140, pad_w, pad_h, 0
+        )
+        sure = detect.page_mask(
+            self.seg(Box(10, 10, 60, 40), value=0.6), 200, 140, pad_w, pad_h, 0
+        )
+        self.assertEqual(unsure.max(), 0)
+        self.assertEqual(sure.max(), 255)
+
+    def test_growing_covers_more_than_not_growing(self):
+        pad_w, pad_h = self.pads()
+        seg = self.seg(Box(10, 10, 60, 40))
+        tight = detect.page_mask(seg, 200, 140, pad_w, pad_h, 0)
+        grown = detect.page_mask(seg, 200, 140, pad_w, pad_h, 3)
+        self.assertGreater((grown > 0).sum(), (tight > 0).sum())
 
 
 class TestCoverMask(unittest.TestCase):
@@ -240,6 +306,56 @@ class TestApi(unittest.TestCase):
         with mock.patch.object(server, "Detector", StubDetector):
             response = client().post("/api/detect", data=body)
         self.assertEqual(response.status_code, 400)
+
+    def test_letters_answers_with_a_mask_of_the_ink(self):
+        with mock.patch.object(server, "Detector", StubDetector):
+            response = client().post("/api/letters", data=payload(page()))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+
+        mask = Image.open(io.BytesIO(response.data))
+        self.assertEqual(mask.size, (200, 140))
+        self.assertEqual(mask.mode, "RGBA", "a canvas wants white on clear")
+        alpha = np.array(mask.getchannel("A"))
+        self.assertEqual(alpha[25, 35], 255, "the ink is not opaque")
+        self.assertEqual(alpha[120, 180], 0, "the page around it is not clear")
+
+    def test_clean_reads_an_opaque_mask_by_its_brightness(self):
+        # What a browser canvas exports: black, white where it was marked, and
+        # opaque from edge to edge, because a canvas always carries an alpha
+        # channel whether or not anything was made see-through. Going by that
+        # alpha would hide the whole page.
+        canvas = Image.new("RGBA", (200, 140), (0, 0, 0, 255))
+        ImageDraw.Draw(canvas).rectangle((10, 10, 59, 39), fill=(255, 255, 255, 255))
+
+        response = client().post("/api/clean", data=payload(page(), mask=canvas))
+        self.assertEqual(response.status_code, 200)
+        out = opened(response)
+        self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
+        self.assertEqual(
+            tuple(np.array(out)[0, 0]), DARK, "the whole page was painted out"
+        )
+
+    def test_clean_hides_nothing_for_a_mask_that_is_all_clear(self):
+        nothing = Image.new("RGBA", (200, 140), (255, 255, 255, 0))
+        response = client().post("/api/clean", data=payload(page(), mask=nothing))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((np.array(opened(response)) == np.array(page())).all())
+
+    def test_clean_reads_a_mask_by_its_transparency(self):
+        # What /api/letters hands back is white everywhere and only transparent
+        # where the page should be left alone. Read by brightness it would say
+        # "hide all of it", so /api/clean has to go by the alpha channel.
+        letters = Image.new("RGBA", (200, 140), (255, 255, 255, 0))
+        letters.putalpha(stencil(Box(10, 10, 60, 40)))
+
+        response = client().post("/api/clean", data=payload(page(), mask=letters))
+        self.assertEqual(response.status_code, 200)
+        out = opened(response)
+        self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
+        self.assertEqual(
+            tuple(np.array(out)[0, 0]), DARK, "the whole page was painted out"
+        )
 
     def test_read_answers_with_one_text_per_box_in_order(self):
         with mock.patch.object(server, "Reader", StubReader):

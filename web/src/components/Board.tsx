@@ -19,6 +19,9 @@ type Props = {
   onDetect: () => void
   onClean: (mask: Blob) => void
   onToggleExcluded: (index: number) => void
+  /** The traced lettering for this page, once it has been asked for. */
+  letters: ImageBitmap | null
+  onTrace: () => Promise<ImageBitmap | null>
 }
 
 export function Board({
@@ -33,6 +36,8 @@ export function Board({
   onDetect,
   onClean,
   onToggleExcluded,
+  letters,
+  onTrace,
 }: Props) {
   const surface = useRef<HTMLDivElement>(null)
   const overlay = useRef<HTMLCanvasElement>(null)
@@ -72,22 +77,40 @@ export function Board({
     if (overlay.current && mask) mask.showOn(overlay.current)
   }, [mask, page, edits, masking, analysis])
 
-  // Coming to the mask with blocks already found and nothing marked yet: start
-  // from the blocks, minus any that have been left alone. The list of those is
-  // read through a ref rather than depended on: dropping a block from a mask
-  // deliberately cleared out should not seed the whole page again.
+  // These are read through refs rather than depended on: dropping a block from
+  // a mask that was deliberately cleared out should not seed the whole page
+  // again, and the tracing callback changes identity on every keystroke of
+  // state above.
   const excludedNow = useRef(excludedList)
   excludedNow.current = excludedList
+  const lettersNow = useRef(letters)
+  lettersNow.current = letters
+  const traceNow = useRef(onTrace)
+  traceNow.current = onTrace
 
+  // Coming to the mask with blocks already found and nothing marked yet: mark
+  // the lettering itself, which is what wants hiding — the boxes around it are
+  // only the fallback for when tracing fails.
   useEffect(() => {
     if (!masking || !mask || !mask.empty || !detection) return
-    const skip = new Set(excludedNow.current)
-    mask.boxes(
-      detection.regions
+    let dropped = false
+
+    void (async () => {
+      const traced = lettersNow.current ?? (await traceNow.current())
+      // Someone may have left, or started brushing, while that was in the air.
+      if (dropped || !mask.empty) return
+      const skip = new Set(excludedNow.current)
+      const boxes = detection.regions
         .filter((_, index) => !skip.has(index))
-        .map((region) => region.box),
-    )
-    setEdits((count) => count + 1)
+        .map((region) => region.box)
+      if (traced) mask.letters(traced, boxes)
+      else mask.boxes(boxes)
+      setEdits((count) => count + 1)
+    })()
+
+    return () => {
+      dropped = true
+    }
   }, [masking, mask, detection])
 
   // A block picked out on the board is dropped with the delete key.
@@ -212,9 +235,19 @@ export function Board({
             mask.boxes(toClean(detection.regions))
             setEdits((count) => count + 1)
           }}
+          onFillLetters={() => {
+            if (!mask || !detection) return
+            void (async () => {
+              const traced = lettersNow.current ?? (await traceNow.current())
+              if (!traced) return
+              mask.letters(traced, toClean(detection.regions))
+              setEdits((count) => count + 1)
+            })()
+          }}
           canFill={Boolean(
             mask && detection && toClean(detection.regions).length > 0,
           )}
+          tracing={stage === 'tracing'}
           onClear={() => {
             if (!mask) return
             mask.clear()
