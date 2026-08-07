@@ -19,6 +19,7 @@ type Props = {
   selected: number | null
   onSelect: (index: number | null) => void
   onBox: (index: number, box: Box) => void
+  onTurn: (index: number, angle: number) => void
 }
 
 /** The translated lines, set over the page where the originals were. */
@@ -29,6 +30,7 @@ export function TranslationLayer({
   selected,
   onSelect,
   onBox,
+  onTurn,
 }: Props) {
   return (
     <>
@@ -43,6 +45,7 @@ export function TranslationLayer({
             active={selected === index}
             onSelect={() => onSelect(selected === index ? null : index)}
             onBox={(box) => onBox(index, box)}
+            onTurn={(angle) => onTurn(index, angle)}
           />
         ),
       )}
@@ -58,6 +61,7 @@ function Line({
   active,
   onSelect,
   onBox,
+  onTurn,
 }: {
   index: number
   set: Lettering
@@ -66,8 +70,16 @@ function Line({
   active: boolean
   onSelect: () => void
   onBox: (box: Box) => void
+  onTurn: (angle: number) => void
 }) {
-  const drag = useBoxDrag({ box: set.box, page, scale, onBox })
+  const drag = useBoxDrag({
+    box: set.box,
+    page,
+    scale,
+    onBox,
+    angle: set.angle,
+    onAngle: onTurn,
+  })
   const [x0, y0, x1, y1] = set.box
 
   // Broken here rather than by the browser: only this knows to leave a hyphen
@@ -88,6 +100,8 @@ function Line({
         top: `${(y0 / page.height) * 100}%`,
         width: `${((x1 - x0) / page.width) * 100}%`,
         height: `${((y1 - y0) / page.height) * 100}%`,
+        // About the middle, which is where the canvas turns it too.
+        transform: set.angle ? `rotate(${set.angle}deg)` : undefined,
       }}
       className={`absolute ${active ? 'z-20' : 'z-10'}`}
     >

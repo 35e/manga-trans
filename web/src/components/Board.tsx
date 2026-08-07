@@ -29,6 +29,7 @@ export type Translating = {
   onFitAll: () => void
   lettering: (Lettering | null)[]
   onBox: (index: number, box: Box) => void
+  onTurn: (index: number, angle: number) => void
   onSize: (index: number, by: number) => void
   onApply: () => void
   applying: boolean
@@ -173,9 +174,16 @@ export function Board({
   }, [masking, mask, detection])
 
   // The keys that work on whichever block is picked out: delete drops it from
-  // the clean, and on the translate tab the arrows set its type larger and
-  // smaller. Neither fires while something is being typed into.
+  // the clean, and on the translate tab the up and down arrows set its type
+  // larger and smaller while left and right turn it. None fires while something
+  // is being typed into.
   const nudge = translating.onSize
+  const turn = translating.onTurn
+  // Read through a ref: turning by a step needs to know where the line stands
+  // now, and depending on the lettering would resubscribe on every degree.
+  const letteringNow = useRef(translating.lettering)
+  letteringNow.current = translating.lettering
+
   useEffect(() => {
     if (selected === null) return
 
@@ -184,10 +192,21 @@ export function Board({
       if (typing && ['INPUT', 'TEXTAREA', 'SELECT'].includes(typing.tagName)) return
 
       if (mode === 'translate') {
-        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        const sizing = event.key === 'ArrowUp' || event.key === 'ArrowDown'
+        const turning = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+        if (!sizing && !turning) return
         event.preventDefault()
-        const step = event.shiftKey ? 5 : 1
-        nudge(selected, event.key === 'ArrowUp' ? step : -step)
+
+        if (sizing) {
+          const step = event.shiftKey ? 5 : 1
+          nudge(selected, event.key === 'ArrowUp' ? step : -step)
+          return
+        }
+
+        const line = letteringNow.current[selected]
+        if (!line) return
+        const step = event.shiftKey ? 15 : 1
+        turn(selected, line.angle + (event.key === 'ArrowRight' ? step : -step))
         return
       }
 
@@ -198,7 +217,7 @@ export function Board({
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selected, mode, onToggleExcluded, nudge])
+  }, [selected, mode, onToggleExcluded, nudge, turn])
 
   const at = (event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -543,6 +562,7 @@ export function Board({
                 selected={selected}
                 onSelect={onSelect}
                 onBox={translating.onBox}
+                onTurn={translating.onTurn}
               />
             )}
 

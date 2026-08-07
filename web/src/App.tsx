@@ -615,6 +615,7 @@ function App() {
             text,
             box,
             size: fitSize(text, box[2] - box[0], box[3] - box[1]),
+            angle: 0,
           }
         })
         setLettering((current) => ({ ...current, [page.id]: set }))
@@ -688,6 +689,13 @@ function App() {
 
   const setLetteringBox = useCallback(
     (index: number, box: Box) => changeLettering(index, { box }),
+    [changeLettering],
+  )
+
+  /** How far the line is turned, kept to one full turn so it reads plainly. */
+  const setLetteringAngle = useCallback(
+    (index: number, angle: number) =>
+      changeLettering(index, { angle: ((angle % 360) + 360) % 360 }),
     [changeLettering],
   )
 
@@ -878,6 +886,7 @@ function App() {
             onFitAll: fitAll,
             lettering: pageLettering,
             onBox: setLetteringBox,
+            onTurn: setLetteringAngle,
             onSize: nudgeSize,
             onApply: applyToImage,
             applying,

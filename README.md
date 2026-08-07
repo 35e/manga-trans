@@ -227,7 +227,15 @@ wider or erased back, with blocks worth keeping dropped from it one at a time.
 the art around them, filled in, or flat white.
 **Translate** sets each translated line back where its original was, in Anime
 Ace, in a box that can be dragged about, pulled wider or narrower by its edges,
-and sized with the arrow keys. **Translate again**, beside it, runs the page
+sized with the up and down arrows and turned with the left and right ones — or
+by the round handle standing above the box, which follows the pointer round it,
+holding shift for 15° at a time. Manga letters plenty of things on the slant: a
+sound effect running up the page, a shout across a tilted bubble, and a line set
+square over one of those reads as a sticker rather than as part of the art. The
+box itself stays square to the page and only what sits in it turns, so a line
+still wraps to the width it was given; pulling a turned box by an edge pulls it
+along its own axes, and the edge that was not pulled stays where it looks.
+**Translate again**, beside it, runs the page
 over against the blocks as they stand: blocks are added, dropped and put back
 after a page has been translated, and this is what brings the lines back into
 step with them — one that was added gets a line, one that went away loses its

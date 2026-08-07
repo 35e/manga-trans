@@ -83,10 +83,11 @@ export function TranslationsPanel({
                   <p className="flex-1 text-[11px] text-slate-400 tabular-nums dark:text-slate-500">
                     {Math.round(line.size)}px in a {line.box[2] - line.box[0]} ×{' '}
                     {line.box[3] - line.box[1]} box
+                    {line.angle > 0 && ` · ${Math.round(line.angle)}°`}
                     {selected === index && (
                       <span className="text-slate-500 dark:text-slate-400">
                         {' '}
-                        · ↑↓ to resize
+                        · ↑↓ to resize, ←→ to turn
                       </span>
                     )}
                   </p>

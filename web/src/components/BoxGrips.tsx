@@ -17,13 +17,31 @@ const GRIPS: { grip: Grip; className: string; cursor: string }[] = [
 ]
 
 /**
- * The handles on a picked-out box: one per edge, and one at the corner for
- * both at once. Shown inside a box that is already positioned, so they sit on
+ * The handles on a picked-out box: one per edge, one at the corner for both at
+ * once, and — where what is in the box can be turned — a round one standing off
+ * the top edge. Shown inside a box that is already positioned, so they sit on
  * its edges.
  */
 export function BoxGrips({ drag }: { drag: BoxDrag }) {
   return (
     <>
+      {drag.turnable && (
+        <span
+          role="presentation"
+          title="Drag to turn. Hold shift for 15° at a time."
+          onPointerDown={drag.grab}
+          onPointerMove={drag.spin}
+          onPointerUp={drag.release}
+          onPointerCancel={drag.release}
+          style={{ cursor: 'grab' }}
+          className="absolute bottom-full left-1/2 z-10 grid size-5 -translate-x-1/2 touch-none place-items-center"
+        >
+          {/* Round, where the ones that resize are square: the shape is what
+              says which it is, since both are too small to say anything else. */}
+          <span className="pointer-events-none size-1.5 rounded-full bg-white ring-1 ring-indigo-500" />
+        </span>
+      )}
+
       {GRIPS.map(({ grip, className, cursor }) => (
         <span
           key={grip}

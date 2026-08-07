@@ -58,19 +58,26 @@ function set(context: CanvasRenderingContext2D, line: Lettering) {
 
   const lines = linesFor(line.text, x1 - x0, line.size)
   const step = line.size * LINE_HEIGHT
-  const middleX = (x0 + x1) / 2
+
+  // Drawn about the middle of the box, which is what lets a line be turned the
+  // way the board turns it: the same rotation about the same point.
+  context.save()
+  context.translate((x0 + x1) / 2, (y0 + y1) / 2)
+  if (line.angle) context.rotate((line.angle * Math.PI) / 180)
+
   // The whole block is centred on the box, so the first line starts half a
   // block above the middle — text too tall for its box overruns it evenly,
   // above and below, as it does on the board.
-  const top = (y0 + y1) / 2 - ((lines.length - 1) * step) / 2
+  const top = -((lines.length - 1) * step) / 2
 
   lines.forEach((text, index) => {
     const y = top + index * step
     // Stroke first, fill over it: the white sits behind the letter rather than
     // eating into it, which is what `paint-order: stroke fill` does on the board.
-    context.strokeText(text, middleX, y)
-    context.fillText(text, middleX, y)
+    context.strokeText(text, 0, y)
+    context.fillText(text, 0, y)
   })
+  context.restore()
 }
 
 function loadImage(source: string): Promise<HTMLImageElement> {

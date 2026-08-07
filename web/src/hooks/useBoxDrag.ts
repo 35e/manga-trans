@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import type { Box } from '../lib/api'
+import { alongBox, anchored } from '../lib/turn'
 
 /** Which edges a handle moves. */
 export type Grip = 'n' | 's' | 'e' | 'w' | 'se'
@@ -20,7 +21,15 @@ type Options = {
   onBox: (box: Box) => void
   /** Once, when the drag ends, with the box as it was before it began. */
   onSettled?: (was: Box) => void
+  /** How far what is in the box is turned, in degrees clockwise. */
+  angle?: number
+  /** Given, the box can be turned as well as moved and pulled. */
+  onAngle?: (angle: number) => void
 }
+
+/** Whole degrees, or a sixth of a right angle while shift is held. */
+const TURN_STEP = 1
+const TURN_STEP_HELD = 15
 
 export type BoxDrag = ReturnType<typeof useBoxDrag>
 
@@ -32,7 +41,15 @@ export type BoxDrag = ReturnType<typeof useBoxDrag>
  * arrives in screen pixels and is handed back in page pixels, which is what
  * everything that holds a box is written in.
  */
-export function useBoxDrag({ box, page, scale, onBox, onSettled }: Options) {
+export function useBoxDrag({
+  box,
+  page,
+  scale,
+  onBox,
+  onSettled,
+  angle = 0,
+  onAngle,
+}: Options) {
   const from = useRef<{ x: number; y: number; box: Box } | null>(null)
   const dragged = useRef(false)
 
@@ -86,15 +103,41 @@ export function useBoxDrag({ box, page, scale, onBox, onSettled }: Options) {
     const drag = since(event)
     if (!drag) return
     const [bx0, by0, bx1, by1] = drag.box
+    const { dx, dy } = alongBox(angle, drag.dx, drag.dy)
 
-    onBox(
-      settle([
-        grip === 'w' ? Math.min(bx0 + drag.dx, bx1 - SMALLEST) : bx0,
-        grip === 'n' ? Math.min(by0 + drag.dy, by1 - SMALLEST) : by0,
-        grip === 'e' || grip === 'se' ? Math.max(bx1 + drag.dx, bx0 + SMALLEST) : bx1,
-        grip === 's' || grip === 'se' ? Math.max(by1 + drag.dy, by0 + SMALLEST) : by1,
-      ]),
-    )
+    const pulled: Box = [
+      grip === 'w' ? Math.min(bx0 + dx, bx1 - SMALLEST) : bx0,
+      grip === 'n' ? Math.min(by0 + dy, by1 - SMALLEST) : by0,
+      grip === 'e' || grip === 'se' ? Math.max(bx1 + dx, bx0 + SMALLEST) : bx1,
+      grip === 's' || grip === 'se' ? Math.max(by1 + dy, by0 + SMALLEST) : by1,
+    ]
+    onBox(settle(anchored(angle, drag.box, pulled)))
+  }
+
+  /**
+   * Turn what is in the box: the handle follows the pointer round the middle.
+   *
+   * The middle is read off the element every time rather than kept from where
+   * the drag began, which it can be because turning about the middle is the one
+   * thing that cannot move it.
+   */
+  const spin = (event: React.PointerEvent<HTMLElement>) => {
+    if (!onAngle || !from.current) return
+    const around = event.currentTarget.parentElement?.getBoundingClientRect()
+    if (!around) return
+
+    dragged.current = true
+    const degrees =
+      (Math.atan2(
+        event.clientY - (around.top + around.height / 2),
+        event.clientX - (around.left + around.width / 2),
+      ) *
+        180) /
+        Math.PI +
+      // The handle stands above the box, so pointing straight up is straight.
+      90
+    const step = event.shiftKey ? TURN_STEP_HELD : TURN_STEP
+    onAngle((((Math.round(degrees / step) * step) % 360) + 360) % 360)
   }
 
   const release = (event: React.PointerEvent<HTMLElement>) => {
@@ -108,5 +151,5 @@ export function useBoxDrag({ box, page, scale, onBox, onSettled }: Options) {
     if (start && dragged.current) onSettled?.(start.box)
   }
 
-  return { grab, shift, move, release, dragged }
+  return { grab, shift, move, spin, release, dragged, turnable: Boolean(onAngle) }
 }

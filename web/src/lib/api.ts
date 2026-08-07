@@ -63,6 +63,17 @@ export type Lettering = {
   text: string
   box: Box
   size: number
+  /**
+   * How far the line is turned, in degrees clockwise about the middle of its
+   * box. Manga letters plenty of things on the slant — a sound effect running
+   * up a page, a shout across a tilted bubble — and a line set straight over
+   * one of those reads as a sticker over the art rather than part of it.
+   *
+   * The box itself stays square to the page: it is what the words are turned
+   * about, not something turned itself, which is what keeps wrapping and
+   * fitting the same measurement they were.
+   */
+  angle: number
 }
 
 /**
