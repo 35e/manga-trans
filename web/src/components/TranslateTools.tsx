@@ -6,6 +6,12 @@ type Props = {
   onTarget: (target: string) => void
   onFitAll: () => void
   canFit: boolean
+  /** Translate the page over again, against the blocks as they stand now. */
+  onTranslate: () => void
+  canTranslate: boolean
+  /** Whether there is anything set on the page yet: until there is, the button
+   * on the header is the one that translates, and a second would only confuse. */
+  lettered: boolean
   note: string | null
 }
 
@@ -18,6 +24,9 @@ export function TranslateTools({
   onTarget,
   onFitAll,
   canFit,
+  onTranslate,
+  canTranslate,
+  lettered,
   note,
 }: Props) {
   return (
@@ -54,6 +63,17 @@ export function TranslateTools({
       )}
 
       <div className="ml-auto flex items-center gap-2">
+        {lettered && (
+          <button
+            type="button"
+            onClick={onTranslate}
+            disabled={!canTranslate}
+            title="Translate the page again, against the blocks as they stand now — one added or dropped since is taken in, and every line already set is replaced"
+            className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-white disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
+          >
+            Translate again
+          </button>
+        )}
         <button
           type="button"
           onClick={onFitAll}

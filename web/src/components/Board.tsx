@@ -401,6 +401,9 @@ export function Board({
           onTarget={translating.onTarget}
           onFitAll={translating.onFitAll}
           canFit={lettered}
+          onTranslate={translating.onTranslate}
+          canTranslate={Boolean(translating.model) && read && !busy}
+          lettered={lettered}
           note={translating.note}
         />
       )}

@@ -85,7 +85,8 @@ curl -X POST localhost:8000/api/render -F image=@001.png \
 ```
 
 **`/api/detect`** boxes every piece of lettering it finds. A `confidence` under
-0.6 is worth a second look. It says where the text is, not what it says.
+0.8 is worth a second look — the dashboard leaves those blocks alone until one
+has been. It says where the text is, not what it says.
 
 **`/api/letters`** answers with the lettering itself rather than the box around
 it: a page-sized PNG, opaque white on the ink and clear everywhere else, which
@@ -215,14 +216,24 @@ in the order their names put them, counting properly: page 2 before page 10.
 Folders, dotfiles and the `__MACOSX` rubbish a Mac packs in are left behind.
 
 The dashboard puts a page on a board and works it in three tabs. **Inspect**
-boxes the lettering and reads it. **Mask** marks the lettering itself for
+boxes the lettering and reads it; a block the detector is less than 80% sure of
+is read and listed like any other but starts left alone, since a box over half a
+bubble or over a piece of artwork does more harm hidden than a real one does
+missed. Putting one back is one click, as is dropping one it was too sure of.
+**Mask** marks the lettering itself for
 hiding — not the boxes around it — and that mask can be brushed by hand, drawn
 wider or erased back, with blocks worth keeping dropped from it one at a time.
 **Hide under** beside the brush is what a clean puts back where the marks were:
 the art around them, filled in, or flat white.
 **Translate** sets each translated line back where its original was, in Anime
 Ace, in a box that can be dragged about, pulled wider or narrower by its edges,
-and sized with the arrow keys. **Apply to image** draws the lot into the page
+and sized with the arrow keys. **Translate again**, beside it, runs the page
+over against the blocks as they stand: blocks are added, dropped and put back
+after a page has been translated, and this is what brings the lines back into
+step with them — one that was added gets a line, one that went away loses its
+own. Every line already set is replaced, so it is the whole page again rather
+than the gaps in it, which is also the better translation: the model reads the
+page as one conversation. **Apply to image** draws the lot into the page
 and saves it — in the browser, with the same font, sizes and wrapping shown on
 the board, so what comes out is what was arranged. `/api/render` letters a page
 too, and letters it with PIL: it takes boxes and text and finds its own sizes,

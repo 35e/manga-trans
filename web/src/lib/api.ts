@@ -65,8 +65,16 @@ export type Lettering = {
   size: number
 }
 
-/** Below this the detector is guessing; the README says look twice. */
-export const UNSURE = 0.6
+/**
+ * Below this the detector is guessing, and a block it is guessing at starts
+ * left alone rather than cleaned.
+ *
+ * A box over half a bubble, or over a piece of artwork the detector took for
+ * lettering, does more harm hidden than a real one does missed: the harm of
+ * missing it is that the words stay on the page, and the harm of hiding it is
+ * that the art underneath is gone. Putting one back is one click either way.
+ */
+export const UNSURE = 0.8
 
 /** Every error the API raises comes back as {"error": "..."}. */
 async function refuse(response: Response): Promise<never> {

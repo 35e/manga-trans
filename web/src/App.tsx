@@ -13,6 +13,7 @@ import { useSettings } from './hooks/useSettings'
 import type { Analysis, BoardMode, Box, Fill, Lettering, Stage } from './lib/api'
 import {
   API_BASE,
+  UNSURE,
   clean,
   defaultPrompt,
   detect,
@@ -235,7 +236,12 @@ function App() {
         let found: Analysis = {
           detection,
           texts: detection.regions.length === 0 ? [] : null,
-          excluded: [],
+          // Whatever the detector is not sure of starts left alone. It is still
+          // read and still listed, so what it says can be seen before deciding;
+          // it is only kept out of the cleaning until it is put back.
+          excluded: detection.regions.flatMap((region, index) =>
+            region.confidence < UNSURE ? [index] : [],
+          ),
         }
         setAnalyses((current) => ({ ...current, [id]: found }))
         // Lettering is held per block; these are new blocks, so what was set

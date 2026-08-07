@@ -249,9 +249,20 @@ function Block({
 
           <p className="mt-1 text-[11px] text-slate-400 tabular-nums dark:text-slate-500">
             {excluded ? (
-              <span className="font-medium text-slate-500 dark:text-slate-400">
-                left alone
-              </span>
+              <>
+                <span className="font-medium text-slate-500 dark:text-slate-400">
+                  left alone
+                </span>
+                {/* Still says how sure the detector was: that is usually the
+                    reason it is being left alone, and the reason to put it
+                    back. */}
+                {!region.manual && (
+                  <span className={unsure ? ' text-amber-600 dark:text-amber-400' : ''}>
+                    {' · '}
+                    {Math.round(region.confidence * 100)}%
+                  </span>
+                )}
+              </>
             ) : region.manual ? (
               <span className="font-medium text-indigo-600 dark:text-indigo-400">
                 added by hand
