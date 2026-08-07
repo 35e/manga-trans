@@ -441,6 +441,13 @@ export function Board({
 
       <div
         ref={surface}
+        onPointerDown={(event) => {
+          // Anywhere on the board that is not a box puts down whichever box is
+          // held: picking one out is only ever meant to last as long as it is
+          // being worked on.
+          if (selected === null) return
+          if (!(event.target as Element).closest('[data-box]')) onSelect(null)
+        }}
         className="board relative min-h-0 flex-1 overflow-hidden bg-slate-100 p-6 dark:bg-slate-900"
       >
         {image && page && (
@@ -721,6 +728,7 @@ function RegionBox({
 
   return (
     <div
+      data-box
       style={{
         left: `${(x0 / page.width) * 100}%`,
         top: `${(y0 / page.height) * 100}%`,
@@ -752,25 +760,25 @@ function RegionBox({
               : `Text block ${index + 1}`
         }
         aria-pressed={active}
-        className={`h-full w-full cursor-move touch-none border-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+        className={`h-full w-full cursor-move touch-none border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
           excluded
-            ? 'border-dashed border-slate-400/80 hover:bg-slate-400/15'
+            ? 'border-dashed border-slate-400/60 hover:border-slate-400'
             : active
-              ? 'border-indigo-500 bg-indigo-500/20'
+              ? 'border-indigo-500 bg-indigo-500/8'
               : unsure
-                ? 'border-amber-500/80 hover:bg-amber-500/15'
-                : 'border-indigo-500/70 hover:bg-indigo-500/15'
+                ? 'border-amber-500/60 hover:border-amber-500 hover:bg-amber-500/8'
+                : 'border-indigo-500/40 hover:border-indigo-500 hover:bg-indigo-500/8'
         }`}
       >
         <span
-          className={`absolute -top-px -left-px px-1 text-[10px] leading-4 font-semibold text-white tabular-nums ${
+          className={`absolute -top-px -left-px rounded-br px-1 text-[9px] leading-4 font-medium text-white tabular-nums transition-colors ${
             excluded
-              ? 'bg-slate-500/80 line-through'
+              ? 'bg-slate-500/70 line-through'
               : active
                 ? 'bg-indigo-500'
                 : unsure
-                  ? 'bg-amber-500'
-                  : 'bg-indigo-500/80'
+                  ? 'bg-amber-500/80'
+                  : 'bg-indigo-500/60'
           }`}
         >
           {index + 1}

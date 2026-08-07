@@ -82,6 +82,7 @@ function Line({
 
   return (
     <div
+      data-box
       style={{
         left: `${(x0 / page.width) * 100}%`,
         top: `${(y0 / page.height) * 100}%`,
@@ -106,10 +107,8 @@ function Line({
         }}
         aria-label={`Translation ${index + 1}: ${set.text}`}
         aria-pressed={active}
-        className={`flex h-full w-full cursor-move touch-none items-center justify-center text-center text-black transition-colors ${
-          active
-            ? 'ring-2 ring-indigo-500'
-            : 'ring-1 ring-indigo-500/30 hover:ring-indigo-500/70'
+        className={`flex h-full w-full cursor-move touch-none items-center justify-center text-center text-black ring-1 transition-colors ${
+          active ? 'ring-indigo-500' : 'ring-indigo-500/25 hover:ring-indigo-500/60'
         }`}
         style={{
           fontFamily: FONT_STACK,
