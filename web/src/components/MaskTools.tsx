@@ -1,16 +1,21 @@
+import type { Fill } from '../lib/api'
 import type { Brush } from '../lib/mask'
 
 type Props = {
   brush: Brush
   onBrush: (brush: Brush) => void
-  onFill: () => void
-  onFillLetters: () => void
-  canFill: boolean
+  /** Mark the whole box around every block, or the lettering inside them. */
+  onMarkBlocks: () => void
+  onMarkLetters: () => void
+  canMark: boolean
   tracing: boolean
   onClear: () => void
   canClear: boolean
   spread: number
   onSpread: (spread: number) => void
+  /** What the clean puts where the marked lettering was. */
+  fill: Fill
+  onFill: (fill: Fill) => void
   note: string | null
 }
 
@@ -22,14 +27,16 @@ const SIZES = { min: 4, max: 160 }
 export function MaskTools({
   brush,
   onBrush,
-  onFill,
-  onFillLetters,
-  canFill,
+  onMarkBlocks,
+  onMarkLetters,
+  canMark,
   tracing,
   onClear,
   canClear,
   spread,
   onSpread,
+  fill,
+  onFill,
   note,
 }: Props) {
   return (
@@ -63,18 +70,37 @@ export function MaskTools({
         <span className="w-10 text-right tabular-nums">{brush.radius * 2}px</span>
       </label>
 
+      <div
+        className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300"
+        title="What goes where the lettering was: the page around it, filled in, or flat white"
+      >
+        Hide under
+        <div className="flex rounded-lg border border-slate-300 p-0.5 dark:border-white/15">
+          <Tool
+            label="The art"
+            active={fill === 'art'}
+            onClick={() => onFill('art')}
+          />
+          <Tool
+            label="White"
+            active={fill === 'white'}
+            onClick={() => onFill('white')}
+          />
+        </div>
+      </div>
+
       {note && (
         <span className="text-xs text-amber-700 dark:text-amber-400">{note}</span>
       )}
 
       <div className="ml-auto flex items-center gap-2">
         <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-          {tracing ? 'Tracing the lettering…' : 'Fill from'}
+          {tracing ? 'Tracing the lettering…' : 'Mark'}
         </span>
         <button
           type="button"
-          onClick={onFillLetters}
-          disabled={!canFill || tracing}
+          onClick={onMarkLetters}
+          disabled={!canMark || tracing}
           title="Mark the lettering itself, leaving the art it sits on"
           className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-white disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
         >
@@ -100,8 +126,8 @@ export function MaskTools({
         </label>
         <button
           type="button"
-          onClick={onFill}
-          disabled={!canFill}
+          onClick={onMarkBlocks}
+          disabled={!canMark}
           title="Mark the whole box around every block the detector found"
           className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-white disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
         >

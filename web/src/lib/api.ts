@@ -48,6 +48,13 @@ export type Stage =
 export type BoardMode = 'inspect' | 'mask' | 'translate'
 
 /**
+ * What goes where the lettering was. `art` fills it in from the page around it,
+ * so a tone or a line the words were drawn over carries on through them;
+ * `white` paints it flat, which is only right where the ground was white.
+ */
+export type Fill = 'art' | 'white'
+
+/**
  * One translated line, set where the original was. The box starts as the block
  * the detector found and the size as whatever fits it, and both are the reader's
  * to change after that: a translation is rarely as long as what it replaces.
@@ -81,8 +88,8 @@ async function reach(path: string, init?: RequestInit): Promise<Response> {
 }
 
 /**
- * One page up, one answer back. Anything that is not a Blob goes up as JSON,
- * which is how the API takes boxes.
+ * One page up, one answer back. Anything that is not a Blob or a word goes up
+ * as JSON, which is how the API takes boxes.
  */
 async function send(
   path: string,
@@ -94,6 +101,8 @@ async function send(
   body.append('image', file, file.name)
   for (const [name, value] of Object.entries(parts)) {
     if (value instanceof Blob) body.append(name, value, `${name}.png`)
+    // A word the API reads as a word would arrive still wearing its quotes.
+    else if (typeof value === 'string') body.append(name, value)
     else body.append(name, JSON.stringify(value))
   }
 
@@ -207,14 +216,16 @@ export async function letterMask(
 }
 
 /**
- * The page with everything the mask marks painted out, as a PNG. The mask is a
- * page-sized image, white where the lettering should go.
+ * The page with everything the mask marks taken out of it, as a PNG. The mask
+ * is a page-sized image, white where the lettering should go, and `fill` is
+ * what goes in its place: the art around it, or flat white.
  */
 export async function clean(
   file: File,
   mask: Blob,
+  fill: Fill,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  const response = await send('/api/clean', file, { mask }, signal)
+  const response = await send('/api/clean', file, { mask, fill }, signal)
   return response.blob()
 }

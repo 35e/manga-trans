@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useBoxDrag } from '../hooks/useBoxDrag'
-import type { Analysis, BoardMode, Box, Detection, Lettering, Stage } from '../lib/api'
+import type {
+  Analysis,
+  BoardMode,
+  Box,
+  Detection,
+  Fill,
+  Lettering,
+  Stage,
+} from '../lib/api'
 import { UNSURE } from '../lib/api'
 import type { GalleryImage } from '../lib/images'
 import type { Brush, Mask, Point } from '../lib/mask'
@@ -51,6 +59,9 @@ type Props = {
   /** How far past the ink a tracing reaches, in page pixels. */
   spread: number
   onSpread: (spread: number) => void
+  /** What a clean puts where the lettering was. */
+  fill: Fill
+  onFill: (fill: Fill) => void
   mode: BoardMode
   onMode: (mode: BoardMode) => void
   /** Whether the board is showing the cleaned page or the one that came in. */
@@ -79,6 +90,8 @@ export function Board({
   onTrace,
   spread,
   onSpread,
+  fill,
+  onFill,
   mode,
   onMode,
   showCleaned,
@@ -347,12 +360,12 @@ export function Board({
         <MaskTools
           brush={brush}
           onBrush={setBrush}
-          onFill={() => {
+          onMarkBlocks={() => {
             if (!mask || !detection) return
             mask.boxes(toClean(detection.regions))
             setEdits((count) => count + 1)
           }}
-          onFillLetters={() => {
+          onMarkLetters={() => {
             if (!mask || !detection) return
             void (async () => {
               const traced = lettersNow.current ?? (await traceNow.current())
@@ -361,7 +374,7 @@ export function Board({
               setEdits((count) => count + 1)
             })()
           }}
-          canFill={Boolean(
+          canMark={Boolean(
             mask && detection && toClean(detection.regions).length > 0,
           )}
           tracing={stage === 'tracing'}
@@ -373,6 +386,8 @@ export function Board({
           canClear={marked}
           spread={spread}
           onSpread={onSpread}
+          fill={fill}
+          onFill={onFill}
           note={read ? null : 'find the text first, or brush the page by hand'}
         />
       )}

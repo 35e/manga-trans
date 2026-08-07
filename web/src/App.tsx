@@ -10,7 +10,7 @@ import { useImageLibrary } from './hooks/useImageLibrary'
 import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
 import { useSettings } from './hooks/useSettings'
-import type { Analysis, BoardMode, Box, Lettering, Stage } from './lib/api'
+import type { Analysis, BoardMode, Box, Fill, Lettering, Stage } from './lib/api'
 import {
   API_BASE,
   clean,
@@ -80,6 +80,10 @@ function App() {
   // How far past the ink the traced mask reaches. What is enough depends on the
   // scan, so it is the reader's to raise when edges are being left behind.
   const [spread, setSpread] = useState(4)
+  // What goes where the lettering was: the art around it, filled in, or flat
+  // white. The art is right for anything drawn over a tone or a line, which is
+  // most of a page; white is for when the ground has to be clear.
+  const [fill, setFill] = useState<Fill>('art')
 
   const { prompt, setPrompt } = useSettings()
   const [builtInPrompt, setBuiltInPrompt] = useState<string | null>(null)
@@ -554,7 +558,7 @@ function App() {
       setError(null)
       setWorking({ id: page.id, stage: 'cleaning' })
       try {
-        setCleaned(page.id, await clean(page.file, marks))
+        setCleaned(page.id, await clean(page.file, marks, fill))
         return true
       } catch (cause) {
         setError(said(cause))
@@ -563,7 +567,7 @@ function App() {
         setWorking(null)
       }
     },
-    [setCleaned],
+    [setCleaned, fill],
   )
 
   const pageLettering = active ? (lettering[active.id] ?? []) : []
@@ -852,6 +856,8 @@ function App() {
           onTrace={traceLetters}
           spread={spread}
           onSpread={setSpread}
+          fill={fill}
+          onFill={setFill}
           mode={mode}
           onMode={setMode}
           showCleaned={showCleaned}

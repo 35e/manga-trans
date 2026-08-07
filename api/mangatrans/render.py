@@ -1,12 +1,13 @@
-"""Hiding the old lettering under white, and setting new text in its place."""
+"""Hiding the old lettering, and setting new text in its place."""
 
 from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+from . import inpaint
 from .geometry import Box
 
 FONTS = (
@@ -21,10 +22,19 @@ FONT_MIN = 8
 LINE_SPACING = 0.15  # of the type size
 INSET = 0.06  # margin inside the box, of its shorter side
 
+# What goes where the lettering was. ART fills it in from the page around it, so
+# what the words were drawn over carries on through them; WHITE paints it flat,
+# which is right when the ground has to be clear for new lettering and wrong
+# almost everywhere else. ART is the default because most lettering sits on
+# something, even if that something is only the tone of a bubble.
+ART = "art"
+WHITE_OUT = "white"
+FILLS = (ART, WHITE_OUT)
+
 
 @dataclass(frozen=True)
 class Region:
-    """A box to hide under white, and the words to set in its place."""
+    """A box to hide, and the words to set in its place."""
 
     box: Box
     text: str = ""
@@ -108,15 +118,34 @@ def fit(draw, text: str, box: Box, font_path: str | None) -> Layout:
     return best
 
 
-def cover(image: Image.Image, boxes: list[Box]) -> Image.Image:
-    """A copy of the page with white painted over every box."""
-    out = image.convert("RGB")  # a new image either way: the original is untouched
-    draw = ImageDraw.Draw(out)
+def marked(
+    size: tuple[int, int], boxes: list[Box], mask: Image.Image | None = None
+) -> Image.Image:
+    """Everything to be hidden, as one greyscale page: boxes and mask together.
+
+    White is hidden, black is left alone. Where the two overlap the stronger
+    wins, so a box is not thinned by a mask that was brushed lightly over it.
+    """
+    marks = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(marks)
     for box in boxes:
         if box.w > 0 and box.h > 0:
             # rectangle() takes both corners inclusive; the box's far edge is not.
-            draw.rectangle((box.x0, box.y0, box.x1 - 1, box.y1 - 1), fill=WHITE)
-    return out
+            draw.rectangle((box.x0, box.y0, box.x1 - 1, box.y1 - 1), fill=255)
+    if mask is not None:
+        marks = ImageChops.lighter(marks, mask.convert("L"))
+    return marks
+
+
+def hidden(image: Image.Image, marks: Image.Image, fill: str = ART) -> Image.Image:
+    """A copy of the page with everything ``marks`` marks taken out of it.
+
+    ``fill`` is what goes in its place: :data:`ART`, made out of the page around
+    the mark, or :data:`WHITE_OUT`, flat white.
+    """
+    if fill == WHITE_OUT:
+        return cover_mask(image, marks)
+    return inpaint.fill(image, marks)
 
 
 def cover_mask(image: Image.Image, mask: Image.Image) -> Image.Image:
@@ -126,8 +155,9 @@ def cover_mask(image: Image.Image, mask: Image.Image) -> Image.Image:
     is left alone, and the greys between are how much white to lay on — which is
     what keeps a brushed edge from coming out as a staircase.
 
-    Boxes cannot say "all of this bubble except that corner"; a mask can, which
-    is the whole reason for it.
+    The blunt half of :func:`hidden`: it hides what was there without asking
+    what it was over, which is what a ground for new lettering wants and what
+    anything drawn over artwork does not.
     """
     out = image.convert("RGB")
     out.paste(WHITE, (0, 0, out.width, out.height), mask.convert("L"))
@@ -155,10 +185,18 @@ def letter(draw, box: Box, text: str, font_path: str | None = None) -> Layout:
 
 
 def overlay(
-    image: Image.Image, regions: list[Region], font_path: str | None = None
+    image: Image.Image,
+    regions: list[Region],
+    font_path: str | None = None,
+    fill: str = WHITE_OUT,
 ) -> Image.Image:
-    """A copy of the page with every region hidden and its text set in it."""
-    out = cover(image, [region.box for region in regions])
+    """A copy of the page with every region hidden and its text set in it.
+
+    White by default, where hiding on its own fills from the art: a region here
+    is a rectangle and the text set in it is black, and black lettering wants a
+    ground that is clear rather than one that is whatever was underneath.
+    """
+    out = hidden(image, marked(image.size, [region.box for region in regions]), fill)
     draw = ImageDraw.Draw(out)
     for region in regions:
         text = region.text.strip()

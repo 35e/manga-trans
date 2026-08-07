@@ -93,6 +93,14 @@ def mask_in(image: Image.Image) -> Image.Image | None:
     return mask
 
 
+def fill_in(default: str = render.ART) -> str:
+    """What goes where the lettering was: the art around it, or flat white."""
+    chosen = request.form.get("fill", default).strip().lower()
+    if chosen not in render.FILLS:
+        raise BadRequest(f"'fill' must be one of: {', '.join(render.FILLS)}")
+    return chosen
+
+
 def box_in(values, image: Image.Image) -> Box:
     """One [x0, y0, x1, y1] from a request, clipped to the page."""
     try:
@@ -226,11 +234,15 @@ def create_app(
 
     @app.post("/api/clean")
     def clean():
-        """The page back with white over what was marked: the lettering hidden.
+        """The page back with what was marked taken out of it: the lettering hidden.
 
         What is marked can be boxes, a mask, or both. A mask is a greyscale page
         of the same size, and it is the only way to say "this bubble but not
         that corner of it".
+
+        What goes in its place is `fill`: by default the art around the mark,
+        carried inwards, so what the words were drawn over comes back; send
+        `fill=white` to paint it flat instead.
         """
         image = page()
         mask = mask_in(image)
@@ -242,12 +254,18 @@ def create_app(
         if mask is None and not boxes:
             raise BadRequest("nothing to hide: send 'boxes', a 'mask', or both")
 
-        out = render.cover(image, boxes)
-        return png(out if mask is None else render.cover_mask(out, mask))
+        marks = render.marked(image.size, boxes, mask)
+        return png(render.hidden(image, marks, fill_in()))
 
     @app.post("/api/render")
     def overlay():
-        """The page back with every box hidden and its text set in its place."""
+        """The page back with every box hidden and its text set in its place.
+
+        `fill` says what a box is hidden under, as it does for /api/clean, but
+        white is the default here rather than the art around it: a box is a
+        rectangle and the text set in it is black, and black lettering wants a
+        ground that is clear.
+        """
         image = page()
         regions = [
             render.Region(
@@ -255,6 +273,6 @@ def create_app(
             )
             for region in sent("regions")
         ]
-        return png(render.overlay(image, regions, font))
+        return png(render.overlay(image, regions, font, fill_in(render.WHITE_OUT)))
 
     return app

@@ -10,19 +10,48 @@ from unittest import mock
 import numpy as np
 from PIL import Image, ImageDraw
 
-from mangatrans import detect, ollama, read, render, server
+from mangatrans import detect, inpaint, ollama, read, render, server
 from mangatrans.detect import Block
 from mangatrans.geometry import Box
 
 DARK = (20, 20, 20)
+# A page of flat tone, and something dark drawn on it to be taken back off: what
+# a fill made out of the surroundings should come back as, and what it should not.
+TONE = (200, 200, 200)
+INK = Box(80, 50, 120, 90)
+# Filling from a flat surround lands on that flat value, give or take rounding.
+NEAR = 5
 
 
 def page(width: int = 200, height: int = 140, colour=DARK) -> Image.Image:
     return Image.new("RGB", (width, height), colour)
 
 
+def toned(ink: Box | None = INK, rim: int = 0) -> Image.Image:
+    """Flat tone with ink on it, and a rim of half-ink around it if asked.
+
+    The rim is what a soft-edged letter leaves just outside a mask that stops at
+    the ink — the thing a fill must not be made out of.
+    """
+    image = page(colour=TONE)
+    draw = ImageDraw.Draw(image)
+    if ink is not None:
+        if rim:
+            draw.rectangle(
+                (ink.x0 - rim, ink.y0 - rim, ink.x1 - 1 + rim, ink.y1 - 1 + rim),
+                outline=(100, 100, 100),
+                width=rim,
+            )
+        draw.rectangle((ink.x0, ink.y0, ink.x1 - 1, ink.y1 - 1), fill=DARK)
+    return image
+
+
 def payload(image: Image.Image, mask: Image.Image | None = None, **fields) -> dict:
-    """A multipart body: the image, a mask if there is one, and JSON beside them."""
+    """A multipart body: the image, a mask if there is one, and JSON beside them.
+
+    Strings go up as they are — a word the API reads back with request.form.get
+    is not JSON, and would arrive still wearing its quotes.
+    """
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
@@ -32,7 +61,12 @@ def payload(image: Image.Image, mask: Image.Image | None = None, **fields) -> di
         mask.save(stencil, format="PNG")
         stencil.seek(0)
         body["mask"] = (stencil, "mask.png")
-    body.update({name: json.dumps(value) for name, value in fields.items()})
+    body.update(
+        {
+            name: value if isinstance(value, str) else json.dumps(value)
+            for name, value in fields.items()
+        }
+    )
     return body
 
 
@@ -104,26 +138,96 @@ class TestBox(unittest.TestCase):
         self.assertEqual((clipped.w, clipped.h), (0, 0))
 
 
-class TestCover(unittest.TestCase):
-    def test_the_box_is_white_and_the_rest_is_not(self):
-        out = render.cover(page(), [Box(10, 10, 60, 40)])
-        self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
-        self.assertEqual(tuple(np.array(out)[0, 0]), DARK)
-        self.assertEqual(tuple(np.array(out)[45, 65]), DARK)
+class TestMarked(unittest.TestCase):
+    """Boxes and a mask gathered into one greyscale page of what to hide."""
+
+    box = Box(10, 10, 60, 40)
+    elsewhere = Box(100, 100, 140, 130)
+
+    def marks(self, boxes=None, mask=None) -> np.ndarray:
+        return np.array(render.marked((200, 140), boxes or [self.box], mask))
+
+    def test_the_box_is_marked_and_the_rest_is_not(self):
+        marks = self.marks()
+        self.assertTrue((patch(marks, self.box) == 255).all())
+        self.assertEqual(marks[0, 0], 0)
+        self.assertEqual(marks[45, 65], 0)
 
     def test_the_far_edge_is_exclusive(self):
-        out = np.array(render.cover(page(), [Box(10, 10, 60, 40)]))
-        self.assertEqual(tuple(out[39, 59]), (255, 255, 255))
-        self.assertEqual(tuple(out[40, 60]), DARK)
+        marks = self.marks()
+        self.assertEqual(marks[39, 59], 255)
+        self.assertEqual(marks[40, 60], 0)
+
+    def test_an_empty_box_marks_nothing(self):
+        self.assertFalse(self.marks([Box(10, 10, 10, 40)]).any())
+
+    def test_a_mask_is_taken_in_alongside_the_boxes(self):
+        marks = self.marks(mask=stencil(self.elsewhere))
+        self.assertTrue((patch(marks, self.box) == 255).all())
+        self.assertTrue((patch(marks, self.elsewhere) == 255).all())
+
+    def test_a_light_hand_over_a_box_does_not_thin_it(self):
+        marks = self.marks(mask=stencil(self.box, fill=40))
+        self.assertTrue((patch(marks, self.box) == 255).all())
+
+
+class TestHidden(unittest.TestCase):
+    """Which of the two ways of hiding is taken, and which is taken unasked."""
+
+    def marks(self) -> Image.Image:
+        return render.marked((200, 140), [INK])
+
+    def test_white_paints_the_mark_flat(self):
+        out = render.hidden(toned(), self.marks(), render.WHITE_OUT)
+        self.assertTrue((patch(out, INK) == 255).all())
+
+    def test_the_art_around_it_is_what_it_fills_with_unasked(self):
+        filled = patch(render.hidden(toned(), self.marks()), INK).astype(int)
+        self.assertFalse((filled == 255).any(), "the mark was painted white")
+        self.assertTrue((abs(filled - TONE[0]) <= NEAR).all())
 
     def test_the_original_is_left_alone(self):
-        original = page()
-        render.cover(original, [Box(0, 0, 200, 140)])
-        self.assertEqual(tuple(np.array(original)[0, 0]), DARK)
+        original = toned()
+        render.hidden(original, self.marks())
+        self.assertEqual(tuple(np.array(original)[0, 0]), TONE)
 
-    def test_an_empty_box_paints_nothing(self):
-        out = render.cover(page(), [Box(10, 10, 10, 40)])
-        self.assertFalse((np.array(out) == 255).any())
+
+class TestFill(unittest.TestCase):
+    """Making the fill out of the page around the mark."""
+
+    def test_a_mark_comes_back_as_what_surrounds_it(self):
+        filled = patch(inpaint.fill(toned(), stencil(INK)), INK).astype(int)
+        self.assertTrue((abs(filled - TONE[0]) <= NEAR).all(), "the ink is still there")
+
+    def test_nothing_marked_leaves_the_page_alone(self):
+        out = inpaint.fill(toned(), stencil())
+        self.assertTrue((np.array(out) == np.array(toned())).all())
+
+    def test_grey_lays_on_only_some_of_the_fill(self):
+        filled = patch(inpaint.fill(toned(), stencil(INK, fill=128)), INK).astype(int)
+        self.assertTrue((filled > DARK[0] + NEAR).all(), "no fill was laid on")
+        self.assertTrue((filled < TONE[0] - NEAR).all(), "all of it was laid on")
+
+    def test_the_rim_around_a_mark_is_not_what_it_is_made_of(self):
+        # Half-ink just outside the mask is the letter, not the art: read as art
+        # it would be carried inwards and the letter put back as a smudge.
+        filled = patch(inpaint.fill(toned(rim=2), stencil(INK)), INK).astype(int)
+        self.assertTrue((abs(filled - TONE[0]) <= NEAR).all(), "the rim was read")
+
+    def test_the_rim_is_still_left_where_it_was(self):
+        # Kept out of what the fill is made of is not the same as painted over:
+        # nothing outside the mark is touched.
+        out = np.array(inpaint.fill(toned(rim=2), stencil(INK)))
+        self.assertEqual(tuple(out[INK.y0 - 1, INK.x0]), (100, 100, 100))
+
+    def test_a_page_marked_all_over_has_nothing_left_to_look_at(self):
+        out = inpaint.fill(toned(), stencil(Box(0, 0, 200, 140)))
+        self.assertTrue((np.array(out) == 255).all())
+
+    def test_the_original_is_left_alone(self):
+        original = toned()
+        inpaint.fill(original, stencil(Box(0, 0, 200, 140)))
+        self.assertEqual(tuple(np.array(original)[0, 0]), TONE)
 
 
 class TestPageMask(unittest.TestCase):
@@ -441,7 +545,10 @@ class TestApi(unittest.TestCase):
         canvas = Image.new("RGBA", (200, 140), (0, 0, 0, 255))
         ImageDraw.Draw(canvas).rectangle((10, 10, 59, 39), fill=(255, 255, 255, 255))
 
-        response = client().post("/api/clean", data=payload(page(), mask=canvas))
+        # Flat white, so what came back says plainly what was read as marked.
+        response = client().post(
+            "/api/clean", data=payload(page(), mask=canvas, fill="white")
+        )
         self.assertEqual(response.status_code, 200)
         out = opened(response)
         self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
@@ -462,7 +569,9 @@ class TestApi(unittest.TestCase):
         letters = Image.new("RGBA", (200, 140), (255, 255, 255, 0))
         letters.putalpha(stencil(Box(10, 10, 60, 40)))
 
-        response = client().post("/api/clean", data=payload(page(), mask=letters))
+        response = client().post(
+            "/api/clean", data=payload(page(), mask=letters, fill="white")
+        )
         self.assertEqual(response.status_code, 200)
         out = opened(response)
         self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
@@ -493,35 +602,52 @@ class TestApi(unittest.TestCase):
 
     def test_clean_hides_the_boxes(self):
         response = client().post(
-            "/api/clean", data=payload(page(), boxes=[[10, 10, 60, 40]])
+            "/api/clean", data=payload(toned(), boxes=[INK.as_list()])
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "image/png")
         out = opened(response)
-        self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
-        self.assertEqual(tuple(np.array(out)[0, 0]), DARK)
+        self.assertFalse((patch(out, INK) < 128).any(), "the ink is still there")
+        self.assertEqual(tuple(np.array(out)[0, 0]), TONE)
+
+    def test_clean_fills_from_the_art_around_the_mark_unasked(self):
+        response = client().post("/api/clean", data=payload(toned(), mask=stencil(INK)))
+        self.assertEqual(response.status_code, 200)
+        filled = patch(opened(response), INK).astype(int)
+        self.assertFalse((filled == 255).any(), "the mark was painted white")
+        self.assertTrue((abs(filled - TONE[0]) <= NEAR).all())
+
+    def test_clean_paints_flat_white_when_it_is_asked_to(self):
+        response = client().post(
+            "/api/clean", data=payload(toned(), mask=stencil(INK), fill="white")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((patch(opened(response), INK) == 255).all())
+
+    def test_clean_rejects_a_fill_it_has_never_heard_of(self):
+        response = client().post(
+            "/api/clean", data=payload(toned(), mask=stencil(INK), fill="beige")
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("fill", response.json["error"])
 
     def test_clean_clips_a_box_that_runs_off_the_page(self):
+        # And a page marked from edge to edge has nothing left to make a fill
+        # out of, so white is all that can be said.
         response = client().post(
             "/api/clean", data=payload(page(), boxes=[[-50, -50, 500, 500]])
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue((np.array(opened(response)) == 255).all())
 
-    def test_clean_hides_what_the_mask_marks(self):
-        response = client().post(
-            "/api/clean", data=payload(page(), mask=stencil(Box(10, 10, 60, 40)))
-        )
-        self.assertEqual(response.status_code, 200)
-        out = opened(response)
-        self.assertTrue((patch(out, Box(10, 10, 60, 40)) == 255).all())
-        self.assertEqual(tuple(np.array(out)[0, 0]), DARK)
-
     def test_clean_takes_a_mask_and_boxes_together(self):
         response = client().post(
             "/api/clean",
             data=payload(
-                page(), mask=stencil(Box(10, 10, 60, 40)), boxes=[[100, 100, 140, 130]]
+                page(),
+                mask=stencil(Box(10, 10, 60, 40)),
+                boxes=[[100, 100, 140, 130]],
+                fill="white",
             ),
         )
         self.assertEqual(response.status_code, 200)
@@ -563,6 +689,28 @@ class TestApi(unittest.TestCase):
         inside = patch(opened(response), Box(20, 20, 180, 120))
         self.assertTrue((inside < 128).any())
         self.assertTrue((inside == 255).any())
+
+    def test_render_gives_the_new_text_a_clear_ground_unasked(self):
+        # The other way round from /api/clean: black lettering is set into the
+        # box here, and it wants white under it rather than whatever was there.
+        response = client().post(
+            "/api/render",
+            data=payload(toned(), regions=[{"box": INK.as_list(), "text": "HI"}]),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((patch(opened(response), INK) == 255).any())
+
+    def test_render_can_fill_from_the_art_when_asked(self):
+        response = client().post(
+            "/api/render",
+            data=payload(
+                toned(), regions=[{"box": INK.as_list(), "text": "HI"}], fill="art"
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        inside = patch(opened(response), INK)
+        self.assertFalse((inside == 255).any(), "the box was whited out")
+        self.assertTrue((inside < 128).any(), "no lettering was drawn")
 
     def test_render_rejects_a_region_without_a_box(self):
         response = client().post(
