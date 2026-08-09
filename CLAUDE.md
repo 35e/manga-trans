@@ -63,6 +63,12 @@ only ever asked to detect never stands the OCR reader (and torch) up at all.
 `Detector` and `Reader` each hold their own lock because neither an OpenCV net
 nor torch generation is reentrant.
 
+**`Detector.run` keeps the last page's pass** behind that same lock. The forward
+pass is ~2.7 s and everything downstream of it is under a millisecond, so the
+dashboard's ordinary flow — `/api/detect` then `/api/letters`, then `/api/letters`
+again on every change of spread — went from two-plus passes a page to one. Keep
+any new work that needs the segmentation on this path rather than adding a pass.
+
 - `detect.py` — comic-text-detector on OpenCV's ONNX backend. Two heads off one
   pass: block boxes, and the per-pixel segmentation mask behind `/api/letters`.
   Fetches its own weights on first use.
@@ -189,6 +195,14 @@ punctuation column. Tuned by grid search over 21 rendered cases — the binding
 constraint at the low end is a balloon whose own lines are set far apart, which
 breaks below 0.8. Err shy: a merge can be split by hand in the dashboard, but
 there is no way to put a wrongly-cut block back together.
+
+**A narrower gap is still cut on when the two sides are staggered**
+(`split.staggered`, `STAGGER`) — shifted the same way at *both* ends. Requiring
+both is the whole of it: "the tops do not line up" on its own is worse than
+useless, because a balloon of two columns centred against each other is out by
+3.0 characters where two genuinely separate balloons are out by 1.0. Nested
+means one block (a column that stopped early, columns centred); shifted the same
+way at both ends means two. Do not weaken this to a start-only test.
 
 **Order in `Detector.__call__` is load-bearing**: split on tight boxes and the
 ungrown mask, then `suppressed`, then pad (`PAD`, a quarter of a character), then

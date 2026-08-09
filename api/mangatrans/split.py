@@ -48,6 +48,22 @@ GAP_ALONE = 1.5
 # as it is two — so the strict measure is held on a little past it.
 LINES = 2.5
 
+# Lines of one block share an edge across a cut: vertical Japanese starts every
+# column at the same height and simply stops early on the last one. Two blocks
+# set beside each other share nothing, and their spans come out shifted the same
+# way at *both* ends. Where that happens the blank between them barely matters —
+# they were never one block — so this much shift is enough to cut on.
+#
+# Both ends have to agree, which is what tells a second block from a short last
+# column or from columns centred against each other. Measured: a balloon of two
+# centred columns is out by 3.0 characters at the start and back 3.0 at the end,
+# where two balloons a character apart are out by 1.0 at both.
+STAGGER = 0.5
+
+# The blank a staggered pair still needs, so lettering that runs together is
+# never cut on alignment alone.
+GAP_STAGGERED = 0.3
+
 # A floor in pixels, for text small enough that a character is a few pixels and a
 # stray speck of blank would cut a line in half.
 GAP_MIN = 8
@@ -83,24 +99,57 @@ def character(text: np.ndarray) -> float:
     return max(1.0, float(np.percentile(marks, CHARACTER)))
 
 
-def widest_blank(profile: np.ndarray) -> tuple[int, int]:
-    """The widest run of blank with ink on both sides, as (start, length).
+def blanks(profile: np.ndarray) -> list[tuple[int, int]]:
+    """Every run of blank with ink on both sides, as (start, length).
 
     Blank at either end is only slack in the box and is no use for cutting, so
-    the search runs between the first and last ink.
+    the search runs between the first and last ink. Every run is wanted and not
+    just the widest: two balloons can sit as close together as the columns
+    inside one of them, and then it is the alignment that tells them apart.
     """
     ink = np.flatnonzero(profile)
     if len(ink) < 2:
-        return (0, 0)
+        return []
+    runs = np.diff(ink) - 1
+    return [
+        (int(ink[at]) + 1, int(run)) for at, run in enumerate(runs.tolist()) if run > 0
+    ]
 
-    best_at, best = 0, 0
-    at = ink[0]
-    for edge in ink[1:]:
-        run = int(edge - at) - 1
-        if run > best:
-            best_at, best = int(at) + 1, run
-        at = edge
-    return best_at, best
+
+def widest_blank(profile: np.ndarray) -> tuple[int, int]:
+    """The widest of those runs, or (0, 0) where there is none."""
+    found = blanks(profile)
+    return max(found, key=lambda run: run[1]) if found else (0, 0)
+
+
+def reaches(part: np.ndarray, axis: int) -> tuple[int, int] | None:
+    """Where the ink in one side of a cut starts and ends, across that cut."""
+    along = part.any(axis=1) if axis == 0 else part.any(axis=0)
+    on = np.flatnonzero(along)
+    return (int(on[0]), int(on[-1])) if len(on) else None
+
+
+def staggered(text: np.ndarray, axis: int, cut: int, em: float) -> bool:
+    """Whether the two sides of a cut were set as separate blocks.
+
+    True when their spans are shifted the same way at both ends — see
+    :data:`STAGGER`. One side lying inside the other is not a stagger: that is a
+    column that stopped early, or two columns centred against one another, and
+    both belong to the block they are in.
+    """
+    before = reaches(text[:, :cut] if axis == 0 else text[:cut, :], axis)
+    after = reaches(text[:, cut:] if axis == 0 else text[cut:, :], axis)
+    if before is None or after is None:
+        return False
+
+    start, end = after[0] - before[0], after[1] - before[1]
+    if start > 0 and end > 0:
+        shift = min(start, end)
+    elif start < 0 and end < 0:
+        shift = min(-start, -end)
+    else:
+        return False
+    return shift >= STAGGER * em
 
 
 def wide_enough(run: int, through: float, em: float) -> bool:
@@ -125,27 +174,32 @@ def inked(text: np.ndarray) -> Box | None:
 
 
 def where(text: np.ndarray, em: float) -> tuple[int, int] | None:
-    """Which axis to cut across and where, or None if no gap is wide enough.
+    """Which axis to cut across and where, or None if nothing there is a wall.
 
-    The wider of the two gaps wins, so a block that comes apart both ways is cut
-    at its plainest seam first and the rest is left to the recursion.
+    A run of blank is a wall if it is wide enough on its own, or — narrower than
+    that — if the lettering either side of it is staggered, which says the two
+    were never set as one block however close together they sit.
+
+    The widest wall wins, so a block that comes apart several ways is cut at its
+    plainest seam first and the rest is left to the recursion.
     """
     height, width = text.shape[:2]
+    narrowest = max(GAP_MIN, round(GAP_STAGGERED * em))
+
+    walls = []
     # A cut across x is a wall standing through the height, and the other way about.
-    candidates = [
-        (0, widest_blank(text.any(axis=0)), height / em),
-        (1, widest_blank(text.any(axis=1)), width / em),
-    ]
-    walls = [
-        (axis, start, run)
-        for axis, (start, run), through in candidates
-        if run > 0 and wide_enough(run, through, em)
-    ]
+    for axis, through in ((0, height / em), (1, width / em)):
+        for start, run in blanks(text.any(axis=axis)):
+            cut = start + run // 2
+            if wide_enough(run, through, em) or (
+                run >= narrowest and staggered(text, axis, cut, em)
+            ):
+                walls.append((run, axis, cut))
+
     if not walls:
         return None
-
-    axis, start, run = max(walls, key=lambda wall: wall[2])
-    return axis, start + run // 2
+    _, axis, cut = max(walls)
+    return axis, cut
 
 
 def parts(text: np.ndarray, em: float) -> list[Box]:

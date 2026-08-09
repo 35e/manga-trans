@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import unittest
 from unittest import mock
 
@@ -607,6 +608,50 @@ class TestSplit(unittest.TestCase):
             "three columns falling blank at once is a wall and was not cut",
         )
 
+    def test_lettering_too_close_to_cut_on_its_gap_still_comes_apart_when_staggered(
+        self,
+    ):
+        """Text set at different heights was never one block, however close.
+
+        The blank here is barely half a character — well under what a cut needs
+        on its own — so the alignment is the only thing deciding, which is the
+        whole point of it.
+        """
+        ink = round(EM * 0.85)
+        gap = round(EM * 0.55)
+        near = 20 + EM + ink + gap
+
+        one = lettering(20, 20, 2, 5)
+        alongside = lettering(near, 20, 2, 5)
+        self.assertEqual(
+            split.pieces(written(one, alongside), around(one, alongside)),
+            [around(one, alongside)],
+            "text starting at the same height was cut apart on the gap alone",
+        )
+
+        lower = lettering(near, 20 + round(EM * 1.5), 2, 5)
+        self.assertEqual(
+            len(split.pieces(written(one, lower), around(one, lower))),
+            2,
+            "text starting at a different height was left as one block",
+        )
+
+    def test_a_column_that_stops_early_is_not_a_second_block(self):
+        # Vertical Japanese starts every column at the same height and the last
+        # one simply ends early. The ends disagree; the starts do not.
+        short = lettering(20, 20, 1, 5) + lettering(20 + EM, 20, 1, 2)
+        self.assertEqual(
+            split.pieces(written(short), around(short)), [around(short)]
+        )
+
+    def test_columns_centred_against_each_other_are_not_two_blocks(self):
+        # One inside the other, rather than both shifted the same way: a balloon
+        # of two columns set centred, not two balloons.
+        long_one = lettering(20, 20, 1, 8)
+        middle = lettering(20 + EM, 20 + 3 * EM, 1, 2)
+        both = long_one + middle
+        self.assertEqual(split.pieces(written(both), around(both)), [around(both)])
+
     def test_two_balloons_a_character_apart_come_apart(self):
         # What the wider gap used to miss: close together, but not one thing.
         one = lettering(20, 20, 2, 5)
@@ -774,6 +819,119 @@ class TestDetectorBlocks(unittest.TestCase):
         found = self.detector(left + right, [around(left, right)])(self.page())
         self.assertEqual(len(found), 2)
         self.assertLess(found[0].box.y0, found[1].box.y0)
+
+
+class TestStaggered(unittest.TestCase):
+    """Whether the two sides of a cut were set as one block or two."""
+
+    def sides(self, first: Box, second: Box) -> np.ndarray:
+        mask = np.zeros((200, 200), bool)
+        for box in (first, second):
+            mask[box.y0 : box.y1, box.x0 : box.x1] = True
+        return mask
+
+    def test_the_same_height_is_not_a_stagger(self):
+        mask = self.sides(Box(10, 10, 30, 100), Box(50, 10, 70, 100))
+        self.assertFalse(split.staggered(mask, 0, 40, 20))
+
+    def test_shifted_the_same_way_at_both_ends_is_a_stagger(self):
+        mask = self.sides(Box(10, 10, 30, 100), Box(50, 40, 70, 130))
+        self.assertTrue(split.staggered(mask, 0, 40, 20))
+
+    def test_one_lying_inside_the_other_is_not_a_stagger(self):
+        # A column that stopped early, or two centred against each other.
+        mask = self.sides(Box(10, 10, 30, 150), Box(50, 50, 70, 110))
+        self.assertFalse(split.staggered(mask, 0, 40, 20))
+
+    def test_a_shift_smaller_than_a_character_is_not_a_stagger(self):
+        mask = self.sides(Box(10, 10, 30, 100), Box(50, 12, 70, 102))
+        self.assertFalse(split.staggered(mask, 0, 40, 20))
+
+    def test_it_reads_across_the_cut_whichever_way_that_runs(self):
+        # Cutting across y instead: now it is the left edges that are compared.
+        mask = self.sides(Box(10, 10, 100, 30), Box(40, 50, 130, 70))
+        self.assertTrue(split.staggered(mask, 1, 40, 20))
+
+    def test_a_side_with_nothing_on_it_is_no_stagger(self):
+        mask = self.sides(Box(10, 10, 30, 100), Box(12, 10, 28, 100))
+        self.assertFalse(split.staggered(mask, 0, 150, 20))
+
+
+class TestBlanks(unittest.TestCase):
+    def test_every_run_between_two_marks_is_found(self):
+        profile = np.array([1, 0, 0, 1, 0, 1, 1], bool)
+        self.assertEqual(split.blanks(profile), [(1, 2), (4, 1)])
+
+    def test_blank_at_either_end_is_no_run(self):
+        profile = np.array([0, 0, 1, 1, 0, 0], bool)
+        self.assertEqual(split.blanks(profile), [])
+
+    def test_nothing_written_is_no_run(self):
+        self.assertEqual(split.blanks(np.zeros(10, bool)), [])
+
+
+class TestKeptPass(unittest.TestCase):
+    """The last page's forward pass is kept, because it is asked for twice.
+
+    A dashboard asks /api/detect where the lettering is and then /api/letters
+    what it looks like, and asks the second again on every change of spread.
+    """
+
+    def detector(self):
+        made = detect.Detector.__new__(detect.Detector)
+        made._lock = threading.Lock()
+        made._last = None
+        made.passes = 0
+
+        blocks = np.zeros((1, 1, 6), np.float32)
+        seg = np.zeros((1, 1, detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
+
+        class Net:
+            def setInput(self, blob):
+                pass
+
+            def forward(self, names):
+                made.passes += 1
+                return [blocks, seg]
+
+        made.net = Net()
+        return made
+
+    def page(self, fill: int = 0) -> np.ndarray:
+        return np.full((140, 200, 3), fill, np.uint8)
+
+    def test_the_same_page_twice_is_one_pass(self):
+        made = self.detector()
+        made.run(self.page())
+        made.run(self.page())
+        self.assertEqual(made.passes, 1)
+
+    def test_a_different_page_is_a_new_pass(self):
+        made = self.detector()
+        made.run(self.page(0))
+        made.run(self.page(7))
+        self.assertEqual(made.passes, 2)
+
+    def test_only_the_last_page_is_kept(self):
+        made = self.detector()
+        made.run(self.page(0))
+        made.run(self.page(7))
+        made.run(self.page(0))
+        self.assertEqual(made.passes, 3, "more than one page was kept")
+
+    def test_the_kept_answer_is_the_one_it_worked_out(self):
+        made = self.detector()
+        first = made.run(self.page())
+        again = made.run(self.page())
+        self.assertIs(first[0], again[0])
+        self.assertIs(first[1], again[1])
+        self.assertEqual(first[2:], again[2:])
+
+    def test_blocks_and_letters_off_one_page_share_the_pass(self):
+        made = self.detector()
+        made(self.page())
+        made.letters(self.page())
+        self.assertEqual(made.passes, 1)
 
 
 class TestWidestBlank(unittest.TestCase):

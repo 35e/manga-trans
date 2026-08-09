@@ -6,6 +6,7 @@ not on PyPI, so :func:`ensure_model` fetches them once.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import urllib.request
@@ -178,6 +179,7 @@ class Detector:
         path = ensure_model(str(weights) if weights else None)
         self.net = cv2.dnn.readNetFromONNX(str(path))
         self._lock = threading.Lock()
+        self._last: tuple[bytes, tuple] | None = None
 
     def run(self, image):
         """One pass: the block rows, the per-pixel text map, and the padding.
@@ -186,20 +188,38 @@ class Detector:
         asked for, so they are told apart by shape: the blocks are the only
         3-dimensional one, and the lettering is the one-channel map — the
         two-channel one is where the lines of text run, which nothing here wants.
+
+        The last page's answer is kept, because the same page is put through
+        twice as a matter of course: a dashboard asks /api/detect where the
+        lettering is and then /api/letters what it looks like, and asks the
+        second again every time the spread is changed. The pass is seconds and
+        everything downstream of it is a millisecond, so the one worth not
+        repeating is this one. Only the last is kept — pages are worked on one at
+        a time — and it is held behind the same lock as the net.
         """
-        canvas, pad_w, pad_h = letterbox(image)
-        blob = cv2.dnn.blobFromImage(
-            canvas, scalefactor=1 / 255.0, size=(INPUT_SIZE, INPUT_SIZE)
-        )
+        page = np.ascontiguousarray(image)
+        key = hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest()
+
         with self._lock:
+            if self._last is not None and self._last[0] == key:
+                return self._last[1]
+
+            canvas, pad_w, pad_h = letterbox(page)
+            blob = cv2.dnn.blobFromImage(
+                canvas, scalefactor=1 / 255.0, size=(INPUT_SIZE, INPUT_SIZE)
+            )
             self.net.setInput(blob)
             outputs = self.net.forward(("blk", "seg", "det"))
 
-        blocks = next(output for output in outputs if output.ndim == 3)
-        seg = next(
-            output for output in outputs if output.ndim == 4 and output.shape[1] == 1
-        )
-        return blocks, seg[0, 0], pad_w, pad_h
+            blocks = next(output for output in outputs if output.ndim == 3)
+            seg = next(
+                output
+                for output in outputs
+                if output.ndim == 4 and output.shape[1] == 1
+            )
+            answer = (blocks, seg[0, 0], pad_w, pad_h)
+            self._last = (key, answer)
+            return answer
 
     def letters(self, image, grow: int = GROW) -> np.ndarray:
         """A mask of the lettering itself, pixel by pixel, the page's size.
@@ -250,26 +270,30 @@ class Detector:
 
         # Split first, then pad. A margin put on before would close the very gaps
         # the split is looking for, and would push two neighbours together.
-        pieces = [
-            Block(box=piece, confidence=block.confidence)
-            for block in found
-            for piece in split.pieces(text, block.box)
-        ]
-
-        blocks = []
-        for block in suppressed(pieces):
+        #
+        # The margin is measured once on the whole block rather than on each
+        # piece: more lettering to read the character size off, and every piece
+        # of one block then comes back held off its words by the same amount.
+        pieces: list[Block] = []
+        margins: dict[Box, int] = {}
+        for block in found:
             crop = text[block.box.y0 : block.box.y1, block.box.x0 : block.box.x1]
             by = (
                 max(PAD_MIN, round(PAD * split.character(crop)))
                 if crop.any()
                 else PAD_MIN
             )
-            blocks.append(
-                Block(
-                    box=block.box.grown(by).clipped(width, height),
-                    confidence=block.confidence,
-                )
+            for piece in split.pieces(text, block.box):
+                pieces.append(Block(box=piece, confidence=block.confidence))
+                margins[piece] = by
+
+        blocks = [
+            Block(
+                box=block.box.grown(margins[block.box]).clipped(width, height),
+                confidence=block.confidence,
             )
+            for block in suppressed(pieces)
+        ]
 
         # Down the page, then right to left. `lib/order.ts` sorts by the same key.
         # After splitting, so the halves of a cut block land where they are read.

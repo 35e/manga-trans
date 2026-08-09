@@ -115,10 +115,23 @@ characters is then a candidate, and small kana and punctuation leave most of
 their cell empty — so that one needs **1.5**.
 
 Under about 0.8 the line spacing of a generously set balloon starts being read
-as a wall, so that is the floor rather than a preference. Beyond that this is
-deliberately shy: a balloon left merged can be split by hand in the dashboard,
-where a line of dialogue wrongly cut into four cannot be put back so easily. A
-block that does not come apart is answered with exactly as the detector drew it.
+as a wall, so that is the floor rather than a preference.
+
+A narrower blank than that is still cut on when the lettering either side of it
+is **staggered** — shifted the same way at both ends, by half a character or
+more. Lines of one block share an edge: vertical Japanese starts every column at
+the same height and simply stops early on the last one. Two blocks set beside
+each other share nothing. Both ends have to agree before it counts, and that is
+what tells a second block from a column that ended early or from two columns
+centred against one another — measured, a balloon of two centred columns is out
+by 3.0 characters at the start and back 3.0 at the end, where two balloons a
+character apart are out by 1.0 at both. Text set at plainly different heights was
+never one block, however close together it sits.
+
+Beyond that this is deliberately shy: a balloon left merged can be split by hand
+in the dashboard, where a line of dialogue wrongly cut into four cannot be put
+back so easily. A block that does not come apart is answered with exactly as the
+detector drew it.
 
 Splitting is also why two blocks can come back covering the same lettering: the
 head sometimes draws a box around two balloons *and* a box around one of them,
@@ -168,6 +181,13 @@ a scan has broken cannot be followed, and a balloon drawn no wider than the word
 already are has nothing to offer. It is a guess, and saying so beats answering
 with a rectangle somewhere in the artwork. No model is involved — this is the one
 call on an image that never stands the detector up.
+
+Detection keeps the last page's pass through the network, since the same page
+goes through twice as a matter of course: `/api/detect` for the boxes and
+`/api/letters` for the mask are one pass, and changing `grow` asks for it again.
+The pass is seconds and everything downstream of it is a millisecond, so asking
+about a page a second time costs milliseconds rather than repeating it. Only the
+last page is kept — they are worked on one at a time.
 
 **`/api/letters`** answers with the lettering itself rather than the box around
 it: a page-sized PNG, opaque white on the ink and clear everywhere else, which
