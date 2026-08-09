@@ -27,7 +27,7 @@ import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, fitSize, ready } from './lib/fit'
 import type { GalleryImage } from './lib/images'
 import { formatBytes, plural } from './lib/images'
-import { insertAt, insertionFor, moveAt, movedIndex } from './lib/order'
+import { halves, insertAt, insertionFor, moveAt, movedIndex } from './lib/order'
 
 const said = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause)
@@ -44,6 +44,7 @@ function without<T>(record: Record<string, T>, key: string): Record<string, T> {
     Object.entries(record).filter(([held]) => held !== key),
   )
 }
+
 
 function App() {
   const { images, add, remove, clear, busy, notice, dismissNotice } =
@@ -503,6 +504,119 @@ function App() {
   )
 
   /**
+   * One block that turned out to be two bubbles, cut in two at `at` — a place
+   * in the translated line, which is where the join between them shows.
+   *
+   * The detector runs neighbouring bubbles together often enough to matter, and
+   * it is usually noticed with the lettering already set, which is why the cut
+   * can be made from here and not only back among the blocks. The line is cut
+   * where the cursor was, each half is resized to the box it now sits in, and
+   * both boxes are read again so the originals still say what is inside them.
+   *
+   * The block is what is really being cut: the translations are held one per
+   * block, in step with them, and two bubbles were always two blocks.
+   */
+  const splitRegion = useCallback(
+    async (index: number, at: number) => {
+      if (!active) return
+      const { id, file } = active
+      const held = analyses[id]
+      const region = held?.detection.regions[index]
+      const line = lettering[id]?.[index]
+      if (!held || !region || !line) return
+
+      const before = line.text.slice(0, at).trim()
+      const rest = line.text.slice(at).trim()
+      // Neither half may be empty: that is a cursor at one end, not a cut.
+      if (!before || !rest) return
+
+      const [firstBox, secondBox] = halves(region.box, at / line.text.length)
+      const added = {
+        id: crypto.randomUUID(),
+        box: secondBox,
+        confidence: region.confidence,
+        manual: region.manual,
+      }
+
+      setAnalyses((current) => {
+        const now = current[id]
+        const target = now?.detection.regions[index]
+        if (!now || target?.id !== region.id) return current
+
+        const regions = [...now.detection.regions]
+        regions[index] = { ...target, box: firstBox }
+        const texts = now.texts ?? now.detection.regions.map(() => '')
+
+        return {
+          ...current,
+          [id]: {
+            ...now,
+            detection: {
+              ...now.detection,
+              regions: insertAt(regions, index + 1, added),
+            },
+            // The original stays on the first half until it has been read
+            // again, which is a moment away.
+            texts: insertAt(texts, index + 1, ''),
+            excluded: [
+              // Indices at or past the new one all moved up by one, and a block
+              // left alone is left alone on both sides of the cut.
+              ...now.excluded.map((was) => (was >= index + 1 ? was + 1 : was)),
+              ...(now.excluded.includes(index) ? [index + 1] : []),
+            ],
+          },
+        }
+      })
+
+      setLettering((current) => {
+        const page = current[id]
+        const was = page?.[index]
+        if (!page || !was) return current
+
+        const put = (text: string, box: Box): Lettering => ({
+          ...was,
+          text,
+          box,
+          size: fitSize(text, box[2] - box[0], box[3] - box[1]),
+        })
+
+        const next = [...page]
+        next[index] = put(before, firstBox)
+        return { ...current, [id]: insertAt(next, index + 1, put(rest, secondBox)) }
+      })
+      setSelected(index)
+
+      setError(null)
+      setWorking({ id, stage: 'reading' })
+      try {
+        const readings = await read(file, [firstBox, secondBox])
+        setAnalyses((current) => {
+          const now = current[id]
+          if (!now?.texts) return current
+          // Found again by name: the list may have been added to or reordered
+          // while the reader was working.
+          const first = now.detection.regions.findIndex(
+            (block) => block.id === region.id,
+          )
+          const second = now.detection.regions.findIndex(
+            (block) => block.id === added.id,
+          )
+          if (first === -1 || second === -1) return current
+          const texts = [...now.texts]
+          texts[first] = readings[0] ?? ''
+          texts[second] = readings[1] ?? ''
+          return { ...current, [id]: { ...now, texts } }
+        })
+      } catch (cause) {
+        setError(said(cause))
+      } finally {
+        setWorking(null)
+      }
+    },
+    [active, analyses, lettering],
+  )
+
+  /**
    * The lettering itself, traced pixel by pixel, so a clean can hide the words
    * and leave the art they were drawn over. Another pass of the detector, so it
    * is asked for once per page and then kept.
@@ -912,6 +1026,7 @@ function App() {
             onSelect={setSelected}
             onChange={changeLettering}
             onFit={fitOne}
+            onSplit={splitRegion}
           />
         )}
       </div>

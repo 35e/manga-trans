@@ -16,6 +16,49 @@ function after(one: [number, number], other: [number, number]): boolean {
   return one[0] !== other[0] ? one[0] > other[0] : one[1] > other[1]
 }
 
+/** Whether one box is read before another, by that same rule. */
+function readsBefore(one: Box, other: Box): boolean {
+  return !after(key(one), key(other))
+}
+
+/** No half of a box cut in two may be thinner than this, in page pixels. */
+const SLIVER = 12
+
+/** Where to cut a span `share` of the way along, leaving neither end a sliver. */
+function cutAt(length: number, share: number): number {
+  if (length < SLIVER * 2) return length / 2
+  return Math.min(Math.max(length * share, SLIVER), length - SLIVER)
+}
+
+/**
+ * A box cut in two across its longer side, `share` of the way along, handed
+ * back in the order the two halves are read in.
+ *
+ * Which half that is depends on how it was cut: going down a page the top half
+ * is read first, but going across one the right half is, since that is the way
+ * a Japanese page runs. So the answer is asked of the same rule that orders
+ * every other block rather than assumed here.
+ */
+export function halves(box: Box, share: number): [Box, Box] {
+  const [x0, y0, x1, y1] = box
+  const width = x1 - x0
+  const height = y1 - y0
+
+  let one: Box
+  let other: Box
+  if (height >= width) {
+    const cut = Math.round(y0 + cutAt(height, share))
+    one = [x0, y0, x1, cut]
+    other = [x0, cut, x1, y1]
+  } else {
+    const cut = Math.round(x0 + cutAt(width, share))
+    one = [x0, y0, cut, y1]
+    other = [cut, y0, x1, y1]
+  }
+
+  return readsBefore(one, other) ? [one, other] : [other, one]
+}
+
 /** The index a box belongs at, among blocks already in reading order. */
 export function insertionFor(boxes: Box[], box: Box): number {
   const mine = key(box)
