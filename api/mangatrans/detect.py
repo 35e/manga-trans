@@ -178,15 +178,28 @@ class Detector:
         return page_mask(seg, width, height, pad_w, pad_h, grow)
 
     def __call__(self, image) -> list[Block]:
-        """Every block of lettering on one RGB page array, in reading order."""
+        """Every block of lettering on one RGB page array, in reading order.
+
+        A block holding two balloons the detector ran together is cut back into
+        one block each — see :mod:`mangatrans.split`. It is done here rather than
+        left to the caller because the segmentation this needs is already in hand
+        from the same pass, and because a merged block is wrong for everything
+        downstream: it is read as one string and translated as one line.
+        """
+        # Imported here, not at the top: the Dockerfile copies this module in
+        # before the model prefetch and `split` after it, so that editing a
+        # threshold there does not send the next build back for 550 MB of
+        # weights. At the top, the prefetch step would not find it.
+        from . import split
+
         height, width = image.shape[:2]
-        raw_blocks, _, pad_w, pad_h = self.run(image)
+        raw_blocks, seg, pad_w, pad_h = self.run(image)
 
         scale_x = width / (INPUT_SIZE - pad_w)
         scale_y = height / (INPUT_SIZE - pad_h)
         boxes, confidences = decode_blocks(raw_blocks[0], CONF_THRESHOLD, NMS_THRESHOLD)
 
-        blocks = []
+        found = []
         for xyxy, confidence in zip(boxes, confidences):
             box = Box(
                 int(round(xyxy[0] * scale_x)),
@@ -195,8 +208,18 @@ class Detector:
                 int(round(xyxy[3] * scale_y)),
             ).clipped(width, height)
             if box.w > 1 and box.h > 1:
-                blocks.append(Block(box=box, confidence=float(confidence)))
+                found.append(Block(box=box, confidence=float(confidence)))
+
+        # Ungrown: growing the mask to cover the halo around a letter also closes
+        # the gaps the split is measuring.
+        text = page_mask(seg, width, height, pad_w, pad_h, 0) > 0
+        blocks = [
+            Block(box=piece, confidence=block.confidence)
+            for block in found
+            for piece in split.pieces(text, block.box)
+        ]
 
         # Down the page, then right to left. `lib/order.ts` sorts by the same key.
+        # After splitting, so the halves of a cut block land where they are read.
         blocks.sort(key=lambda block: (block.box.y0, -block.box.x1))
         return blocks

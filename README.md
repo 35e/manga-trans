@@ -96,6 +96,21 @@ has been. It says where the text is, not what it says. `bubble` comes along with
 it, as below, because it is worked out from the page and the boxes and both are
 already in hand.
 
+Two balloons that overlap are often boxed as one, and that is worse than it
+looks: the block would be read as one string, so two speakers reach the
+translator as a single line and the lettering that comes back is set into one
+balloon. So a block is cut apart before it is answered with, wherever a run of
+blank inside it is wide enough to be a wall rather than the gap between two
+lines — about one and a half characters, measured against the size the page is
+lettered at rather than in pixels. The cuts are axis-aligned, since a block is a
+rectangle. Each piece keeps the confidence of the block it came from and gets its
+own `bubble`, and the pieces are put in reading order along with everything else.
+
+This is deliberately shy: a balloon left merged can be split by hand in the
+dashboard, where a line of dialogue wrongly cut into four cannot be put back so
+easily. A block that does not come apart is answered with exactly as the detector
+drew it.
+
 **`/api/bubbles`** answers with the room each block was written in rather than
 the room its words take up: the largest rectangle that fits inside the balloon
 around it. This is where a translation goes. Japanese runs down the page, so a
@@ -230,6 +245,8 @@ api/
   mangatrans/
     detect.py     comic-text-detector on OpenCV's ONNX backend: blocks, and
                   the per-pixel mask of the lettering inside them
+    split.py      cutting a block that holds two balloons back into one
+                  block each, by the blank between them
     bubble.py     the balloon a block was written in, which is where a
                   translation goes — the block is only where the words are
     read.py       manga-ocr, and the cropping that feeds it

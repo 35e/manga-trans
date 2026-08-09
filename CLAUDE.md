@@ -66,6 +66,10 @@ nor torch generation is reentrant.
 - `detect.py` — comic-text-detector on OpenCV's ONNX backend. Two heads off one
   pass: block boxes, and the per-pixel segmentation mask behind `/api/letters`.
   Fetches its own weights on first use.
+- `split.py` — a block holding two overlapping balloons, cut back into one block
+  each. Pure numpy/OpenCV on the segmentation mask, which `Detector.__call__`
+  already has from the same pass. Thresholds are in characters, not pixels; see
+  the note on the deferred import below.
 - `bubble.py` — the balloon a block was written in, as the largest rectangle
   inside it. Pure OpenCV on the greyscale page, no model: flood the light ground
   from the block (painted in first, or vertical Japanese cuts the balloon in
@@ -161,6 +165,21 @@ its state so a tracing can be marked into a mask the moment it arrives.
 `detect.py` and `read.py` are copied before the model prefetch step; editing any
 of those four invalidates ~550 MB of baked weights and forces a re-download on
 the next build. Everything else is copied after.
+
+This is why `detect.py` imports `split` **inside** `Detector.__call__` rather
+than at the top: `split.py` is copied after the prefetch, so a top-level import
+would break the build, and moving `split.py` before the prefetch would make every
+threshold tweak cost 550 MB. Keep that import deferred.
+
+**A merged block is wrong for everything downstream**, which is why splitting
+happens in `Detector.__call__` and not in the dashboard: the block is read as one
+string, translated as one line, and lettered into one balloon. `split.pieces`
+hands a block back **unchanged** when it does not come apart — it must never
+re-box a block it did not cut, or every block on the page would shift. The
+thresholds are tuned to a measured valley: the worst gap inside a single column
+of kana and punctuation is ~1.1 characters, the tightest real merge ~2.6, and
+`GAP` sits at 1.6. Err shy — a merge can be split by hand in the dashboard, but
+there is no way to put a wrongly-cut block back together.
 
 ## Style
 

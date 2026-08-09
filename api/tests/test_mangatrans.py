@@ -10,7 +10,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image, ImageDraw
 
-from mangatrans import bubble, detect, inpaint, ollama, read, render, server
+from mangatrans import bubble, detect, inpaint, ollama, read, render, server, split
 from mangatrans.detect import Block
 from mangatrans.geometry import Box
 
@@ -511,6 +511,176 @@ class TestAround(unittest.TestCase):
 
     def test_a_box_off_the_page_has_no_answer(self):
         self.assertIsNone(self.found(ballooned(), Box(900, 900, 1000, 1000)))
+
+
+EM = 20
+
+
+def lettering(x: int, y: int, columns: int, rows: int, em: int = EM) -> list[Box]:
+    """Characters set solid on a square em, ``columns`` across and ``rows`` down.
+
+    Each glyph is drawn a little inside its cell, the way a real one sits in
+    its em, so the blank between them is the blank a real line has.
+    """
+    ink = round(em * 0.85)
+    return [
+        Box(x + c * em, y + r * em, x + c * em + ink, y + r * em + ink)
+        for c in range(columns)
+        for r in range(rows)
+    ]
+
+
+def written(*groups: list[Box], size=(400, 400)) -> np.ndarray:
+    """A per-pixel text mask with every one of those glyphs set in it."""
+    mask = np.zeros((size[1], size[0]), bool)
+    for group in groups:
+        for glyph in group:
+            mask[glyph.y0 : glyph.y1, glyph.x0 : glyph.x1] = True
+    return mask
+
+
+def around(*groups: list[Box]) -> Box:
+    """The one box a detector would draw around all of them."""
+    every = [glyph for group in groups for glyph in group]
+    return Box(
+        min(g.x0 for g in every),
+        min(g.y0 for g in every),
+        max(g.x1 for g in every),
+        max(g.y1 for g in every),
+    )
+
+
+class TestSplit(unittest.TestCase):
+    """Cutting a block that holds two balloons back into one block each."""
+
+    def test_two_balloons_side_by_side_come_apart(self):
+        one = lettering(20, 20, 2, 5)
+        other = lettering(20 + 2 * EM + 3 * EM, 30, 2, 5)
+        pieces = split.pieces(written(one, other), around(one, other))
+        self.assertEqual(len(pieces), 2)
+
+    def test_two_balloons_one_above_the_other_come_apart(self):
+        one = lettering(20, 20, 2, 4)
+        other = lettering(30, 20 + 4 * EM + 3 * EM, 2, 4)
+        pieces = split.pieces(written(one, other), around(one, other))
+        self.assertEqual(len(pieces), 2)
+
+    def test_three_run_together_come_apart_into_three(self):
+        groups = [lettering(20 + i * 5 * EM, 20, 2, 4) for i in range(3)]
+        pieces = split.pieces(written(*groups), around(*groups))
+        self.assertEqual(len(pieces), 3)
+
+    def test_the_columns_of_one_balloon_are_left_alone(self):
+        # The blank between columns of vertical Japanese is a line gap, not a wall.
+        one = lettering(20, 20, 5, 6)
+        box = around(one)
+        self.assertEqual(split.pieces(written(one), box), [box])
+
+    def test_a_single_column_is_left_alone(self):
+        # The risky one: a row projection sees every gap between characters.
+        one = lettering(20, 20, 1, 10)
+        box = around(one)
+        self.assertEqual(split.pieces(written(one), box), [box])
+
+    def test_a_block_that_holds_one_balloon_is_handed_back_untouched(self):
+        one = lettering(20, 20, 3, 4)
+        # Deliberately looser than the lettering: a block that does not come
+        # apart must not be re-boxed either, or every block would move.
+        box = Box(10, 10, 200, 200)
+        self.assertEqual(split.pieces(written(one), box), [box])
+
+    def test_each_piece_is_boxed_around_its_own_lettering(self):
+        one = lettering(20, 20, 2, 5)
+        other = lettering(20 + 5 * EM, 30, 2, 5)
+        first, second = split.pieces(written(one, other), around(one, other))
+        self.assertEqual(first, around(one))
+        self.assertEqual(second, around(other))
+
+    def test_no_piece_reaches_outside_the_block_it_came_from(self):
+        one = lettering(20, 20, 2, 5)
+        other = lettering(20 + 5 * EM, 30, 2, 5)
+        box = around(one, other)
+        for piece in split.pieces(written(one, other), box):
+            self.assertEqual(piece, piece.clipped(box.x1, box.y1))
+            self.assertGreaterEqual(piece.x0, box.x0)
+            self.assertGreaterEqual(piece.y0, box.y0)
+
+    def test_a_block_with_nothing_written_in_it_is_left_alone(self):
+        box = Box(10, 10, 100, 100)
+        self.assertEqual(split.pieces(written(), box), [box])
+
+    def test_a_wider_gap_wins_over_a_narrower_one(self):
+        # Cut across the plainest seam first; the rest is left to the recursion.
+        left = lettering(20, 20, 2, 3)
+        right = lettering(20 + 6 * EM, 20, 2, 3)
+        below = lettering(20, 20 + 3 * EM + 4 * EM, 2, 3)
+        pieces = split.pieces(written(left, right, below), around(left, right, below))
+        self.assertEqual(len(pieces), 3)
+
+    def test_the_gap_is_measured_in_characters_not_pixels(self):
+        # The same layout at half the size splits the same way: a page may be
+        # lettered at any size.
+        for em in (EM, EM * 2):
+            one = lettering(20, 20, 2, 4, em)
+            other = lettering(20 + 5 * em, 20, 2, 4, em)
+            pieces = split.pieces(
+                written(one, other, size=(600, 600)), around(one, other)
+            )
+            self.assertEqual(len(pieces), 2, f"at {em}px to the character")
+
+
+class TestCharacter(unittest.TestCase):
+    """Reading the size of one character off the ink."""
+
+    def test_it_lands_near_the_size_the_lettering_was_set_at(self):
+        mask = written(lettering(20, 20, 4, 6))
+        found = split.character(mask[20:20 + 6 * EM, 20:20 + 4 * EM])
+        self.assertGreater(found, EM * 0.6)
+        self.assertLessEqual(found, EM)
+
+    def test_punctuation_does_not_drag_it_down(self):
+        # Small kana and punctuation are a large minority of the marks in a line,
+        # which is why this is a high percentile rather than a median.
+        column = lettering(20, 20, 1, 10)
+        small = [Box(g.x0, g.y0, g.x0 + 4, g.y0 + 4) for g in column[:5]]
+        mask = written(column[5:], small)
+        found = split.character(mask[20 : 20 + 10 * EM, 20 : 20 + EM])
+        self.assertGreater(found, EM * 0.6, "the marks were read as tiny")
+
+    def test_characters_set_solid_enough_to_touch_do_not_read_as_one_long_mark(self):
+        # Without the cap at the region's shorter side, a whole column that
+        # touches comes back as one mark as long as the column is.
+        column = [Box(20, 20 + r * EM, 20 + EM, 20 + (r + 1) * EM) for r in range(8)]
+        mask = written(column)
+        found = split.character(mask[20 : 20 + 8 * EM, 20 : 20 + EM])
+        self.assertLessEqual(found, EM * 1.5)
+
+
+class TestWidestBlank(unittest.TestCase):
+    def test_it_finds_the_run_between_two_marks(self):
+        profile = np.array([1, 1, 0, 0, 0, 1, 1], bool)
+        self.assertEqual(split.widest_blank(profile), (2, 3))
+
+    def test_blank_at_either_end_is_only_slack_in_the_box(self):
+        profile = np.array([0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0], bool)
+        self.assertEqual(split.widest_blank(profile), (6, 1))
+
+    def test_nothing_written_is_no_run(self):
+        self.assertEqual(split.widest_blank(np.zeros(10, bool)), (0, 0))
+
+    def test_one_mark_on_its_own_is_no_run(self):
+        profile = np.array([0, 1, 0], bool)
+        self.assertEqual(split.widest_blank(profile), (0, 0))
+
+
+class TestInked(unittest.TestCase):
+    def test_it_boxes_everything_written(self):
+        mask = np.zeros((40, 50), bool)
+        mask[10:20, 5:25] = True
+        self.assertEqual(split.inked(mask), Box(5, 10, 25, 20))
+
+    def test_nothing_written_has_no_box(self):
+        self.assertIsNone(split.inked(np.zeros((10, 10), bool)))
 
 
 def reply(content: str = "", thinking: str = "") -> dict:
