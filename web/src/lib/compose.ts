@@ -4,10 +4,10 @@ import { LINE_HEIGHT, fontFor, linesFor, ready, strokeFor } from './fit'
 /**
  * The page with the translations set into it, as a PNG.
  *
- * Drawn with the same font, the same sizes and the same wrapping the board
- * previews with, so what was arranged there is what comes out. The base is
- * whatever the board is showing — the cleaned page if there is one, since
- * lettering over words that were never hidden only stacks one on the other.
+ * Drawn with the same font, sizes and wrapping the board previews with, so what
+ * was arranged there is what comes out. The base is whatever the board is
+ * showing — the cleaned page if there is one, since lettering over words that
+ * were never hidden only stacks one on the other.
  */
 export async function compose(
   source: string,

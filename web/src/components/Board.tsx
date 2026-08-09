@@ -1,27 +1,45 @@
 import { useEffect, useRef, useState } from 'react'
-import type { BoardView } from '../hooks/useBoardView'
+import { useBlockKeys, useZoomKeys } from '../hooks/useBoardKeys'
 import { useBoardView } from '../hooks/useBoardView'
-import { useBoxDrag } from '../hooks/useBoxDrag'
-import type {
-  Analysis,
-  BoardMode,
-  Box,
-  Detection,
-  Fill,
-  Lettering,
-  Stage,
-} from '../lib/api'
-import { UNSURE } from '../lib/api'
+import type { Analysis, BoardMode, Box, Fill, Stage } from '../lib/api'
 import type { GalleryImage } from '../lib/images'
-import type { Brush, Mask, Point } from '../lib/mask'
-import { BoxGrips } from './BoxGrips'
+import type { Lines } from '../lib/lettering'
+import type { Brush, Mask } from '../lib/mask'
+import { mark } from '../lib/mask'
+import { toClean } from '../lib/regions'
+import { DrawRegion } from './DrawRegion'
+import { MaskCanvas } from './MaskCanvas'
 import { MaskTools } from './MaskTools'
+import { RegionsLayer } from './RegionsLayer'
 import { Steps } from './Steps'
 import { TranslateTools } from './TranslateTools'
 import { TranslationLayer } from './TranslationLayer'
-import { Button, Divider, Hint, IconButton, Segmented, Spinner, Toggle, Toolbar } from './ui'
+import { ViewBar } from './ViewBar'
+import { PageIcon } from './icons'
+import { Button, Divider, Hint, Spinner, Toggle, Toolbar } from './ui'
 
-/** Everything the translate tab needs, kept together rather than spread out. */
+/** Correcting what the detector found, before anything is done with it. */
+export type Inspecting = {
+  onAddRegion: (box: Box) => void
+  onRegionBox: (index: number, box: Box) => void
+  onRegionSettled: (index: number, was: Box) => void
+  onToggleExcluded: (index: number) => void
+}
+
+/** Marking what to hide, and hiding it. */
+export type Masking = {
+  onClean: (marks: Blob) => void
+  /** The traced lettering for this page, once it has been asked for. */
+  letters: ImageBitmap | null
+  onTrace: () => Promise<ImageBitmap | null>
+  /** How far past the ink a tracing reaches, in page pixels. */
+  spread: number
+  onSpread: (spread: number) => void
+  fill: Fill
+  onFill: (fill: Fill) => void
+}
+
+/** Setting the translation over the page. */
 export type Translating = {
   models: string[]
   model: string
@@ -31,7 +49,7 @@ export type Translating = {
   onTranslate: () => void
   onFitAll: () => void
   onFitBoxes: () => void
-  lettering: (Lettering | null)[]
+  lettering: Lines
   onBox: (index: number, box: Box) => void
   onTurn: (index: number, angle: number) => void
   onSize: (index: number, by: number) => void
@@ -49,32 +67,29 @@ type Props = {
   error: string | null
   selected: number | null
   onSelect: (index: number | null) => void
-  onDetect: () => void
-  onClean: (mask: Blob) => void
-  onRunAll: () => void
-  onAddRegion: (box: Box) => void
-  /** A block's box while it is being dragged: every frame of it. */
-  onRegionBox: (index: number, box: Box) => void
-  /** The same drag, once it is over, with the box as it was before. */
-  onRegionSettled: (index: number, was: Box) => void
-  onToggleExcluded: (index: number) => void
-  /** The traced lettering for this page, once it has been asked for. */
-  letters: ImageBitmap | null
-  onTrace: () => Promise<ImageBitmap | null>
-  /** How far past the ink a tracing reaches, in page pixels. */
-  spread: number
-  onSpread: (spread: number) => void
-  /** What a clean puts where the lettering was. */
-  fill: Fill
-  onFill: (fill: Fill) => void
   mode: BoardMode
   onMode: (mode: BoardMode) => void
   /** Whether the board is showing the cleaned page or the one that came in. */
   showCleaned: boolean
   onShowCleaned: (showing: boolean) => void
+  onRunAll: () => void
+  onDetect: () => void
+  inspecting: Inspecting
+  masking: Masking
   translating: Translating
 }
 
+/** What each stage is called while it is happening. */
+const LABELS: Record<Stage, string> = {
+  detecting: 'Detecting…',
+  reading: 'Reading…',
+  tracing: 'Tracing…',
+  cleaning: 'Cleaning…',
+  translating: 'Translating…',
+  fitting: 'Finding the balloons…',
+}
+
+/** The page, its overlays, and the tools for whichever step is being worked on. */
 export function Board({
   image,
   analysis,
@@ -84,204 +99,88 @@ export function Board({
   error,
   selected,
   onSelect,
-  onDetect,
-  onClean,
-  onRunAll,
-  onAddRegion,
-  onRegionBox,
-  onRegionSettled,
-  onToggleExcluded,
-  letters,
-  onTrace,
-  spread,
-  onSpread,
-  fill,
-  onFill,
   mode,
   onMode,
   showCleaned,
   onShowCleaned,
+  onRunAll,
+  onDetect,
+  inspecting,
+  masking,
   translating,
 }: Props) {
   const surface = useRef<HTMLDivElement>(null)
-  const overlay = useRef<HTMLCanvasElement>(null)
-  const cursor = useRef<HTMLDivElement>(null)
-  const drawing = useRef<Point | null>(null)
-
   const view = useBoardView(surface, image)
+
   const [brush, setBrush] = useState<Brush>({ radius: 16, erase: false })
   const [showBoxes, setShowBoxes] = useState(true)
   const [adding, setAdding] = useState(false)
-  const [drawn, setDrawn] = useState<Box | null>(null)
-  const drawnFrom = useRef<Point | null>(null)
   // Brushing draws straight onto the canvas; this is only so the buttons that
   // care whether anything is marked catch up when a stroke ends.
-  const [edits, setEdits] = useState(0)
+  const [, setEdits] = useState(0)
+  const edited = () => setEdits((count) => count + 1)
 
-  const detection = analysis?.detection ?? null
   const busy = stage !== null
-  const masking = mode === 'mask' && !showCleaned
+  const brushing = mode === 'mask' && !showCleaned
   const marked = Boolean(mask && !mask.empty)
 
   // Where this page has got to, which is what the steps show.
   const read = analysis?.texts != null
   const lettered = translating.lettering.some(Boolean)
 
-  // The array changes identity only when a block is dropped or put back, which
-  // is what the effects below want to hear about.
-  const excludedList = analysis?.excluded
-  const excluded = new Set(excludedList)
-  const toClean = (regions: Detection['regions']) =>
-    regions.filter((_, index) => !excluded.has(index)).map((region) => region.box)
+  useZoomKeys(view, image !== null)
+  useBlockKeys({
+    mode,
+    selected,
+    lettering: translating.lettering,
+    onToggleExcluded: inspecting.onToggleExcluded,
+    onSize: translating.onSize,
+    onTurn: translating.onTurn,
+  })
 
-  // The canvas is blank whenever it is remounted or resized, so the mask is
-  // drawn back on after anything that could have done either — including a
-  // block being dropped from the list, which erases its box from the mask.
-  useEffect(() => {
-    if (overlay.current && mask) mask.showOn(overlay.current)
-  }, [mask, view.page, edits, masking, analysis])
+  // Read through refs rather than depended on: dropping a block from a mask that
+  // was deliberately cleared out should not seed the whole page again, and the
+  // tracing callback changes identity on every keystroke of state above.
+  const analysisNow = useRef(analysis)
+  analysisNow.current = analysis
+  const lettersNow = useRef(masking.letters)
+  lettersNow.current = masking.letters
+  const traceNow = useRef(masking.onTrace)
+  traceNow.current = masking.onTrace
 
-  // These are read through refs rather than depended on: dropping a block from
-  // a mask that was deliberately cleared out should not seed the whole page
-  // again, and the tracing callback changes identity on every keystroke of
-  // state above.
-  const excludedNow = useRef(excludedList)
-  excludedNow.current = excludedList
-  const lettersNow = useRef(letters)
-  lettersNow.current = letters
-  const traceNow = useRef(onTrace)
-  traceNow.current = onTrace
+  /** Mark every block that is not being left alone, tracing first if need be. */
+  const markBlocks = async (traced: boolean) => {
+    const found = analysisNow.current
+    if (!mask || !found) return
+    const letters = traced ? (lettersNow.current ?? (await traceNow.current())) : null
+    if (traced && !letters) return
+    mark(mask, toClean(found), letters)
+    edited()
+  }
 
   // Coming to the mask with blocks already found and nothing marked yet: mark
-  // the lettering itself, which is what wants hiding — the boxes around it are
-  // only the fallback for when tracing fails.
+  // the lettering itself, which is what wants hiding.
   useEffect(() => {
-    if (!masking || !mask || !mask.empty || !detection) return
+    if (!brushing || !mask || !mask.empty || !analysisNow.current) return
     let dropped = false
 
     void (async () => {
-      const traced = lettersNow.current ?? (await traceNow.current())
+      const letters = lettersNow.current ?? (await traceNow.current())
       // Someone may have left, or started brushing, while that was in the air.
       if (dropped || !mask.empty) return
-      const skip = new Set(excludedNow.current)
-      const boxes = detection.regions
-        .filter((_, index) => !skip.has(index))
-        .map((region) => region.box)
-      if (traced) mask.letters(traced, boxes)
-      else mask.boxes(boxes)
-      setEdits((count) => count + 1)
+      const found = analysisNow.current
+      if (found) {
+        mark(mask, toClean(found), letters)
+        edited()
+      }
     })()
 
     return () => {
       dropped = true
     }
-  }, [masking, mask, detection])
+  }, [brushing, mask, analysis?.detection])
 
-  // The keys that work on whichever block is picked out: delete drops it from
-  // the clean, and on the translate tab the up and down arrows set its type
-  // larger and smaller while left and right turn it. None fires while something
-  // is being typed into.
-  const nudge = translating.onSize
-  const turn = translating.onTurn
-  // Read through a ref: turning by a step needs to know where the line stands
-  // now, and depending on the lettering would resubscribe on every degree.
-  const letteringNow = useRef(translating.lettering)
-  letteringNow.current = translating.lettering
-
-  useEffect(() => {
-    if (selected === null) return
-
-    const onKey = (event: KeyboardEvent) => {
-      if (typingInto(event.target)) return
-
-      if (mode === 'translate') {
-        const sizing = event.key === 'ArrowUp' || event.key === 'ArrowDown'
-        const turning = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
-        if (!sizing && !turning) return
-        event.preventDefault()
-
-        if (sizing) {
-          const step = event.shiftKey ? 5 : 1
-          nudge(selected, event.key === 'ArrowUp' ? step : -step)
-          return
-        }
-
-        const line = letteringNow.current[selected]
-        if (!line) return
-        const step = event.shiftKey ? 15 : 1
-        turn(selected, line.angle + (event.key === 'ArrowRight' ? step : -step))
-        return
-      }
-
-      if (event.key !== 'Delete' && event.key !== 'Backspace') return
-      event.preventDefault()
-      onToggleExcluded(selected)
-    }
-
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [selected, mode, onToggleExcluded, nudge, turn])
-
-  // The zoom, from the keyboard: the same keys every viewer uses.
-  const { zoomIn, zoomOut, fit, actual } = view
-
-  useEffect(() => {
-    if (!image) return
-
-    const onKey = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return
-      if (typingInto(event.target)) return
-
-      const zooming: Record<string, () => void> = {
-        '+': zoomIn,
-        '=': zoomIn,
-        '-': zoomOut,
-        _: zoomOut,
-        0: fit,
-        1: actual,
-      }
-      const go = zooming[event.key]
-      if (!go) return
-      event.preventDefault()
-      go()
-    }
-
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [image, zoomIn, zoomOut, fit, actual])
-
-  const at = (event: React.PointerEvent<HTMLCanvasElement>): Point => {
-    const rect = event.currentTarget.getBoundingClientRect()
-    return {
-      x: ((event.clientX - rect.left) / rect.width) * (image?.width ?? 0),
-      y: ((event.clientY - rect.top) / rect.height) * (image?.height ?? 0),
-    }
-  }
-
-  const moveDot = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    const dot = cursor.current
-    if (!dot || !image) return
-    const rect = event.currentTarget.getBoundingClientRect()
-    const size = brush.radius * 2 * (rect.width / image.width)
-    dot.style.width = `${size}px`
-    dot.style.height = `${size}px`
-    dot.style.transform = `translate(${event.clientX - rect.left - size / 2}px, ${
-      event.clientY - rect.top - size / 2
-    }px)`
-    dot.style.opacity = '1'
-  }
-
-  const repaint = () => {
-    if (overlay.current && mask) mask.showOn(overlay.current)
-  }
-
-  /** A box dragged out on the page, in the page's own pixels, corners in order. */
-  const between = (from: Point, to: Point): Box => [
-    Math.max(0, Math.round(Math.min(from.x, to.x))),
-    Math.max(0, Math.round(Math.min(from.y, to.y))),
-    Math.min(image?.width ?? 0, Math.round(Math.max(from.x, to.x))),
-    Math.min(image?.height ?? 0, Math.round(Math.max(from.y, to.y))),
-  ]
+  const canMark = Boolean(mask && analysis && toClean(analysis).length > 0)
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
@@ -291,88 +190,86 @@ export function Board({
             {image ? image.name : 'Nothing on the board'}
           </p>
           <p className="text-xs text-faint tabular-nums">
-            {image
-              ? `${image.width} × ${image.height}`
-              : 'Pick a page from the gallery'}
+            {image ? `${image.width} × ${image.height}` : 'Pick a page from the gallery'}
           </p>
         </div>
 
         {image && (
-          <Steps
-            current={mode}
-            onPick={onMode}
-            steps={[
-              { id: 'inspect', label: 'Text', done: read, open: true },
-              { id: 'mask', label: 'Clean', done: Boolean(cleaned), open: read },
-              { id: 'translate', label: 'Translate', done: lettered, open: read },
-            ]}
-          />
-        )}
+          <>
+            <Steps
+              current={mode}
+              onPick={onMode}
+              steps={[
+                { id: 'inspect', label: 'Text', done: read, open: true },
+                { id: 'mask', label: 'Clean', done: Boolean(cleaned), open: read },
+                { id: 'translate', label: 'Translate', done: lettered, open: read },
+              ]}
+            />
 
-        {image && (
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              onClick={onRunAll}
-              disabled={busy}
-              size="md"
-              title="Detect the text, hide it, and letter the page"
-            >
-              Do all three
-            </Button>
-
-            {mode === 'inspect' && (
-              <Action onClick={onDetect} disabled={busy} stage={stage}>
-                {detection ? 'Read again' : 'Detect text'}
-              </Action>
-            )}
-
-            {mode === 'mask' && (
-              <Action
-                onClick={() => {
-                  if (mask && !mask.empty) mask.toBlob().then(onClean)
-                }}
-                disabled={busy || !marked}
-                stage={stage}
-                title={marked ? undefined : 'Mark something to hide first'}
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                onClick={onRunAll}
+                disabled={busy}
+                size="md"
+                title="Detect the text, hide it, and letter the page"
               >
-                {cleaned ? 'Clean again' : 'Clean page'}
-              </Action>
-            )}
+                Do all three
+              </Button>
 
-            {mode === 'translate' && (
-              <Action
-                onClick={lettered ? translating.onApply : translating.onTranslate}
-                disabled={
-                  busy ||
-                  translating.applying ||
-                  (!lettered && !(translating.model && read))
-                }
-                stage={stage}
-                title={
-                  lettered ? 'Set the lettering into the page and save it' : undefined
-                }
-              >
-                {translating.applying
-                  ? 'Applying…'
-                  : lettered
-                    ? 'Apply to image'
-                    : 'Translate page'}
-              </Action>
-            )}
-          </div>
+              {mode === 'inspect' && (
+                <Action onClick={onDetect} disabled={busy} stage={stage}>
+                  {analysis ? 'Read again' : 'Detect text'}
+                </Action>
+              )}
+
+              {mode === 'mask' && (
+                <Action
+                  onClick={() => {
+                    if (mask && !mask.empty) mask.toBlob().then(masking.onClean)
+                  }}
+                  disabled={busy || !marked}
+                  stage={stage}
+                  title={marked ? undefined : 'Mark something to hide first'}
+                >
+                  {cleaned ? 'Clean again' : 'Clean page'}
+                </Action>
+              )}
+
+              {mode === 'translate' && (
+                <Action
+                  onClick={lettered ? translating.onApply : translating.onTranslate}
+                  disabled={
+                    busy ||
+                    translating.applying ||
+                    (!lettered && !(translating.model && read))
+                  }
+                  stage={stage}
+                  title={
+                    lettered ? 'Set the lettering into the page and save it' : undefined
+                  }
+                >
+                  {translating.applying
+                    ? 'Applying…'
+                    : lettered
+                      ? 'Apply to image'
+                      : 'Translate page'}
+                </Action>
+              )}
+            </div>
+          </>
         )}
       </header>
 
-      {mode === 'inspect' && detection && (
+      {mode === 'inspect' && analysis && (
         <Toolbar>
-          <Toggle on={showBoxes} onChange={setShowBoxes} title="Show the blocks the detector found">
+          <Toggle
+            on={showBoxes}
+            onChange={setShowBoxes}
+            title="Show the blocks the detector found"
+          >
             Boxes
           </Toggle>
-          <Toggle
-            on={adding}
-            onChange={setAdding}
-            title="Draw a block the detector missed"
-          >
+          <Toggle on={adding} onChange={setAdding} title="Draw a block the detector missed">
             {adding ? 'Drawing a block…' : 'Add a block'}
           </Toggle>
           <Divider />
@@ -384,36 +281,23 @@ export function Board({
         </Toolbar>
       )}
 
-      {masking && (
+      {brushing && (
         <MaskTools
           brush={brush}
           onBrush={setBrush}
-          onMarkBlocks={() => {
-            if (!mask || !detection) return
-            mask.boxes(toClean(detection.regions))
-            setEdits((count) => count + 1)
-          }}
-          onMarkLetters={() => {
-            if (!mask || !detection) return
-            void (async () => {
-              const traced = lettersNow.current ?? (await traceNow.current())
-              if (!traced) return
-              mask.letters(traced, toClean(detection.regions))
-              setEdits((count) => count + 1)
-            })()
-          }}
-          canMark={Boolean(mask && detection && toClean(detection.regions).length > 0)}
+          onMarkBlocks={() => void markBlocks(false)}
+          onMarkLetters={() => void markBlocks(true)}
+          canMark={canMark}
           tracing={stage === 'tracing'}
           onClear={() => {
-            if (!mask) return
-            mask.clear()
-            setEdits((count) => count + 1)
+            mask?.clear()
+            edited()
           }}
           canClear={marked}
-          spread={spread}
-          onSpread={onSpread}
-          fill={fill}
-          onFill={onFill}
+          spread={masking.spread}
+          onSpread={masking.onSpread}
+          fill={masking.fill}
+          onFill={masking.onFill}
           note={read ? null : 'find the text first, or brush the page by hand'}
         />
       )}
@@ -450,8 +334,8 @@ export function Board({
           ref={surface}
           onPointerDown={(event) => {
             // Anywhere on the board that is not a box puts down whichever box is
-            // held: picking one out is only ever meant to last as long as it is
-            // being worked on.
+            // held: picking one out is only meant to last as long as it is being
+            // worked on.
             if (selected === null) return
             if (!(event.target as Element).closest('[data-box]')) onSelect(null)
           }}
@@ -487,79 +371,24 @@ export function Board({
                   draggable={false}
                 />
 
-                {!showCleaned &&
-                  showBoxes &&
-                  mode === 'inspect' &&
-                  detection?.regions.map((region, index) => (
-                    <RegionBox
-                      key={region.id}
-                      region={region}
-                      index={index}
-                      page={detection}
-                      scale={view.scale}
-                      text={analysis?.texts?.[index] ?? null}
-                      excluded={excluded.has(index)}
-                      active={selected === index}
-                      onSelect={() => onSelect(selected === index ? null : index)}
-                      onBox={(box) => onRegionBox(index, box)}
-                      onSettled={(was) => onRegionSettled(index, was)}
-                    />
-                  ))}
+                {mode === 'inspect' && analysis && !showCleaned && showBoxes && (
+                  <RegionsLayer
+                    analysis={analysis}
+                    scale={view.scale}
+                    selected={selected}
+                    onSelect={onSelect}
+                    onBox={inspecting.onRegionBox}
+                    onSettled={inspecting.onRegionSettled}
+                  />
+                )}
 
                 {mode === 'inspect' && adding && (
-                  // Over the blocks, not under them: while a block is being drawn
-                  // the whole page is the drawing surface.
-                  <div
-                    className="absolute inset-0 z-30 cursor-crosshair touch-none"
-                    onPointerDown={(event) => {
-                      event.currentTarget.setPointerCapture(event.pointerId)
-                      const rect = event.currentTarget.getBoundingClientRect()
-                      drawnFrom.current = {
-                        x: ((event.clientX - rect.left) / rect.width) * image.width,
-                        y: ((event.clientY - rect.top) / rect.height) * image.height,
-                      }
-                    }}
-                    onPointerMove={(event) => {
-                      const from = drawnFrom.current
-                      if (!from) return
-                      const rect = event.currentTarget.getBoundingClientRect()
-                      setDrawn(
-                        between(from, {
-                          x: ((event.clientX - rect.left) / rect.width) * image.width,
-                          y: ((event.clientY - rect.top) / rect.height) * image.height,
-                        }),
-                      )
-                    }}
-                    onPointerUp={(event) => {
-                      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                        event.currentTarget.releasePointerCapture(event.pointerId)
-                      }
-                      drawnFrom.current = null
-                      // A stray click is not a block: it takes a real drag.
-                      if (drawn && drawn[2] - drawn[0] > 6 && drawn[3] - drawn[1] > 6) {
-                        onAddRegion(drawn)
-                      }
-                      setDrawn(null)
-                    }}
-                  >
-                    {drawn && (
-                      <span
-                        aria-hidden="true"
-                        style={{
-                          left: `${(drawn[0] / image.width) * 100}%`,
-                          top: `${(drawn[1] / image.height) * 100}%`,
-                          width: `${((drawn[2] - drawn[0]) / image.width) * 100}%`,
-                          height: `${((drawn[3] - drawn[1]) / image.height) * 100}%`,
-                        }}
-                        className="absolute border-2 border-dashed border-accent bg-accent/20"
-                      />
-                    )}
-                  </div>
+                  <DrawRegion page={image} onAdd={inspecting.onAddRegion} />
                 )}
 
                 {mode === 'translate' && (
                   <TranslationLayer
-                    page={{ width: image.width, height: image.height }}
+                    page={image}
                     scale={view.scale}
                     lettering={translating.lettering}
                     selected={selected}
@@ -569,56 +398,13 @@ export function Board({
                   />
                 )}
 
-                {mode === 'mask' && !showCleaned && (
-                  <canvas
-                    ref={overlay}
-                    width={image.width}
-                    height={image.height}
-                    className={`absolute inset-0 h-full w-full ${
-                      !masking
-                        ? 'pointer-events-none'
-                        : // While the board is being dragged about, the hand
-                          // belongs to the pan, not to the brush.
-                          view.panning
-                          ? 'touch-none'
-                          : 'cursor-none touch-none'
-                    }`}
-                    onPointerDown={(event) => {
-                      if (!masking || !mask) return
-                      event.currentTarget.setPointerCapture(event.pointerId)
-                      const point = at(event)
-                      drawing.current = point
-                      mask.dot(point, brush)
-                      repaint()
-                    }}
-                    onPointerMove={(event) => {
-                      if (!masking) return
-                      moveDot(event)
-                      if (!drawing.current || !mask) return
-                      const point = at(event)
-                      mask.stroke(drawing.current, point, brush)
-                      drawing.current = point
-                      repaint()
-                    }}
-                    onPointerUp={(event) => {
-                      if (!drawing.current) return
-                      drawing.current = null
-                      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                        event.currentTarget.releasePointerCapture(event.pointerId)
-                      }
-                      setEdits((count) => count + 1)
-                    }}
-                    onPointerLeave={() => {
-                      if (cursor.current) cursor.current.style.opacity = '0'
-                    }}
-                  />
-                )}
-
-                {masking && (
-                  <div
-                    ref={cursor}
-                    aria-hidden="true"
-                    className="pointer-events-none absolute top-0 left-0 rounded-full border-2 border-white opacity-0 ring-1 ring-black/70"
+                {brushing && mask && (
+                  <MaskCanvas
+                    page={image}
+                    mask={mask}
+                    brush={brush}
+                    panning={view.panning}
+                    onStroke={edited}
                   />
                 )}
               </div>
@@ -642,142 +428,6 @@ export function Board({
   )
 }
 
-/** Whether a key was pressed into something being typed in. */
-function typingInto(target: EventTarget | null) {
-  const element = target as HTMLElement | null
-  return Boolean(
-    element &&
-      (element.isContentEditable ||
-        ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)),
-  )
-}
-
-/**
- * The one bar that sits on the page rather than above it: which version is
- * being looked at, and how closely.
- *
- * The original and the cleaned page belong here and not in a banner of their
- * own — comparing them is looking, not a step, and it is done by the same hand
- * that is zooming in to see whether the clean held up.
- */
-function ViewBar({
-  view,
-  cleaned,
-  name,
-  showCleaned,
-  onShowCleaned,
-}: {
-  view: BoardView
-  cleaned: string | null
-  name: string
-  showCleaned: boolean
-  onShowCleaned: (showing: boolean) => void
-}) {
-  return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">
-      <div className="pointer-events-auto flex max-w-full items-center gap-1.5 overflow-x-auto rounded-xl border border-line bg-surface/85 p-1.5 shadow-lg backdrop-blur">
-        {cleaned && (
-          <>
-            <Segmented
-              label="Which version of the page to show"
-              value={showCleaned ? 'cleaned' : 'original'}
-              onChange={(which) => onShowCleaned(which === 'cleaned')}
-              options={[
-                { value: 'original', label: 'Original', title: 'The page as it came in' },
-                { value: 'cleaned', label: 'Cleaned', title: 'The page with the lettering hidden' },
-              ]}
-            />
-            <a
-              href={cleaned}
-              download={`${name.replace(/\.[^.]+$/, '')}-clean.png`}
-              title="Download the cleaned page"
-              aria-label="Download the cleaned page"
-              className="inline-grid size-7 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="size-4"
-              >
-                <path d="M12 4v11m0 0 4-4m-4 4-4-4" />
-                <path d="M5 19h14" />
-              </svg>
-            </a>
-            <Divider />
-          </>
-        )}
-
-        <IconButton label="Zoom out" title="Zoom out (−)" onClick={view.zoomOut}>
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            className="size-4"
-          >
-            <path d="M6 12h12" />
-          </svg>
-        </IconButton>
-
-        <span
-          title="Hold ctrl and scroll to zoom. Middle-drag or hold space to move about."
-          className="w-14 shrink-0 text-center text-xs font-medium text-muted tabular-nums"
-        >
-          {Math.round(view.scale * 100)}%
-        </span>
-
-        <IconButton label="Zoom in" title="Zoom in (+)" onClick={view.zoomIn}>
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            className="size-4"
-          >
-            <path d="M12 6v12M6 12h12" />
-          </svg>
-        </IconButton>
-
-        <Divider />
-
-        <Button
-          onClick={view.fit}
-          disabled={view.fitted}
-          title="Fit the whole page on the board (0)"
-        >
-          Fit
-        </Button>
-        <Button
-          onClick={view.actual}
-          disabled={view.scale === 1}
-          title="Show the page at its own size, pixel for pixel (1)"
-        >
-          1:1
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-/** What each stage is called while it is happening. */
-const LABELS: Record<Stage, string> = {
-  detecting: 'Detecting…',
-  reading: 'Reading…',
-  tracing: 'Tracing…',
-  cleaning: 'Cleaning…',
-  translating: 'Translating…',
-  fitting: 'Finding the balloons…',
-}
-
 /** The one button that does the thing this step is for. */
 function Action({
   onClick,
@@ -793,13 +443,7 @@ function Action({
   children: React.ReactNode
 }) {
   return (
-    <Button
-      variant="primary"
-      size="md"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-    >
+    <Button variant="primary" size="md" onClick={onClick} disabled={disabled} title={title}>
       {stage ? (
         <>
           <Spinner />
@@ -812,120 +456,11 @@ function Action({
   )
 }
 
-/**
- * One block the detector found, over the lettering it found.
- *
- * Draggable and pullable by its edges, because the detector runs two speech
- * bubbles together often enough to matter: the fix is to pull this one back off
- * the second and draw a block around what is left.
- */
-function RegionBox({
-  region,
-  index,
-  page,
-  scale,
-  text,
-  excluded,
-  active,
-  onSelect,
-  onBox,
-  onSettled,
-}: {
-  region: Detection['regions'][number]
-  index: number
-  page: { width: number; height: number }
-  scale: number
-  text: string | null
-  excluded: boolean
-  active: boolean
-  onSelect: () => void
-  onBox: (box: Box) => void
-  onSettled: (was: Box) => void
-}) {
-  const drag = useBoxDrag({ box: region.box, page, scale, onBox, onSettled })
-  const [x0, y0, x1, y1] = region.box
-  const unsure = region.confidence < UNSURE
-
-  return (
-    <div
-      data-box
-      style={{
-        left: `${(x0 / page.width) * 100}%`,
-        top: `${(y0 / page.height) * 100}%`,
-        width: `${((x1 - x0) / page.width) * 100}%`,
-        height: `${((y1 - y0) / page.height) * 100}%`,
-      }}
-      className={`absolute ${active ? 'z-20' : 'z-10'}`}
-    >
-      <button
-        type="button"
-        onPointerDown={drag.grab}
-        onPointerMove={drag.shift}
-        onPointerUp={drag.release}
-        onPointerCancel={drag.release}
-        onClick={() => {
-          // The click that ends a drag is not a click on the box.
-          if (drag.dragged.current) {
-            drag.dragged.current = false
-            return
-          }
-          onSelect()
-        }}
-        title={excluded ? `${text ?? ''} — left alone`.trim() : text || undefined}
-        aria-label={
-          excluded
-            ? `Block ${index + 1}, left alone`
-            : text
-              ? `Block ${index + 1}: ${text}`
-              : `Text block ${index + 1}`
-        }
-        aria-pressed={active}
-        className={`h-full w-full cursor-move touch-none border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
-          excluded
-            ? 'border-dashed border-faint/60 hover:border-faint'
-            : active
-              ? 'border-accent bg-accent/10'
-              : unsure
-                ? 'border-warn/60 hover:border-warn hover:bg-warn/10'
-                : 'border-accent/40 hover:border-accent hover:bg-accent/10'
-        }`}
-      >
-        <span
-          className={`absolute -top-px -left-px rounded-br px-1 text-[9px] leading-4 font-medium text-white tabular-nums transition-colors ${
-            excluded
-              ? 'bg-faint/70 line-through'
-              : active
-                ? 'bg-accent'
-                : unsure
-                  ? 'bg-warn/80'
-                  : 'bg-accent/60'
-          }`}
-        >
-          {index + 1}
-        </span>
-      </button>
-
-      {active && <BoxGrips drag={drag} />}
-    </div>
-  )
-}
-
 function BoardEmpty() {
   return (
     <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
       <div className="text-center">
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-          className="mx-auto size-12 text-line"
-        >
-          <rect x="4" y="3" width="16" height="18" rx="2" />
-          <path d="M8 8h5M8 12h8M8 16h6" />
-        </svg>
+        <PageIcon className="mx-auto size-12 text-line" />
         <p className="mt-4 text-sm font-medium text-muted">
           Click a page in the gallery to put it on the board
         </p>

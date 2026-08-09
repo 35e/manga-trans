@@ -1,12 +1,10 @@
 import type { BoxDrag, Grip } from '../hooks/useBoxDrag'
 
 /**
- * Where each handle sits, and how far around it the pointer still catches it.
- *
- * The element is the target and is drawn nothing at all; what shows is the
- * small square inside it. So the handles stay out of the way of the page — a
- * box with lettering under it is meant to be read through — while still being
- * caught along the whole edge rather than only on the few pixels drawn.
+ * Where each handle sits, and how far around it the pointer catches it. The
+ * element is the target and is drawn nothing; what shows is the small square
+ * inside it — so a box stays readable through while still being catchable along
+ * its whole edge.
  */
 const GRIPS: { grip: Grip; className: string; cursor: string }[] = [
   { grip: 'n', className: 'top-0 left-1/2 h-3 w-6 -translate-x-1/2 -translate-y-1/2', cursor: 'ns-resize' },

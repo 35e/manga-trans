@@ -85,28 +85,47 @@ nor torch generation is reentrant.
 
 ### Web (`web/src/`)
 
-`App.tsx` owns nearly all state, keyed by page id: `analyses`, `lettering`,
-`letters` (traced bitmaps), masks and cleaned pages come from hooks. `Board.tsx`
-draws the page and its overlays; `lib/` holds the pure parts.
+`App.tsx` owns the state and the async orchestration, keyed by page id:
+`analyses` and `lettering` live there, masks, cleaned pages and traced bitmaps
+come from hooks. It holds no logic of its own — every edit to a page goes
+through `lib/`.
+
+- `lib/regions.ts` / `lib/lettering.ts` — **all** the per-block editing, as pure
+  transforms on one `Analysis` / one `Lines`. Add a block operation here, not in
+  a component.
+- `lib/fit.ts` (measuring and wrapping), `lib/order.ts` (reading order),
+  `lib/mask.ts` (the brushed mask), `lib/compose.ts` (the canvas letterer),
+  `lib/api.ts` (the client, and every shared type).
+- `components/Board.tsx` draws the page and switches tools by `mode`; the
+  overlays over it are `RegionsLayer`, `DrawRegion`, `MaskCanvas`,
+  `TranslationLayer` and `ViewBar`, one per thing that can be done to a page.
+- `components/icons.tsx` holds every line icon; `components/ui.tsx` every
+  control.
+- Hooks own one concern each: `useImageLibrary`, `useMasks`, `useLetterMasks`,
+  `useObjectUrls`, `useOllama`, `usePrompt`, `useBoardView`, `useBoardKeys`,
+  `useBoxDrag`, `useFileDrop`, `useLetteringFont`.
 
 ## Invariants worth knowing before editing
 
 **Per-page arrays are positionally aligned.** `analysis.detection.regions`,
 `analysis.texts`, `analysis.excluded` (indices) and `lettering[pageId]` are all
 indexed by the same block position. Anything that inserts, moves or splits a
-block must carry every one of them plus `selected` — use `insertAt`, `moveAt`,
-`movedIndex` in `lib/order.ts`. Anything **asynchronous** must instead re-find
-its block by `region.id` when the answer comes back, because the list may have
-been reordered while the request was in flight (see `addRegion`, `rereadRegion`,
-`splitRegion` in `App.tsx`).
+block must carry every one of them plus `selected`. Do not write that by hand:
+`lib/regions.ts` and `lib/lettering.ts` are the only places that edit these, and
+they are paired — `blocks.inserted` goes with `lines.inserted`, `blocks.moved`
+with `lines.moved`, `blocks.split` with `lines.split`. Anything **asynchronous**
+must instead re-find its block by `region.id` when the answer comes back
+(`blocks.withReading`), because the list may have been reordered while the
+request was in flight.
 
 **A block is not where the translation goes.** `region.box` is where the
 Japanese is; `region.bubble` is the room it was written in, and lettering uses
-`bubble ?? box` (`room` in `App.tsx`). Anything that changes a box by hand must
-drop the bubble with it — a stale one letters into the balloon the block came
-from — and ask `/api/bubbles` again if it is going to the API anyway. Size is
-capped at `originalSize` (`lib/fit.ts`): a balloon is drawn around its words, so
-filling one sets a short line four times too large.
+`bubble ?? box` (`lines.roomFor`). Anything that changes a box by hand must drop
+the bubble with it — a stale one letters into the balloon the block came from —
+and ask `/api/bubbles` again if it is going to the API anyway. `blocks.withBox`
+already does the dropping. Size is capped at `originalSize` (`lib/fit.ts`): a
+balloon is drawn around its words, so filling one sets a short line four times
+too large.
 
 **Reading order is defined twice and must agree.** `(y0, -x1)` — down the page,
 then right to left — in `detect.py` (`blocks.sort`) and in `lib/order.ts`
@@ -133,9 +152,10 @@ exports white-on-black for exactly this reason.
 still paints just what was marked — the soft rim around lettering must not
 become the material the fill is made of.
 
-**Traced masks are cached per `(pageId, spread)`** (`traceKey` in `App.tsx`),
-and the `ImageBitmap`s are explicitly `close()`d on removal — a different
-`grow`/`spread` is a different tracing, not the same one again.
+**Traced masks are cached per `(pageId, spread)`** (`useLetterMasks`), and the
+`ImageBitmap`s are explicitly `close()`d on removal — a different `grow`/`spread`
+is a different tracing, not the same one again. That hook writes its ref before
+its state so a tracing can be marked into a mask the moment it arrives.
 
 **Dockerfile layer order is load-bearing.** Only `__init__.py`, `geometry.py`,
 `detect.py` and `read.py` are copied before the model prefetch step; editing any
@@ -144,9 +164,11 @@ the next build. Everything else is copied after.
 
 ## Style
 
-The prose in this codebase is part of it. Module and function docstrings explain
-*why* a thing is done the way it is — what the alternative was, what breaks
-otherwise — and are written in plain sentences rather than in reference-manual
-shorthand. Python tests are named as statements of behaviour
-(`test_the_far_edge_is_exclusive`). Match this when adding code; a bare
-signature with no explanation reads as unfinished here.
+Comments are for *why*, and they are short. A module or function gets a line or
+two saying what it is for and what would go wrong done the obvious way; anything
+longer has to be earning it — the non-obvious threshold, the ordering that
+matters, the alternative that was tried. Do not restate the code, and do not
+explain the domain here: that is what this file is for. Names carry the rest.
+
+Python tests are named as statements of behaviour
+(`test_the_far_edge_is_exclusive`).

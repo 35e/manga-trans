@@ -1,12 +1,12 @@
 import type { Box } from './api'
 
 /**
- * Where a box falls in reading order.
+ * Where a box falls in reading order: down the page, then right to left, which
+ * is the way a Japanese page is read.
  *
- * The same key the detector sorts its own blocks by — down the page, and then
- * right to left across it, which is the way a Japanese page is read. A block
- * added by hand has to land where the detector would have put it, or the page
- * reads out of order and translates as a jumbled conversation.
+ * `detect.py` sorts its own blocks by the same key. A block added by hand has to
+ * land where the detector would have put it, or the page translates as a jumbled
+ * conversation.
  */
 function key(box: Box): [number, number] {
   return [box[1], -box[2]]
@@ -16,7 +16,6 @@ function after(one: [number, number], other: [number, number]): boolean {
   return one[0] !== other[0] ? one[0] > other[0] : one[1] > other[1]
 }
 
-/** Whether one box is read before another, by that same rule. */
 function readsBefore(one: Box, other: Box): boolean {
   return !after(key(one), key(other))
 }
@@ -31,13 +30,9 @@ function cutAt(length: number, share: number): number {
 }
 
 /**
- * A box cut in two across its longer side, `share` of the way along, handed
- * back in the order the two halves are read in.
- *
- * Which half that is depends on how it was cut: going down a page the top half
- * is read first, but going across one the right half is, since that is the way
- * a Japanese page runs. So the answer is asked of the same rule that orders
- * every other block rather than assumed here.
+ * A box cut in two across its longer side, handed back in the order the halves
+ * are read in — which depends on how it was cut, so it is asked of the same rule
+ * that orders every other block rather than assumed here.
  */
 export function halves(box: Box, share: number): [Box, Box] {
   const [x0, y0, x1, y1] = box
@@ -82,11 +77,9 @@ export function moveAt<T>(list: T[], from: number, to: number): T[] {
 }
 
 /**
- * Where an index ends up after that same move.
- *
- * Blocks are pointed at by their place in the list — which ones are left alone,
- * which one is picked out — so every one of those pointers has to be carried
- * across a reorder rather than left aiming at whoever moved into the slot.
+ * Where an index ends up after that same move. Blocks are pointed at by their
+ * place in the list — which are left alone, which one is picked out — so every
+ * pointer has to be carried across a reorder.
  */
 export function movedIndex(index: number, from: number, to: number): number {
   if (index === from) return to

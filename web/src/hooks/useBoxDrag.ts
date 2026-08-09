@@ -34,12 +34,9 @@ const TURN_STEP_HELD = 15
 export type BoxDrag = ReturnType<typeof useBoxDrag>
 
 /**
- * Dragging a box about the page, and pulling it by its edges.
- *
- * Used by everything laid over the page in the page's own coordinates — the
- * blocks the detector found, and the lettering set back over them. A drag
- * arrives in screen pixels and is handed back in page pixels, which is what
- * everything that holds a box is written in.
+ * Dragging a box about the page and pulling it by its edges, for everything laid
+ * over the page: the blocks the detector found, and the lettering set over them.
+ * A drag arrives in screen pixels and is handed back in page pixels.
  */
 export function useBoxDrag({
   box,

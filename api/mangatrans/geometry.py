@@ -36,10 +36,14 @@ class Box:
             min(max(0, self.y1), height),
         )
 
+    def moved(self, dx: int, dy: int) -> Box:
+        return Box(self.x0 + dx, self.y0 + dy, self.x1 + dx, self.y1 + dy)
+
     def as_list(self) -> list[int]:
         return [self.x0, self.y0, self.x1, self.y1]
 
     @classmethod
     def from_list(cls, values) -> Box:
+        """One [x0, y0, x1, y1], with the corners put in order."""
         x0, y0, x1, y1 = (round(float(v)) for v in values)
         return cls(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))

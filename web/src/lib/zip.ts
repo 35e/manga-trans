@@ -4,9 +4,8 @@ import { unzip } from 'fflate'
  * Pulling the pages out of an archive.
  *
  * A chapter arrives as a zip far more often than as fifty loose files, and the
- * order the pages are named in is the order they are meant to be read in — so
- * they come out sorted the way a person would sort them, not the way a computer
- * would: page 2 before page 10.
+ * order the pages are named in is the order they are read in — so they come out
+ * sorted the way a person would sort them: page 2 before page 10.
  */
 
 const TYPES: Record<string, string> = {
@@ -50,11 +49,9 @@ function worthKeeping(path: string): boolean {
 const order = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
 /**
- * Every image inside a zip, in the order their names put them.
- *
- * Rejects only when the archive itself cannot be read; an archive holding
- * nothing that is an image comes back empty, which is a different thing and is
- * reported differently.
+ * Every image inside a zip, in the order their names put them. Rejects only when
+ * the archive itself cannot be read: one holding no images comes back empty,
+ * which is a different thing and is reported differently.
  */
 export function expand(file: File): Promise<File[]> {
   return new Promise((resolve, reject) => {

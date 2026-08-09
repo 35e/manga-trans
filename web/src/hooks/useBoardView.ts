@@ -6,10 +6,11 @@ import {
   useRef,
   useState,
 } from 'react'
+import { typingNow } from '../lib/dom'
 import type { GalleryImage } from '../lib/images'
 
-export const ZOOM_MIN = 0.05
-export const ZOOM_MAX = 8
+const ZOOM_MIN = 0.05
+const ZOOM_MAX = 8
 
 /** One press of a zoom button, or one notch of a wheel. */
 const STEP = 1.25
@@ -59,13 +60,10 @@ export type BoardView = {
 /**
  * The page on the board: how large it is drawn, and how it is moved about.
  *
- * The board is a scroll box, so panning is the browser's own — a trackpad, a
- * wheel, the scrollbars and the keys all work without being taught to. What is
- * added here is the zoom: the buttons, ctrl and the wheel together, and the
- * arithmetic that keeps whatever was under the pointer under it afterwards.
- *
- * `surface` is the scroll box itself. The page is laid inside a mat of
- * `content` size, centred, which is what gives it its margins at any zoom.
+ * `surface` is a scroll box, so panning is the browser's own. What is added here
+ * is the zoom, and the arithmetic that keeps whatever was under the pointer
+ * under it afterwards. The page sits centred on a mat of `content` size, which
+ * is what gives it margins at any zoom.
  */
 export function useBoardView(
   surface: React.RefObject<HTMLDivElement | null>,
@@ -220,17 +218,8 @@ export function useBoardView(
   const spacing = useRef(false)
 
   useEffect(() => {
-    const typing = () => {
-      const focused = document.activeElement
-      return (
-        focused instanceof HTMLElement &&
-        (focused.isContentEditable ||
-          ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused.tagName))
-      )
-    }
-
     const down = (event: KeyboardEvent) => {
-      if (event.code === 'Space' && !typing()) spacing.current = true
+      if (event.code === 'Space' && !typingNow()) spacing.current = true
     }
     const up = (event: KeyboardEvent) => {
       if (event.code === 'Space') spacing.current = false

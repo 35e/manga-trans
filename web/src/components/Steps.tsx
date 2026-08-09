@@ -1,4 +1,5 @@
 import type { BoardMode } from '../lib/api'
+import { CheckIcon } from './icons'
 import { FOCUS } from './ui'
 
 export type Step = {
@@ -17,12 +18,10 @@ type Props = {
 }
 
 /**
- * The way through a page — find the words, hide them, letter it — as three
- * steps that say which are done and which one is being worked on.
- *
- * They are not a wizard: any of them can be gone to at any time. They are here
- * because the order is the thing that is not obvious, and because a page half
- * done should look half done.
+ * The way through a page — find the words, hide them, letter it — as three steps
+ * saying which are done. Not a wizard: any of them can be gone to at any time.
+ * They are here because the order is what is not obvious, and because a page
+ * half done should look half done.
  */
 export function Steps({ steps, current, onPick }: Props) {
   return (
@@ -50,22 +49,7 @@ export function Steps({ steps, current, onPick }: Props) {
                     : 'text-faint ring-1 ring-line'
               }`}
             >
-              {step.done ? (
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="3.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="size-2.5"
-                >
-                  <path d="m5 13 5 5L20 7" />
-                </svg>
-              ) : (
-                at + 1
-              )}
+              {step.done ? <CheckIcon className="size-2.5" /> : at + 1}
               <span className="sr-only">{step.done ? 'done' : `step ${at + 1}`}</span>
             </span>
             {step.label}

@@ -1,5 +1,6 @@
 import type { GalleryImage } from '../lib/images'
 import { formatBytes } from '../lib/images'
+import { TrashIcon } from './icons'
 
 type Props = {
   images: GalleryImage[]
@@ -35,13 +36,9 @@ export function Gallery({ images, activeId, onOpen, onRemove }: Props) {
 }
 
 /**
- * One page in the rail.
- *
- * The picture is held in a box of its own inside the card's border rather than
- * against it: a page is any shape it likes, and one that filled the card to the
- * edge used to sit over the rounded corners at the top. Inset by the card's
- * padding it cannot reach them, and the two radii are concentric, so the corner
- * reads as one curve rather than two.
+ * One page in the rail. The picture sits in a box of its own inside the card's
+ * border rather than against it, or a page of the wrong shape rides over the
+ * rounded corners; the two radii are concentric so the corner reads as one curve.
  */
 function Thumb({
   image,
@@ -97,17 +94,7 @@ function Thumb({
         title={`Delete ${image.name}`}
         className="absolute top-2 right-2 rounded-md bg-black/60 p-1 text-white/80 opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-danger hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger max-sm:opacity-100"
       >
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          className="size-3.5"
-        >
-          <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-        </svg>
+        <TrashIcon className="size-3.5" />
       </button>
     </li>
   )

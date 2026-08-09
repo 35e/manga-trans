@@ -13,56 +13,54 @@ export const LINE_HEIGHT = 1.15
 export const SIZE_MIN = 6
 export const SIZE_MAX = 200
 
+/** Left at the end of a line to say the word carries on below. */
+const HYPHEN = '-'
+
 /**
  * The white the lettering is outlined in, as a share of the type size, so it
- * holds up the same whether the line is set large or small. Black words over
- * black artwork are unreadable without it.
+ * holds up whether the line is set large or small. Black words over black
+ * artwork are unreadable without it.
  */
-export const STROKE_RATIO = 0.09
+const STROKE_RATIO = 0.09
+
+/**
+ * Latin is set a little larger than the em it is matched to: a capital fills
+ * about two thirds of its em where a kanji fills all of it.
+ */
+const LATIN = 1.25
 
 export function strokeFor(size: number): number {
   return Math.max(1, size * STROKE_RATIO)
-}
-
-let scratch: CanvasRenderingContext2D | null = null
-
-function measurer(): CanvasRenderingContext2D | null {
-  if (scratch) return scratch
-  const context = document.createElement('canvas').getContext('2d')
-  scratch = context
-  return context
 }
 
 export function fontFor(size: number) {
   return `${FONT_WEIGHT} ${size}px ${FONT_STACK}`
 }
 
+let scratch: CanvasRenderingContext2D | null = null
+
+function measurer(): CanvasRenderingContext2D | null {
+  if (!scratch) scratch = document.createElement('canvas').getContext('2d')
+  return scratch
+}
+
 /**
- * Wait for the lettering face to be in.
- *
- * A font is only fetched when something needs it, and measuring before it
- * arrives measures the fallback — which would fit the text to the wrong shape
- * and set it at the wrong size. Anything that measures or draws waits on this
- * first.
+ * Wait for the lettering face to be in. Measuring before it arrives measures the
+ * fallback, which fits the text to the wrong shape; anything that measures or
+ * draws waits on this first.
  */
 export function ready(): Promise<unknown> {
   if (typeof document === 'undefined' || !document.fonts) return Promise.resolve()
   return document.fonts.load(fontFor(16)).catch(() => undefined)
 }
 
-/** Left at the end of a line to say the word carries on below. */
-export const HYPHEN = '-'
-
 /**
  * A word too wide for the box, cut into pieces that fit, each but the last
- * ending in a hyphen so it reads as a word broken rather than a word ending.
+ * hyphenated so it reads as a word broken rather than a word ending. The hyphen
+ * is measured along with its piece, or it would be what overruns the box.
  *
- * The hyphen is measured along with the piece it hangs off, or it would be the
- * thing that overruns the box.
- *
- * This is a last resort. `fitSize` sets the type small enough that words come
- * out whole, and only gives up and lets one be broken when even the smallest
- * type would leave it hanging out of its bubble.
+ * A last resort: `fitSize` sets the type small enough that words come out whole
+ * and only gives up when even the smallest would leave one hanging out.
  */
 function pieces(
   context: CanvasRenderingContext2D,
@@ -80,14 +78,13 @@ function pieces(
       part = candidate
     }
   }
-  // A single letter wider than the box still goes on a line of its own: there
-  // is nowhere smaller to put it.
+  // A single letter wider than the box still goes on a line of its own.
   if (part) parts.push(part)
   return parts
 }
 
 /** Greedy wrap on whitespace, and inside a word when the word alone is too wide. */
-export function wrap(
+function wrap(
   context: CanvasRenderingContext2D,
   text: string,
   width: number,
@@ -127,9 +124,9 @@ export function wrap(
 /**
  * The lines `text` breaks into inside a box `width` wide, set at `size`.
  *
- * The board lays these out one to a line rather than leaving the wrapping to
- * the browser, and the page is drawn from the same call, so what is arranged
- * and what comes out break in the same places — hyphens and all.
+ * The board lays these out one to a line rather than leaving the wrapping to the
+ * browser, and the page is drawn from the same call, so what is arranged and
+ * what comes out break in the same places — hyphens and all.
  */
 export function linesFor(text: string, width: number, size: number): string[] {
   const context = measurer()
@@ -149,11 +146,9 @@ function widestWord(context: CanvasRenderingContext2D, text: string): number {
 }
 
 /**
- * Whether `text` lands inside the box when set at `size`.
- *
- * With `whole`, a size that would leave any word too wide for the box fails —
- * that word is what a smaller size is needed for, and asking here is what stops
- * the search settling on a size that only fits because words were broken up.
+ * Whether `text` lands inside the box when set at `size`. With `whole`, a size
+ * leaving any word too wide fails — which is what stops the search settling on a
+ * size that only fits because words were broken up.
  */
 function lands(
   context: CanvasRenderingContext2D,
@@ -175,33 +170,16 @@ function lands(
 
 /**
  * How large the page itself is lettered, read off the block the original came
- * out of.
- *
- * Japanese is set on a square em — every character fills its box, however the
- * lines run — so a block of `n` characters covering `width × height` was set at
- * about `sqrt(width × height / n)`. That is the size the artist chose for this
- * page, and it is the size a translation belongs near.
- *
- * It is needed because a balloon is drawn around the words rather than to them:
- * the largest type that fits a balloon is far bigger than the words that were in
- * it whenever the line is short. Left to fill its balloon, "OK!" comes out four
- * times the height of the dialogue on either side of it, which is the one thing
- * a page of lettering must not do.
- *
- * Latin is set a little larger than the em it is matched to, because a capital
- * fills about two thirds of its em where a kanji fills all of it, and two lines
- * on the same em do not look the same size.
+ * out of. Japanese is set on a square em, so `n` characters covering
+ * `width × height` were set at about `sqrt(width × height / n)`.
  */
-export const LATIN = 1.25
-
 export function originalSize(
   original: string,
   width: number,
   height: number,
 ): number {
   const characters = original.replace(/\s+/g, '').length
-  // Nothing was read here — a block drawn by hand and never gone over — so
-  // there is nothing to hold the size to, and the box is all there is to go on.
+  // Nothing was read here, so there is nothing to hold the size to.
   if (!characters || width <= 0 || height <= 0) return SIZE_MAX
   return Math.max(
     SIZE_MIN,
@@ -235,24 +213,12 @@ function largestThatLands(
 }
 
 /**
- * The largest size that fits `text` inside a box of `width` × `height`, in the
- * same pixels the box is measured in.
+ * The largest size that fits `text` inside `width` × `height`, never below
+ * SIZE_MIN — text too long for its box overruns rather than being dropped.
  *
- * Words are kept whole. A long word in a narrow bubble sets the size for the
- * whole line — smaller type reads better than a word shattered down the middle
- * of a balloon, and shattering it is what a greedy wrap does first if it is
- * allowed to. Only when the smallest type still cannot hold the longest word is
- * it broken across lines, since by then the choice is a hyphen or letters
- * hanging outside the art.
- *
- * Never smaller than SIZE_MIN: text too long for its box is set small and left
- * to overrun rather than dropped, which is what the API does when it letters a
- * page too.
- *
- * `most` is as large as it may go however much room there is — see
- * :func:`originalSize`, which is where it comes from. A box is the balloon, not
- * the words, so without a ceiling a short line is set to fill a balloon it
- * should only be sitting in.
+ * Two passes: words are kept whole, and only if the smallest type still cannot
+ * hold the longest word is one broken across lines. `most` caps it however much
+ * room there is — see {@link originalSize}.
  */
 export function fitSize(
   text: string,

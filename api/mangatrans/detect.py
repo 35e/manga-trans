@@ -1,8 +1,7 @@
-"""Text detection with comic-text-detector, run on OpenCV's ONNX backend.
+"""Text detection with comic-text-detector, on OpenCV's ONNX backend.
 
 No torch and no onnxruntime: OpenCV reads the ONNX file itself. The weights are
-not on PyPI, so :func:`ensure_model` fetches them once from the release they are
-published in.
+not on PyPI, so :func:`ensure_model` fetches them once.
 """
 
 from __future__ import annotations
@@ -32,15 +31,11 @@ NMS_THRESHOLD = 0.35
 
 # The segmentation head answers per pixel, between 0 and 1.
 SEG_THRESHOLD = 0.5
-# Letters are drawn with soft edges, and the mask stops at the ink. Growing it
-# covers the halo that would otherwise be left ringing the place a letter used
-# to be — screentone, the ring JPEG leaves around a hard edge, the pale rim of
-# an outlined letter, none of which the segmentation calls text.
-#
-# Four is a starting point, not a finding: on clean black-on-white lettering two
-# already leaves nothing behind at any size of page. What it is really covering
-# is scanned material, where the right amount depends on the scan. Callers say
-# `grow` when they want more.
+
+# Letters have soft edges and the mask stops at the ink, so the mask is grown to
+# cover the halo left ringing a hidden letter — screentone, JPEG ringing, the
+# pale rim of an outlined letter. Four suits clean lettering; scans want more,
+# which is why callers can say `grow`.
 GROW = 4
 GROW_MAX = 64
 
@@ -123,19 +118,14 @@ def decode_blocks(raw, conf_threshold: float, nms_threshold: float):
 def page_mask(
     seg, width: int, height: int, pad_w: int, pad_h: int, grow: int = GROW
 ) -> np.ndarray:
-    """The model's padded square of per-pixel text as a mask the page's size.
-
-    The padding letterbox() added goes back off, what is left is stretched to
-    the page, and everything the model was sure enough about is grown by
-    ``grow`` pixels so no halo is left around a letter that has been hidden.
-    """
+    """The model's padded square of per-pixel text as a mask the page's size."""
     seg_h, seg_w = seg.shape[:2]
     kept = seg[
         : max(1, round(seg_h * (INPUT_SIZE - pad_h) / INPUT_SIZE)),
         : max(1, round(seg_w * (INPUT_SIZE - pad_w) / INPUT_SIZE)),
     ]
-    # Stretched while still a probability, so the edge of a letter lands where
-    # it should before anything is decided about it.
+    # Stretched while still a probability, so the edge of a letter lands where it
+    # should before anything is decided about it.
     full = cv2.resize(kept, (width, height), interpolation=cv2.INTER_LINEAR)
     mask = ((full > SEG_THRESHOLD) * 255).astype(np.uint8)
 
@@ -158,11 +148,10 @@ class Detector:
     def run(self, image):
         """One pass: the block rows, the per-pixel text map, and the padding.
 
-        Some OpenCV builds hand the outputs back in a different order than they
-        were asked for, so they are told apart by shape: the blocks are the only
-        one with three dimensions, and the lettering is the one-channel map —
-        the two-channel one is where the lines of text run, which nothing here
-        wants.
+        Some OpenCV builds return the outputs in a different order than they were
+        asked for, so they are told apart by shape: the blocks are the only
+        3-dimensional one, and the lettering is the one-channel map — the
+        two-channel one is where the lines of text run, which nothing here wants.
         """
         canvas, pad_w, pad_h = letterbox(image)
         blob = cv2.dnn.blobFromImage(
@@ -181,16 +170,15 @@ class Detector:
     def letters(self, image, grow: int = GROW) -> np.ndarray:
         """A mask of the lettering itself, pixel by pixel, the page's size.
 
-        The boxes say which bubble; this says which ink. Hiding by box paints out
-        the whole rectangle, artwork and all; hiding by this paints out only what
-        was written.
+        The boxes say which bubble; this says which ink, so a clean can hide the
+        words and leave the art they were drawn over.
         """
         height, width = image.shape[:2]
         _, seg, pad_w, pad_h = self.run(image)
         return page_mask(seg, width, height, pad_w, pad_h, grow)
 
     def __call__(self, image) -> list[Block]:
-        """Every block of lettering on one RGB page array."""
+        """Every block of lettering on one RGB page array, in reading order."""
         height, width = image.shape[:2]
         raw_blocks, _, pad_w, pad_h = self.run(image)
 
@@ -209,5 +197,6 @@ class Detector:
             if box.w > 1 and box.h > 1:
                 blocks.append(Block(box=box, confidence=float(confidence)))
 
+        # Down the page, then right to left. `lib/order.ts` sorts by the same key.
         blocks.sort(key=lambda block: (block.box.y0, -block.box.x1))
         return blocks

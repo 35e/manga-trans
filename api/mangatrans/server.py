@@ -10,6 +10,7 @@ import io
 import json
 import os
 import threading
+from typing import Callable, TypeVar
 
 import numpy as np
 from flask import Flask, jsonify, request, send_file
@@ -23,6 +24,30 @@ from .read import Reader
 
 MAX_UPLOAD = 32 * 1024 * 1024
 ORIGIN = os.environ.get("MANGA_TRANS_ORIGIN", "*")
+
+T = TypeVar("T")
+
+
+def lazily(make: Callable[[], T]) -> Callable[[], T]:
+    """One instance, built on first use and shared thereafter.
+
+    Both models take a moment to load — the detector's ~95 MB, the reader's
+    ~450 MB and the torch behind it — so the first request that needs one pays
+    for it. An API only ever asked to detect never stands the reader up at all.
+    """
+    lock = threading.Lock()
+    held: list[T] = []
+
+    def get() -> T:
+        with lock:
+            if not held:
+                held.append(make())
+            return held[0]
+
+    return get
+
+
+# --- Reading the request --------------------------------------------------
 
 
 def page() -> Image.Image:
@@ -62,6 +87,19 @@ def number(field: str, default: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+def box_in(values, image: Image.Image) -> Box:
+    """One [x0, y0, x1, y1] from a request, clipped to the page."""
+    try:
+        box = Box.from_list(values)
+    except (TypeError, ValueError) as exc:
+        raise BadRequest(f"not a box: {values!r}") from exc
+    return box.clipped(image.width, image.height)
+
+
+def boxes_in(image: Image.Image, field: str = "boxes") -> list[Box]:
+    return [box_in(values, image) for values in sent(field)]
+
+
 def mask_in(image: Image.Image) -> Image.Image | None:
     """The mask sent beside the image, if one was: greyscale, the page's size."""
     upload = request.files.get("mask")
@@ -73,15 +111,11 @@ def mask_in(image: Image.Image) -> Image.Image | None:
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise BadRequest(f"the mask is not a usable image: {exc}") from exc
 
-    # A mask that carries transparency means it: white on clear is what
-    # /api/letters hands out, and reading that by brightness alone would say
-    # "hide the whole page".
-    #
-    # But an alpha channel is not the same as transparency. A browser canvas
-    # always exports one whether or not anything was made see-through, and a
-    # mask drawn white on black comes back opaque from edge to edge: going by
-    # its alpha would paint out every pixel. So alpha is only believed when
-    # some of it is actually clear.
+    # A mask carrying transparency means it: white on clear is what /api/letters
+    # hands out, and reading that by brightness alone would say "hide the whole
+    # page". But an alpha channel is not the same as transparency — a browser
+    # canvas always exports one, and a mask drawn white on black comes back
+    # opaque edge to edge. So alpha is only believed when some of it is clear.
     alpha = sent_mask.getchannel("A") if "A" in sent_mask.getbands() else None
     shaped = alpha is not None and alpha.getextrema()[0] < 255
     mask = alpha if shaped else sent_mask.convert("L")
@@ -101,20 +135,14 @@ def fill_in(default: str = render.ART) -> str:
     return chosen
 
 
-def box_in(values, image: Image.Image) -> Box:
-    """One [x0, y0, x1, y1] from a request, clipped to the page."""
-    try:
-        box = Box.from_list(values)
-    except (TypeError, ValueError) as exc:
-        raise BadRequest(f"not a box: {values!r}") from exc
-    return box.clipped(image.width, image.height)
-
-
 def png(image: Image.Image):
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)
     buffer.seek(0)
     return send_file(buffer, mimetype="image/png", download_name="page.png")
+
+
+# --- The app --------------------------------------------------------------
 
 
 def create_app(
@@ -124,26 +152,8 @@ def create_app(
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD
     font = font or os.environ.get("MANGA_TRANS_FONT")
 
-    # Both models take a moment to load — the detector's ~95 MB, the reader's
-    # ~450 MB and the torch behind it — so the first request that needs one pays
-    # for it and the rest share it. An API only ever asked to detect never
-    # stands the reader up at all.
-    loading = threading.Lock()
-    loaded: list[Detector] = []
-    reading = threading.Lock()
-    readers: list[Reader] = []
-
-    def detector() -> Detector:
-        with loading:
-            if not loaded:
-                loaded.append(Detector(model))
-            return loaded[0]
-
-    def reader() -> Reader:
-        with reading:
-            if not readers:
-                readers.append(Reader(ocr_model))
-            return readers[0]
+    detector = lazily(lambda: Detector(model))
+    reader = lazily(lambda: Reader(ocr_model))
 
     @app.errorhandler(Exception)
     def on_error(exc):
@@ -202,8 +212,8 @@ def create_app(
 
         The box is where the words are; `bubble` is the room they were written
         in, which is what a translation wants — see /api/bubbles. It comes back
-        here as well as there because it is worked out from the page and the
-        boxes alone, and both are already in hand.
+        here too because it is worked out from the page and the boxes alone, and
+        both are already in hand.
         """
         image = page()
         pixels = np.array(image)
@@ -226,20 +236,17 @@ def create_app(
     def balloons():
         """The balloon each box is written in, boxed, in the order they were given.
 
-        Japanese runs down the page, so a block of it is a tall narrow column
-        and a translation set in that column has nowhere to go. This answers
-        with the room around it instead: the largest rectangle that fits inside
-        the shape the words sit in, which is what a line of English should be
-        lettered into.
+        Japanese runs down the page, so a block of it is a tall narrow column and
+        a translation set in that column has nowhere to go. This answers with the
+        room around it instead.
 
         `bubble` is null where no balloon could be made out — lettering over
-        artwork is in none, and a balloon whose outline the scan has broken
-        cannot be followed — and the caller should keep the box it has. No model
+        artwork is in none — and the caller should keep the box it has. No model
         is involved, so this is the one call on an image that never stands the
         detector up.
         """
         image = page()
-        boxes = [box_in(values, image) for values in sent("boxes")]
+        boxes = boxes_in(image)
         found = bubble.bubbles(np.array(image), boxes)
         return jsonify(
             regions=[
@@ -253,8 +260,8 @@ def create_app(
         """A mask of the lettering itself, pixel by pixel, as a PNG.
 
         White on clear: opaque where the ink is, transparent everywhere else, so
-        it can be laid straight over the page or drawn into a canvas. Send it
-        back to /api/clean to hide the letters and leave the art they sit on.
+        it can be laid over the page or drawn into a canvas. Send it back to
+        /api/clean to hide the letters and leave the art they sit on.
         """
         image = page()
         grow = number("grow", GROW, 0, GROW_MAX)
@@ -267,42 +274,34 @@ def create_app(
     def read():
         """What the lettering in each box says, in the order they were given."""
         image = page()
-        boxes = [box_in(values, image) for values in sent("boxes")]
-        return jsonify(texts=reader()(image, boxes))
+        return jsonify(texts=reader()(image, boxes_in(image)))
 
     @app.post("/api/clean")
     def clean():
         """The page back with what was marked taken out of it: the lettering hidden.
 
         What is marked can be boxes, a mask, or both. A mask is a greyscale page
-        of the same size, and it is the only way to say "this bubble but not
-        that corner of it".
+        of the same size, and it is the only way to say "this bubble but not that
+        corner of it".
 
         What goes in its place is `fill`: by default the art around the mark,
-        carried inwards, so what the words were drawn over comes back; send
-        `fill=white` to paint it flat instead.
+        carried inwards; send `fill=white` to paint it flat instead.
         """
         image = page()
         mask = mask_in(image)
-        boxes = (
-            [box_in(values, image) for values in sent("boxes")]
-            if "boxes" in request.form
-            else []
-        )
+        boxes = boxes_in(image) if "boxes" in request.form else []
         if mask is None and not boxes:
             raise BadRequest("nothing to hide: send 'boxes', a 'mask', or both")
 
-        marks = render.marked(image.size, boxes, mask)
-        return png(render.hidden(image, marks, fill_in()))
+        return png(render.hidden(image, render.marked(image.size, boxes, mask), fill_in()))
 
     @app.post("/api/render")
     def overlay():
         """The page back with every box hidden and its text set in its place.
 
         `fill` says what a box is hidden under, as it does for /api/clean, but
-        white is the default here rather than the art around it: a box is a
-        rectangle and the text set in it is black, and black lettering wants a
-        ground that is clear.
+        white is the default here: a box is a rectangle and the text set in it is
+        black, and black lettering wants a ground that is clear.
         """
         image = page()
         regions = [

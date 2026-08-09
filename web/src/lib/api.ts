@@ -9,22 +9,18 @@ export type Region = {
   /**
    * This block, for as long as it exists. Blocks are resized, reordered and
    * added to by hand, so a place in the list is not a name: anything that goes
-   * away and comes back — a reading, say — finds its block by this.
+   * away and comes back finds its block by this.
    */
   id: string
   box: Box
   confidence: number
   /**
-   * The room the block was written in, rather than the room the words take up:
-   * the largest rectangle that fits inside the balloon around them. This is
-   * where a translation goes. Japanese runs down the page, so `box` is a tall
-   * narrow column and English set in it wraps to about a letter a line.
-   *
-   * Null where no balloon could be made out — lettering over artwork is in none
-   * — and then `box` is all there is to go on.
+   * The room the block was written in: the largest rectangle inside the balloon
+   * around it, which is where a translation goes. Null where no balloon could be
+   * made out, and then `box` is all there is to go on.
    */
   bubble?: Box | null
-  /** Drawn by hand, because the detector missed it. Never sure, just certain. */
+  /** Drawn by hand, because the detector missed it. */
   manual?: boolean
 }
 
@@ -39,14 +35,14 @@ export type Analysis = {
   detection: Detection
   texts: string[] | null
   /**
-   * Blocks to leave alone: their indices in `detection.regions`. A detector
-   * that boxed something worth keeping — a sound effect, a signature, a stray
-   * bit of art — is corrected here rather than by re-detecting.
+   * Blocks to leave alone, by their index in `detection.regions`. A detector
+   * that boxed something worth keeping is corrected here rather than by
+   * re-detecting.
    */
   excluded: number[]
 }
 
-/** Detecting comes first, then reading what was detected, then hiding it. */
+/** What the API is busy doing for the page on the board. */
 export type Stage =
   | 'detecting'
   | 'reading'
@@ -59,42 +55,27 @@ export type Stage =
 export type BoardMode = 'inspect' | 'mask' | 'translate'
 
 /**
- * What goes where the lettering was. `art` fills it in from the page around it,
- * so a tone or a line the words were drawn over carries on through them;
+ * What goes where the lettering was. `art` fills it in from the page around it;
  * `white` paints it flat, which is only right where the ground was white.
  */
 export type Fill = 'art' | 'white'
 
-/**
- * One translated line, set where the original was. The box starts as the block
- * the detector found and the size as whatever fits it, and both are the reader's
- * to change after that: a translation is rarely as long as what it replaces.
- */
+/** One translated line, set where the original was. */
 export type Lettering = {
   text: string
   box: Box
   size: number
   /**
-   * How far the line is turned, in degrees clockwise about the middle of its
-   * box. Manga letters plenty of things on the slant — a sound effect running
-   * up a page, a shout across a tilted bubble — and a line set straight over
-   * one of those reads as a sticker over the art rather than part of it.
-   *
-   * The box itself stays square to the page: it is what the words are turned
-   * about, not something turned itself, which is what keeps wrapping and
-   * fitting the same measurement they were.
+   * Degrees clockwise about the middle of the box. The box itself stays square
+   * to the page, so wrapping and fitting go on measuring what they always did.
    */
   angle: number
 }
 
 /**
- * Below this the detector is guessing, and a block it is guessing at starts
- * left alone rather than cleaned.
- *
- * A box over half a bubble, or over a piece of artwork the detector took for
- * lettering, does more harm hidden than a real one does missed: the harm of
- * missing it is that the words stay on the page, and the harm of hiding it is
- * that the art underneath is gone. Putting one back is one click either way.
+ * Below this the detector is guessing, and a block it is guessing at starts left
+ * alone rather than cleaned: a box over a piece of artwork does more harm hidden
+ * than a real one does missed. Putting one back is one click either way.
  */
 export const UNSURE = 0.8
 
@@ -109,23 +90,24 @@ async function refuse(response: Response): Promise<never> {
 
 /** A fetch that says where it was trying to go when there is nothing there. */
 async function reach(path: string, init?: RequestInit): Promise<Response> {
+  let response: Response
   try {
-    return await fetch(`${API_BASE}${path}`, init)
+    response = await fetch(`${API_BASE}${path}`, init)
   } catch (cause) {
-    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
     throw new Error(`Could not reach the API at ${API_BASE}`, { cause })
   }
+  if (!response.ok) await refuse(response)
+  return response
 }
 
 /**
- * One page up, one answer back. Anything that is not a Blob or a word goes up
- * as JSON, which is how the API takes boxes.
+ * One page up, one answer back. Anything that is not a Blob or a word goes up as
+ * JSON, which is how the API takes boxes.
  */
 async function send(
   path: string,
   file: File,
-  parts: Record<string, unknown>,
-  signal?: AbortSignal,
+  parts: Record<string, unknown> = {},
 ): Promise<Response> {
   const body = new FormData()
   body.append('image', file, file.name)
@@ -135,18 +117,12 @@ async function send(
     else if (typeof value === 'string') body.append(name, value)
     else body.append(name, JSON.stringify(value))
   }
-
-  const response = await reach(path, { method: 'POST', body, signal })
-  if (!response.ok) await refuse(response)
-  return response
+  return reach(path, { method: 'POST', body })
 }
 
 /** Every block of lettering the detector finds on one page. */
-export async function detect(
-  file: File,
-  signal?: AbortSignal,
-): Promise<Detection> {
-  const response = await send('/api/detect', file, {}, signal)
+export async function detect(file: File): Promise<Detection> {
+  const response = await send('/api/detect', file)
   const found = (await response.json()) as {
     width: number
     height: number
@@ -156,72 +132,51 @@ export async function detect(
   // Blocks are named here, once, as they arrive.
   return {
     ...found,
-    regions: found.regions.map((region) => ({
-      ...region,
-      id: crypto.randomUUID(),
-    })),
+    regions: found.regions.map((region) => ({ ...region, id: crypto.randomUUID() })),
   }
 }
 
 /**
- * The balloon each box is written in, in the order the boxes were given, or
- * null where none could be made out.
- *
+ * The balloon each box is written in, or null where none could be made out.
  * `detect` already answers with these, so this is for the blocks it did not
  * find: one drawn by hand, one split in two, one pulled off its neighbour.
  */
-export async function bubbles(
-  file: File,
-  boxes: Box[],
-  signal?: AbortSignal,
-): Promise<(Box | null)[]> {
+export async function bubbles(file: File, boxes: Box[]): Promise<(Box | null)[]> {
   if (boxes.length === 0) return []
-  const response = await send('/api/bubbles', file, { boxes }, signal)
-  const answer = (await response.json()) as {
-    regions: { bubble: Box | null }[]
-  }
+  const response = await send('/api/bubbles', file, { boxes })
+  const answer = (await response.json()) as { regions: { bubble: Box | null }[] }
   return answer.regions.map((region) => region.bubble)
 }
 
-/**
- * What each box says, read by manga-ocr. One string per box, in the order the
- * boxes were given, so they line up with the regions from `detect`.
- */
-export async function read(
-  file: File,
-  boxes: Box[],
-  signal?: AbortSignal,
-): Promise<string[]> {
+/** What each box says, read by manga-ocr, in the order the boxes were given. */
+export async function read(file: File, boxes: Box[]): Promise<string[]> {
   if (boxes.length === 0) return []
-  const response = await send('/api/read', file, { boxes }, signal)
+  const response = await send('/api/read', file, { boxes })
   const { texts } = (await response.json()) as { texts: string[] }
   return texts
 }
 
 /** Every model the API's Ollama has to translate with. */
-export async function models(signal?: AbortSignal): Promise<string[]> {
-  const response = await reach('/api/models', { signal })
-  if (!response.ok) await refuse(response)
+export async function models(): Promise<string[]> {
+  const response = await reach('/api/models')
   const answer = (await response.json()) as { models: string[] }
   return answer.models
 }
 
 /**
- * What the API tells the model to do when it is not told anything else. Held
- * nowhere but here: the API keeps no settings, so a front end that wants its
- * own asks for this, lets it be edited, and sends the edit back each time.
+ * What the API tells the model when it is not told anything else. The API keeps
+ * no settings, so a front end that wants its own asks for this, lets it be
+ * edited, and sends the edit back each time.
  */
-export async function defaultPrompt(signal?: AbortSignal): Promise<string> {
-  const response = await reach('/api/prompt', { signal })
-  if (!response.ok) await refuse(response)
+export async function defaultPrompt(): Promise<string> {
+  const response = await reach('/api/prompt')
   const answer = (await response.json()) as { prompt: string }
   return answer.prompt
 }
 
 /**
- * One translation per text, in the order they were given. The whole page goes
- * over at once: a line of manga read on its own often cannot be translated at
- * all, having no idea who is speaking or about what.
+ * One translation per text, in order. The whole page goes over at once: a line
+ * of manga read on its own often cannot be translated at all.
  *
  * `system` is what the model is told; leave it out for the API's own.
  */
@@ -230,7 +185,6 @@ export async function translate(
   model: string,
   target: string,
   system?: string | null,
-  signal?: AbortSignal,
 ): Promise<string[]> {
   if (texts.length === 0) return []
 
@@ -240,42 +194,29 @@ export async function translate(
   body.append('target', target)
   if (system) body.append('system', system)
 
-  const response = await reach('/api/translate', { method: 'POST', body, signal })
-  if (!response.ok) await refuse(response)
+  const response = await reach('/api/translate', { method: 'POST', body })
   const answer = (await response.json()) as { texts: string[] }
   return answer.texts
 }
 
 /**
  * The lettering itself, pixel by pixel: a page-sized PNG, opaque white on the
- * ink and clear everywhere else. `grow` is how many pixels to spread it by, so
- * nothing is left ringing a letter that has been hidden.
+ * ink and clear everywhere else. `grow` is how many pixels to spread it by.
  */
-export async function letterMask(
-  file: File,
-  grow?: number,
-  signal?: AbortSignal,
-): Promise<Blob> {
+export async function letterMask(file: File, grow?: number): Promise<Blob> {
   const response = await send(
     '/api/letters',
     file,
     grow === undefined ? {} : { grow },
-    signal,
   )
   return response.blob()
 }
 
 /**
- * The page with everything the mask marks taken out of it, as a PNG. The mask
- * is a page-sized image, white where the lettering should go, and `fill` is
- * what goes in its place: the art around it, or flat white.
+ * The page with everything the mask marks taken out of it, as a PNG. The mask is
+ * page-sized, white where the lettering should go.
  */
-export async function clean(
-  file: File,
-  mask: Blob,
-  fill: Fill,
-  signal?: AbortSignal,
-): Promise<Blob> {
-  const response = await send('/api/clean', file, { mask, fill }, signal)
+export async function clean(file: File, mask: Blob, fill: Fill): Promise<Blob> {
+  const response = await send('/api/clean', file, { mask, fill })
   return response.blob()
 }

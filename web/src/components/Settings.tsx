@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, FOCUS, IconButton } from './ui'
+import { CloseIcon } from './icons'
 
 type Props = {
   onClose: () => void
@@ -18,7 +19,6 @@ type Props = {
  */
 export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }: Props) {
   const [draft, setDraft] = useState(prompt ?? fallback ?? '')
-  const box = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -57,17 +57,7 @@ export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }:
             </p>
           </div>
           <IconButton label="Close settings" onClick={onClose}>
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              className="size-4"
-            >
-              <path d="M6 6l12 12M18 6 6 18" />
-            </svg>
+            <CloseIcon />
           </IconButton>
         </header>
 
@@ -86,7 +76,6 @@ export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }:
 
             <textarea
               id="prompt"
-              ref={box}
               value={draft}
               rows={9}
               spellCheck={false}

@@ -1,4 +1,5 @@
 import { useRef } from 'react'
+import { UploadIcon } from './icons'
 
 type Props = {
   onFiles: (files: FileList | File[] | null) => void
@@ -33,21 +34,11 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
         }}
       />
 
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <UploadIcon
         className={`size-5 shrink-0 transition-colors ${
           dragging ? 'text-accent-lit' : 'text-faint'
         }`}
-      >
-        <path d="M12 16V4m0 0L8 8m4-4 4 4" />
-        <path d="M3 15v3a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-3" />
-      </svg>
+      />
 
       <span className="min-w-0">
         <span className="block truncate text-xs font-medium text-ink">

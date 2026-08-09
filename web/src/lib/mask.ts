@@ -3,16 +3,26 @@ import type { Box } from './api'
 export type Point = { x: number; y: number }
 export type Brush = { radius: number; erase: boolean }
 
+/**
+ * Mark these boxes for hiding: the lettering inside them once it has been
+ * traced, and the whole box until then. The boxes are only the fallback — the
+ * point of tracing is to hide the words and leave the art they sit on.
+ */
+export function mark(mask: Mask, boxes: Box[], letters: ImageBitmap | null) {
+  if (boxes.length === 0) return
+  if (letters) mask.letters(letters, boxes)
+  else mask.boxes(boxes)
+}
+
 /** How the mask shows on the board: enough to read through, enough to see. */
 const TINT = 'rgba(79, 70, 229, 0.45)'
 
 /**
  * What is to be painted out, held at the page's own resolution.
  *
- * White on transparent, which is what the API asks for — a greyscale page where
- * white is hidden and black is left alone. Boxes can only ever say "all of this
- * rectangle"; this can say "this bubble except that corner", which is the whole
- * point of brushing it by hand.
+ * White on transparent, which is what the API asks for. Boxes can only say "all
+ * of this rectangle"; this can say "this bubble except that corner", which is
+ * the whole point of brushing it by hand.
  */
 export class Mask {
   readonly width: number
@@ -58,14 +68,12 @@ export class Mask {
   /**
    * Mark the lettering itself rather than the boxes around it.
    *
-   * `source` is the mask the API traced — white on clear, the size of the page
-   * — and it is drawn only inside `boxes`, so a block left alone stays out of
-   * it and stray ink the detector never boxed does not creep in. Pass null for
-   * boxes to take the whole page.
+   * `source` is the mask the API traced — white on clear, page-sized — drawn
+   * only inside `boxes`, so a block left alone stays out of it and stray ink the
+   * detector never boxed does not creep in.
    */
-  letters(source: CanvasImageSource, boxes: Box[] | null) {
-    const areas = boxes ?? [[0, 0, this.width, this.height] as Box]
-    const drawable = areas.filter(([x0, y0, x1, y1]) => x1 > x0 && y1 > y0)
+  letters(source: CanvasImageSource, boxes: Box[]) {
+    const drawable = boxes.filter(([x0, y0, x1, y1]) => x1 > x0 && y1 > y0)
     if (drawable.length === 0) return
 
     this.into(false)

@@ -1,14 +1,12 @@
 """Translating the lettering with a model running under Ollama.
 
 Nothing leaves the machine Ollama is on. Which model does the work is the
-caller's choice out of whatever has been pulled there; this only asks.
+caller's choice out of whatever has been pulled there.
 
-The page goes over in one request rather than one per line, which is both far
-quicker and better translation — a line of manga dialogue read on its own often
-cannot be turned into English at all, having no idea who is speaking or about
-what. The model is held to a JSON schema so the answers come back countable,
-and if it loses count anyway the lines are asked about one at a time, where it
-cannot.
+The page goes over in one request rather than one per line: a line of manga read
+on its own often cannot be translated at all, having no idea who is speaking or
+about what. The model is held to a JSON schema so the answers come back
+countable, and if it loses count anyway the lines are asked about one at a time.
 """
 
 from __future__ import annotations
@@ -31,14 +29,10 @@ SCHEMA = {
     "required": ["translations"],
 }
 
-# What the model is told it is doing, unless the caller says otherwise.
-# ``{target}`` is replaced by the language being translated into.
-#
-# The JSON it asks for is not what makes the answer JSON — the schema above does
-# that, whatever the prompt says. What the wording is really holding up is the
-# count and the order, and if a rewritten prompt loses those the lines are asked
-# about one at a time instead. So this can be changed freely: at worst it costs
-# time, not alignment.
+# ``{target}`` is replaced by the language being translated into. The schema
+# above is what makes the answer JSON, whatever this says; what the wording holds
+# up is the count and the order, and losing those only costs a slower pass line
+# by line. So this can be rewritten freely.
 SYSTEM_DEFAULT = (
     "You translate manga dialogue into {target}. You are given the lines of one "
     "page, in order, and they are one conversation: read them together. Reply "
@@ -105,9 +99,9 @@ def answered(message: dict) -> list | None:
     """The translations out of one reply.
 
     Ollama files a thinking model's reasoning under `thinking` and its answer
-    under `content` — but a model held to a schema may not think at all, and
-    then some builds put the whole answer under `thinking` instead. The answer
-    is whichever field holds the JSON.
+    under `content`, but a model held to a schema may not think at all — and then
+    some builds put the whole answer under `thinking`. The answer is whichever
+    field holds the JSON.
     """
     for field in ("content", "thinking"):
         found = as_json(message.get(field) or "")
@@ -119,8 +113,8 @@ def answered(message: dict) -> list | None:
 def briefing(target: str, system: str | None = None) -> str:
     """What the model is told, with the language filled in.
 
-    Replaced rather than formatted: a prompt written by hand may well have
-    braces of its own in it, and str.format would choke on them.
+    Replaced rather than formatted: a hand-written prompt may have braces of its
+    own, and str.format would choke on them.
     """
     return (system or SYSTEM_DEFAULT).replace("{target}", target)
 
@@ -131,9 +125,8 @@ def request_for(
     return {
         "model": model,
         "stream": False,
-        # Thinking is turned off where the model allows it: on a page of twenty
-        # lines it is the difference between seconds and minutes, and none of
-        # its reasoning is wanted here.
+        # Thinking off where the model allows it: on a page of twenty lines it is
+        # the difference between seconds and minutes, and none of it is wanted.
         "think": False,
         "options": {"temperature": 0.2},
         "format": SCHEMA,
@@ -149,6 +142,16 @@ def request_for(
     }
 
 
+def one(text: str, model: str, target: str, host=None, system: str | None = None) -> str:
+    """One line on its own, for when a whole page came back miscounted."""
+    sent = ask("/api/chat", request_for([text], model, target, system), host=host)
+    message = sent["message"]
+    got = answered(message)
+    if got:
+        return str(got[0]).strip()
+    return (message.get("content") or "").strip()
+
+
 def translate(
     texts: list[str],
     model: str,
@@ -158,8 +161,8 @@ def translate(
 ) -> list[str]:
     """One translation per text, in the order they were given.
 
-    A text that is empty stays empty and is never sent: there is nothing to
-    translate, and a blank line only gives the model something to miscount.
+    An empty text stays empty and is never sent: there is nothing to translate,
+    and a blank line only gives the model something to miscount.
     """
     wanted = [(at, text) for at, text in enumerate(texts) if text.strip()]
     done = [""] * len(texts)
@@ -178,13 +181,3 @@ def translate(
     for (at, _), answer in zip(wanted, got):
         done[at] = str(answer).strip()
     return done
-
-
-def one(text: str, model: str, target: str, host=None, system: str | None = None) -> str:
-    """One line on its own, for when a whole page came back miscounted."""
-    sent = ask("/api/chat", request_for([text], model, target, system), host=host)
-    message = sent["message"]
-    got = answered(message)
-    if got:
-        return str(got[0]).strip()
-    return (message.get("content") or "").strip()

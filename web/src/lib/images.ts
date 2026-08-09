@@ -15,14 +15,18 @@ export function fingerprint(file: File) {
   return `${file.name}:${file.size}:${file.lastModified}`
 }
 
+/** A file name without its extension, to build a saved page's name from. */
+export function stem(name: string) {
+  return name.replace(/\.[^.]+$/, '')
+}
+
 export function isImage(file: File) {
   return file.type.startsWith('image/')
 }
 
 /**
- * Wrap a file in a gallery entry, resolving once the browser has decoded it far
- * enough to know its size. A file the browser cannot decode resolves to null and
- * its object URL is released.
+ * A file wrapped in a gallery entry, once the browser has decoded it far enough
+ * to know its size. One it cannot decode resolves to null, its URL released.
  */
 export function loadImage(file: File): Promise<GalleryImage | null> {
   const url = URL.createObjectURL(file)

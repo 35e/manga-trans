@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Analysis, Region } from '../lib/api'
 import { UNSURE } from '../lib/api'
 import { plural } from '../lib/images'
+import { CloseIcon, GripIcon, RestoreIcon } from './icons'
 import { Button, FOCUS } from './ui'
 
 type Props = {
@@ -186,14 +187,7 @@ function Block({
         aria-label={`Reorder block ${index + 1}`}
         className={`flex w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-line transition-colors hover:bg-raised hover:text-muted active:cursor-grabbing ${FOCUS}`}
       >
-        <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="size-3.5">
-          <circle cx="9" cy="6" r="1.6" />
-          <circle cx="15" cy="6" r="1.6" />
-          <circle cx="9" cy="12" r="1.6" />
-          <circle cx="15" cy="12" r="1.6" />
-          <circle cx="9" cy="18" r="1.6" />
-          <circle cx="15" cy="18" r="1.6" />
-        </svg>
+        <GripIcon />
       </button>
 
       <div className="relative min-w-0 flex-1">
@@ -270,22 +264,11 @@ function Block({
           }
           className={`absolute top-1.5 right-1.5 rounded-md p-1.5 text-faint transition-colors hover:bg-raised hover:text-ink ${FOCUS}`}
         >
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="size-3.5"
-          >
-            {excluded ? (
-              <path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4" />
-            ) : (
-              <path d="M6 6l12 12M18 6 6 18" />
-            )}
-          </svg>
+          {excluded ? (
+            <RestoreIcon className="size-3.5" />
+          ) : (
+            <CloseIcon className="size-3.5" />
+          )}
         </button>
       </div>
     </li>
