@@ -59,6 +59,10 @@ export const HYPHEN = '-'
  *
  * The hyphen is measured along with the piece it hangs off, or it would be the
  * thing that overruns the box.
+ *
+ * This is a last resort. `fitSize` sets the type small enough that words come
+ * out whole, and only gives up and lets one be broken when even the smallest
+ * type would leave it hanging out of its bubble.
  */
 function pieces(
   context: CanvasRenderingContext2D,
@@ -135,30 +139,55 @@ export function linesFor(text: string, width: number, size: number): string[] {
   return wrap(context, words, width)
 }
 
-/**
- * The largest size that fits `text` inside a box of `width` × `height`, in the
- * same pixels the box is measured in. Never smaller than SIZE_MIN: text too
- * long for its box is set small and left to overrun rather than dropped, which
- * is what the API does when it letters a page too.
- */
-export function fitSize(text: string, width: number, height: number): number {
-  const context = measurer()
-  const words = text.trim()
-  if (!context || !words || width <= 0 || height <= 0) return SIZE_MIN
+/** The widest single word, at whatever size the context is set to. */
+function widestWord(context: CanvasRenderingContext2D, text: string): number {
+  let widest = 0
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    widest = Math.max(widest, context.measureText(word).width)
+  }
+  return widest
+}
 
-  let best = SIZE_MIN
+/**
+ * Whether `text` lands inside the box when set at `size`.
+ *
+ * With `whole`, a size that would leave any word too wide for the box fails —
+ * that word is what a smaller size is needed for, and asking here is what stops
+ * the search settling on a size that only fits because words were broken up.
+ */
+function lands(
+  context: CanvasRenderingContext2D,
+  text: string,
+  width: number,
+  height: number,
+  size: number,
+  whole: boolean,
+): boolean {
+  context.font = fontFor(size)
+  if (whole && widestWord(context, text) > width) return false
+
+  const lines = wrap(context, text, width)
+  return (
+    lines.length * size * LINE_HEIGHT <= height &&
+    lines.every((line) => context.measureText(line).width <= width)
+  )
+}
+
+/** The largest size that lands, or null if not even the smallest does. */
+function largestThatLands(
+  context: CanvasRenderingContext2D,
+  text: string,
+  width: number,
+  height: number,
+  whole: boolean,
+): number | null {
+  let best: number | null = null
   let low = SIZE_MIN
   let high = Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.floor(height)))
 
   while (low <= high) {
     const size = Math.floor((low + high) / 2)
-    context.font = fontFor(size)
-    const lines = wrap(context, words, width)
-    const fits =
-      lines.length * size * LINE_HEIGHT <= height &&
-      lines.every((line) => context.measureText(line).width <= width)
-
-    if (fits) {
+    if (lands(context, text, width, height, size, whole)) {
       best = size
       low = size + 1
     } else {
@@ -166,4 +195,31 @@ export function fitSize(text: string, width: number, height: number): number {
     }
   }
   return best
+}
+
+/**
+ * The largest size that fits `text` inside a box of `width` × `height`, in the
+ * same pixels the box is measured in.
+ *
+ * Words are kept whole. A long word in a narrow bubble sets the size for the
+ * whole line — smaller type reads better than a word shattered down the middle
+ * of a balloon, and shattering it is what a greedy wrap does first if it is
+ * allowed to. Only when the smallest type still cannot hold the longest word is
+ * it broken across lines, since by then the choice is a hyphen or letters
+ * hanging outside the art.
+ *
+ * Never smaller than SIZE_MIN: text too long for its box is set small and left
+ * to overrun rather than dropped, which is what the API does when it letters a
+ * page too.
+ */
+export function fitSize(text: string, width: number, height: number): number {
+  const context = measurer()
+  const words = text.trim()
+  if (!context || !words || width <= 0 || height <= 0) return SIZE_MIN
+
+  return (
+    largestThatLands(context, words, width, height, true) ??
+    largestThatLands(context, words, width, height, false) ??
+    SIZE_MIN
+  )
 }
