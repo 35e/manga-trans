@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Analysis, Region } from '../lib/api'
 import { UNSURE } from '../lib/api'
 import { plural } from '../lib/images'
+import { Button, FOCUS } from './ui'
 
 type Props = {
   analysis: Analysis
@@ -68,13 +69,11 @@ export function RegionsPanel({
   }
 
   return (
-    <aside className="flex w-full shrink-0 flex-col border-slate-200 bg-white max-lg:h-72 max-lg:border-t lg:w-72 lg:border-l xl:w-96 dark:border-white/10 dark:bg-slate-950">
-      <div className="flex items-start justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-white/10">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-            Text
-          </h2>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+    <aside className="flex w-full shrink-0 flex-col border-line bg-surface max-lg:h-72 max-lg:border-t lg:w-72 lg:border-l xl:w-96">
+      <div className="flex shrink-0 items-start justify-between gap-2 border-b border-line px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-ink">Text</h2>
+          <p className="mt-0.5 text-xs text-faint">
             {regions.length === 0
               ? 'No lettering found on this page'
               : reading
@@ -85,21 +84,19 @@ export function RegionsPanel({
           </p>
         </div>
         {texts && texts.some((text) => text) && (
-          <CopyAll
-            texts={texts.filter((text, index) => text && !excluded.has(index))}
-          />
+          <CopyAll texts={texts.filter((text, index) => text && !excluded.has(index))} />
         )}
       </div>
 
       {regions.length === 0 ? (
-        <p className="px-4 py-6 text-sm text-slate-500 dark:text-slate-400">
+        <p className="px-4 py-6 text-sm text-faint">
           The detector saw no lettering here.
         </p>
       ) : (
         <>
-          <p className="shrink-0 border-b border-slate-200 px-4 py-1.5 text-[11px] text-slate-400 dark:border-white/10 dark:text-slate-500">
-            This is the order the page is translated in. Drag one by its handle
-            to move it.
+          <p className="shrink-0 border-b border-line px-4 py-1.5 text-[11px] text-faint">
+            This is the order the page is translated in. Drag one by its handle to
+            move it.
           </p>
 
           <DndContext
@@ -112,10 +109,7 @@ export function RegionsPanel({
               items={regions.map((region) => region.id)}
               strategy={verticalListSortingStrategy}
             >
-              <ul
-                ref={list}
-                className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3"
-              >
+              <ul ref={list} className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3">
                 {regions.map((region, index) => (
                   <Block
                     key={region.id}
@@ -190,14 +184,9 @@ function Block({
         {...listeners}
         title="Drag to reorder"
         aria-label={`Reorder block ${index + 1}`}
-        className="flex w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-slate-300 transition-colors hover:bg-slate-100 hover:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 active:cursor-grabbing dark:text-slate-600 dark:hover:bg-white/10 dark:hover:text-slate-300"
+        className={`flex w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-line transition-colors hover:bg-raised hover:text-muted active:cursor-grabbing ${FOCUS}`}
       >
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          className="size-3.5"
-        >
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="size-3.5">
           <circle cx="9" cy="6" r="1.6" />
           <circle cx="15" cy="6" r="1.6" />
           <circle cx="9" cy="12" r="1.6" />
@@ -212,34 +201,30 @@ function Block({
           type="button"
           onClick={onSelect}
           aria-pressed={active}
-          className={`w-full rounded-lg border py-2 pr-9 pl-2.5 text-left transition-colors ${
+          className={`w-full rounded-lg border py-2 pr-9 pl-2.5 text-left transition-colors ${FOCUS} ${
             excluded
-              ? 'border-dashed border-slate-300 bg-slate-50 dark:border-white/15 dark:bg-white/5'
+              ? 'border-dashed border-line bg-canvas'
               : active
-                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10'
-                : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 dark:border-white/10 dark:hover:border-white/20 dark:hover:bg-white/5'
+                ? 'border-accent bg-accent/10'
+                : 'border-line hover:border-faint hover:bg-raised'
           }`}
         >
           <div className="flex items-baseline gap-2">
-            <span className="text-xs font-semibold text-slate-400 tabular-nums dark:text-slate-500">
+            <span className="text-xs font-semibold text-faint tabular-nums">
               {index + 1}
             </span>
 
             {text === null ? (
-              <span className="text-sm text-slate-400 italic dark:text-slate-500">
+              <span className="text-sm text-faint italic">
                 {reading ? 'reading…' : 'not read'}
               </span>
             ) : text === '' ? (
-              <span className="text-sm text-slate-400 italic dark:text-slate-500">
-                nothing read here
-              </span>
+              <span className="text-sm text-faint italic">nothing read here</span>
             ) : (
               <p
                 lang="ja"
                 className={`min-w-0 flex-1 text-sm leading-relaxed select-text ${
-                  excluded
-                    ? 'text-slate-400 line-through dark:text-slate-500'
-                    : 'text-slate-900 dark:text-white'
+                  excluded ? 'text-faint line-through' : 'text-ink'
                 }`}
               >
                 {text}
@@ -247,28 +232,24 @@ function Block({
             )}
           </div>
 
-          <p className="mt-1 text-[11px] text-slate-400 tabular-nums dark:text-slate-500">
+          <p className="mt-1 text-[11px] text-faint tabular-nums">
             {excluded ? (
               <>
-                <span className="font-medium text-slate-500 dark:text-slate-400">
-                  left alone
-                </span>
+                <span className="font-medium text-muted">left alone</span>
                 {/* Still says how sure the detector was: that is usually the
                     reason it is being left alone, and the reason to put it
                     back. */}
                 {!region.manual && (
-                  <span className={unsure ? ' text-amber-600 dark:text-amber-400' : ''}>
+                  <span className={unsure ? 'text-warn' : ''}>
                     {' · '}
                     {Math.round(region.confidence * 100)}%
                   </span>
                 )}
               </>
             ) : region.manual ? (
-              <span className="font-medium text-indigo-600 dark:text-indigo-400">
-                added by hand
-              </span>
+              <span className="font-medium text-accent-lit">added by hand</span>
             ) : (
-              <span className={unsure ? 'text-amber-600 dark:text-amber-400' : ''}>
+              <span className={unsure ? 'text-warn' : ''}>
                 {Math.round(region.confidence * 100)}%
               </span>
             )}{' '}
@@ -280,16 +261,14 @@ function Block({
           type="button"
           onClick={onToggleExcluded}
           title={
-            excluded
-              ? 'Clean this block after all'
-              : 'Leave this block alone: do not clean it'
+            excluded ? 'Clean this block after all' : 'Leave this block alone: do not clean it'
           }
           aria-label={
             excluded
               ? `Clean block ${index + 1} after all`
               : `Leave block ${index + 1} alone`
           }
-          className="absolute top-1.5 right-1.5 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:hover:bg-white/10 dark:hover:text-white"
+          className={`absolute top-1.5 right-1.5 rounded-md p-1.5 text-faint transition-colors hover:bg-raised hover:text-ink ${FOCUS}`}
         >
           <svg
             aria-hidden="true"
@@ -324,17 +303,15 @@ function CopyAll({ texts }: { texts: string[] }) {
   }, [copied])
 
   return (
-    <button
-      type="button"
+    <Button
       onClick={() => {
         navigator.clipboard.writeText(texts.join('\n')).then(
           () => setCopied(true),
           () => setCopied(false),
         )
       }}
-      className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/5"
     >
       {copied ? 'Copied' : 'Copy all'}
-    </button>
+    </Button>
   )
 }

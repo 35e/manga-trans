@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import type { BoardView } from '../hooks/useBoardView'
+import { useBoardView } from '../hooks/useBoardView'
 import { useBoxDrag } from '../hooks/useBoxDrag'
 import type {
   Analysis,
@@ -17,6 +19,7 @@ import { MaskTools } from './MaskTools'
 import { Steps } from './Steps'
 import { TranslateTools } from './TranslateTools'
 import { TranslationLayer } from './TranslationLayer'
+import { Button, Divider, Hint, IconButton, Segmented, Spinner, Toggle, Toolbar } from './ui'
 
 /** Everything the translate tab needs, kept together rather than spread out. */
 export type Translating = {
@@ -104,7 +107,7 @@ export function Board({
   const cursor = useRef<HTMLDivElement>(null)
   const drawing = useRef<Point | null>(null)
 
-  const page = useFittedPage(surface, image)
+  const view = useBoardView(surface, image)
   const [brush, setBrush] = useState<Brush>({ radius: 16, erase: false })
   const [showBoxes, setShowBoxes] = useState(true)
   const [adding, setAdding] = useState(false)
@@ -135,7 +138,7 @@ export function Board({
   // block being dropped from the list, which erases its box from the mask.
   useEffect(() => {
     if (overlay.current && mask) mask.showOn(overlay.current)
-  }, [mask, page, edits, masking, analysis])
+  }, [mask, view.page, edits, masking, analysis])
 
   // These are read through refs rather than depended on: dropping a block from
   // a mask that was deliberately cleared out should not seed the whole page
@@ -188,8 +191,7 @@ export function Board({
     if (selected === null) return
 
     const onKey = (event: KeyboardEvent) => {
-      const typing = event.target as HTMLElement | null
-      if (typing && ['INPUT', 'TEXTAREA', 'SELECT'].includes(typing.tagName)) return
+      if (typingInto(event.target)) return
 
       if (mode === 'translate') {
         const sizing = event.key === 'ArrowUp' || event.key === 'ArrowDown'
@@ -218,6 +220,34 @@ export function Board({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [selected, mode, onToggleExcluded, nudge, turn])
+
+  // The zoom, from the keyboard: the same keys every viewer uses.
+  const { zoomIn, zoomOut, fit, actual } = view
+
+  useEffect(() => {
+    if (!image) return
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      if (typingInto(event.target)) return
+
+      const zooming: Record<string, () => void> = {
+        '+': zoomIn,
+        '=': zoomIn,
+        '-': zoomOut,
+        _: zoomOut,
+        0: fit,
+        1: actual,
+      }
+      const go = zooming[event.key]
+      if (!go) return
+      event.preventDefault()
+      go()
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [image, zoomIn, zoomOut, fit, actual])
 
   const at = (event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -253,18 +283,16 @@ export function Board({
   ]
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-4 py-2.5 dark:border-white/10 dark:bg-slate-950">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2.5">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-slate-900 dark:text-white">
-            {image ? image.name : 'No page on the board'}
+          <p className="truncate text-sm font-medium text-ink">
+            {image ? image.name : 'Nothing on the board'}
           </p>
-          <p className="text-xs text-slate-500 tabular-nums dark:text-slate-400">
+          <p className="text-xs text-faint tabular-nums">
             {image
-              ? `${image.width} × ${image.height}${
-                  page ? ` · ${Math.round(page.scale * 100)}%` : ''
-                }`
-              : 'Pick one from the gallery'}
+              ? `${image.width} × ${image.height}`
+              : 'Pick a page from the gallery'}
           </p>
         </div>
 
@@ -275,27 +303,21 @@ export function Board({
             steps={[
               { id: 'inspect', label: 'Text', done: read, open: true },
               { id: 'mask', label: 'Clean', done: Boolean(cleaned), open: read },
-              {
-                id: 'translate',
-                label: 'Translate',
-                done: lettered,
-                open: read,
-              },
+              { id: 'translate', label: 'Translate', done: lettered, open: read },
             ]}
           />
         )}
 
         {image && (
           <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
+            <Button
               onClick={onRunAll}
               disabled={busy}
+              size="md"
               title="Detect the text, hide it, and letter the page"
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
             >
               Do all three
-            </button>
+            </Button>
 
             {mode === 'inspect' && (
               <Action onClick={onDetect} disabled={busy} stage={stage}>
@@ -326,9 +348,7 @@ export function Board({
                 }
                 stage={stage}
                 title={
-                  lettered
-                    ? 'Set the lettering into the page and save it'
-                    : undefined
+                  lettered ? 'Set the lettering into the page and save it' : undefined
                 }
               >
                 {translating.applying
@@ -340,39 +360,27 @@ export function Board({
             )}
           </div>
         )}
-      </div>
+      </header>
 
       {mode === 'inspect' && detection && (
-        <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 dark:border-white/10 dark:bg-white/5">
-          <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-600 select-none dark:text-slate-300">
-            <input
-              type="checkbox"
-              checked={showBoxes}
-              onChange={(event) => setShowBoxes(event.target.checked)}
-              className="size-3.5 accent-indigo-600"
-            />
-            Show the boxes
-          </label>
-          <button
-            type="button"
-            onClick={() => setAdding((armed) => !armed)}
-            aria-pressed={adding}
+        <Toolbar>
+          <Toggle on={showBoxes} onChange={setShowBoxes} title="Show the blocks the detector found">
+            Boxes
+          </Toggle>
+          <Toggle
+            on={adding}
+            onChange={setAdding}
             title="Draw a block the detector missed"
-            className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-              adding
-                ? 'border-indigo-600 bg-indigo-600 text-white'
-                : 'border-slate-300 text-slate-700 hover:bg-white dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10'
-            }`}
           >
             {adding ? 'Drawing a block…' : 'Add a block'}
-          </button>
-
-          <span className="text-xs text-slate-500 dark:text-slate-400">
+          </Toggle>
+          <Divider />
+          <Hint>
             {adding
               ? 'Drag across the bubble it missed. It is read and put in reading order.'
-              : 'Click one to pick it out, drag it to move, pull an edge to resize; delete drops it from the clean.'}
-          </span>
-        </div>
+              : 'Click a block to pick it out, drag to move, pull an edge to resize; delete drops it from the clean.'}
+          </Hint>
+        </Toolbar>
       )}
 
       {masking && (
@@ -393,9 +401,7 @@ export function Board({
               setEdits((count) => count + 1)
             })()
           }}
-          canMark={Boolean(
-            mask && detection && toClean(detection.regions).length > 0,
-          )}
+          canMark={Boolean(mask && detection && toClean(detection.regions).length > 0)}
           tracing={stage === 'tracing'}
           onClear={() => {
             if (!mask) return
@@ -427,197 +433,335 @@ export function Board({
         />
       )}
 
-      {cleaned && (
-        <div className="flex flex-wrap items-center gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
-          <span className="font-medium">The page has been cleaned.</span>
-          <div className="flex rounded-lg border border-emerald-300 p-0.5 dark:border-emerald-500/40">
-            <Segment
-              label="Original"
-              active={!showCleaned}
-              onClick={() => onShowCleaned(false)}
-            />
-            <Segment
-              label="Cleaned"
-              active={showCleaned}
-              onClick={() => onShowCleaned(true)}
-            />
-          </div>
-          <a
-            href={cleaned}
-            download={`${image?.name.replace(/\.[^.]+$/, '') ?? 'page'}-clean.png`}
-            className="ml-auto rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
-          >
-            Download
-          </a>
-        </div>
-      )}
-
       {error && (
         <p
           role="alert"
-          className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300"
+          className="shrink-0 border-b border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger"
         >
           {error}
         </p>
       )}
 
-      <div
-        ref={surface}
-        onPointerDown={(event) => {
-          // Anywhere on the board that is not a box puts down whichever box is
-          // held: picking one out is only ever meant to last as long as it is
-          // being worked on.
-          if (selected === null) return
-          if (!(event.target as Element).closest('[data-box]')) onSelect(null)
-        }}
-        className="board relative min-h-0 flex-1 overflow-hidden bg-slate-100 p-6 dark:bg-slate-900"
-      >
-        {image && page && (
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={surface}
+          onPointerDown={(event) => {
+            // Anywhere on the board that is not a box puts down whichever box is
+            // held: picking one out is only ever meant to last as long as it is
+            // being worked on.
+            if (selected === null) return
+            if (!(event.target as Element).closest('[data-box]')) onSelect(null)
+          }}
+          className={`absolute inset-0 overflow-auto overscroll-contain ${
+            view.panning ? 'cursor-grabbing' : ''
+          }`}
+        >
           <div
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 shadow-2xl ring-1 ring-black/10 dark:ring-white/10"
-            style={{ width: page.width, height: page.height }}
+            className="board-mat relative"
+            style={
+              {
+                width: view.content.width,
+                height: view.content.height,
+                '--mat-grid': `${view.grid}px`,
+              } as React.CSSProperties
+            }
           >
-            <img
-              src={showCleaned && cleaned ? cleaned : image.url}
-              alt={image.name}
-              className="block h-full w-full select-none"
-              draggable={false}
-            />
-
-            {!showCleaned &&
-              showBoxes &&
-              mode === 'inspect' &&
-              detection?.regions.map((region, index) => (
-                <RegionBox
-                  key={region.id}
-                  region={region}
-                  index={index}
-                  page={detection}
-                  scale={page.scale}
-                  text={analysis?.texts?.[index] ?? null}
-                  excluded={excluded.has(index)}
-                  active={selected === index}
-                  onSelect={() => onSelect(selected === index ? null : index)}
-                  onBox={(box) => onRegionBox(index, box)}
-                  onSettled={(was) => onRegionSettled(index, was)}
-                />
-              ))}
-
-            {mode === 'inspect' && adding && (
-              // Over the blocks, not under them: while a block is being drawn
-              // the whole page is the drawing surface.
+            {image && view.page && (
               <div
-                className="absolute inset-0 z-30 cursor-crosshair touch-none"
-                onPointerDown={(event) => {
-                  event.currentTarget.setPointerCapture(event.pointerId)
-                  const rect = event.currentTarget.getBoundingClientRect()
-                  drawnFrom.current = {
-                    x: ((event.clientX - rect.left) / rect.width) * image.width,
-                    y: ((event.clientY - rect.top) / rect.height) * image.height,
-                  }
-                }}
-                onPointerMove={(event) => {
-                  const from = drawnFrom.current
-                  if (!from) return
-                  const rect = event.currentTarget.getBoundingClientRect()
-                  setDrawn(
-                    between(from, {
-                      x: ((event.clientX - rect.left) / rect.width) * image.width,
-                      y: ((event.clientY - rect.top) / rect.height) * image.height,
-                    }),
-                  )
-                }}
-                onPointerUp={(event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId)
-                  }
-                  drawnFrom.current = null
-                  // A stray click is not a block: it takes a real drag.
-                  if (drawn && drawn[2] - drawn[0] > 6 && drawn[3] - drawn[1] > 6) {
-                    onAddRegion(drawn)
-                  }
-                  setDrawn(null)
+                className="absolute ring-1 ring-white/10 shadow-[0_8px_40px_rgb(0_0_0/0.55)]"
+                style={{
+                  left: view.origin.x,
+                  top: view.origin.y,
+                  width: view.page.width,
+                  height: view.page.height,
                 }}
               >
-                {drawn && (
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      left: `${(drawn[0] / image.width) * 100}%`,
-                      top: `${(drawn[1] / image.height) * 100}%`,
-                      width: `${((drawn[2] - drawn[0]) / image.width) * 100}%`,
-                      height: `${((drawn[3] - drawn[1]) / image.height) * 100}%`,
+                <img
+                  src={showCleaned && cleaned ? cleaned : image.url}
+                  alt={image.name}
+                  className="block h-full w-full select-none"
+                  style={{ imageRendering: view.crisp ? 'pixelated' : undefined }}
+                  draggable={false}
+                />
+
+                {!showCleaned &&
+                  showBoxes &&
+                  mode === 'inspect' &&
+                  detection?.regions.map((region, index) => (
+                    <RegionBox
+                      key={region.id}
+                      region={region}
+                      index={index}
+                      page={detection}
+                      scale={view.scale}
+                      text={analysis?.texts?.[index] ?? null}
+                      excluded={excluded.has(index)}
+                      active={selected === index}
+                      onSelect={() => onSelect(selected === index ? null : index)}
+                      onBox={(box) => onRegionBox(index, box)}
+                      onSettled={(was) => onRegionSettled(index, was)}
+                    />
+                  ))}
+
+                {mode === 'inspect' && adding && (
+                  // Over the blocks, not under them: while a block is being drawn
+                  // the whole page is the drawing surface.
+                  <div
+                    className="absolute inset-0 z-30 cursor-crosshair touch-none"
+                    onPointerDown={(event) => {
+                      event.currentTarget.setPointerCapture(event.pointerId)
+                      const rect = event.currentTarget.getBoundingClientRect()
+                      drawnFrom.current = {
+                        x: ((event.clientX - rect.left) / rect.width) * image.width,
+                        y: ((event.clientY - rect.top) / rect.height) * image.height,
+                      }
                     }}
-                    className="absolute border-2 border-dashed border-indigo-500 bg-indigo-500/20"
+                    onPointerMove={(event) => {
+                      const from = drawnFrom.current
+                      if (!from) return
+                      const rect = event.currentTarget.getBoundingClientRect()
+                      setDrawn(
+                        between(from, {
+                          x: ((event.clientX - rect.left) / rect.width) * image.width,
+                          y: ((event.clientY - rect.top) / rect.height) * image.height,
+                        }),
+                      )
+                    }}
+                    onPointerUp={(event) => {
+                      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                        event.currentTarget.releasePointerCapture(event.pointerId)
+                      }
+                      drawnFrom.current = null
+                      // A stray click is not a block: it takes a real drag.
+                      if (drawn && drawn[2] - drawn[0] > 6 && drawn[3] - drawn[1] > 6) {
+                        onAddRegion(drawn)
+                      }
+                      setDrawn(null)
+                    }}
+                  >
+                    {drawn && (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          left: `${(drawn[0] / image.width) * 100}%`,
+                          top: `${(drawn[1] / image.height) * 100}%`,
+                          width: `${((drawn[2] - drawn[0]) / image.width) * 100}%`,
+                          height: `${((drawn[3] - drawn[1]) / image.height) * 100}%`,
+                        }}
+                        className="absolute border-2 border-dashed border-accent bg-accent/20"
+                      />
+                    )}
+                  </div>
+                )}
+
+                {mode === 'translate' && (
+                  <TranslationLayer
+                    page={{ width: image.width, height: image.height }}
+                    scale={view.scale}
+                    lettering={translating.lettering}
+                    selected={selected}
+                    onSelect={onSelect}
+                    onBox={translating.onBox}
+                    onTurn={translating.onTurn}
+                  />
+                )}
+
+                {mode === 'mask' && !showCleaned && (
+                  <canvas
+                    ref={overlay}
+                    width={image.width}
+                    height={image.height}
+                    className={`absolute inset-0 h-full w-full ${
+                      !masking
+                        ? 'pointer-events-none'
+                        : // While the board is being dragged about, the hand
+                          // belongs to the pan, not to the brush.
+                          view.panning
+                          ? 'touch-none'
+                          : 'cursor-none touch-none'
+                    }`}
+                    onPointerDown={(event) => {
+                      if (!masking || !mask) return
+                      event.currentTarget.setPointerCapture(event.pointerId)
+                      const point = at(event)
+                      drawing.current = point
+                      mask.dot(point, brush)
+                      repaint()
+                    }}
+                    onPointerMove={(event) => {
+                      if (!masking) return
+                      moveDot(event)
+                      if (!drawing.current || !mask) return
+                      const point = at(event)
+                      mask.stroke(drawing.current, point, brush)
+                      drawing.current = point
+                      repaint()
+                    }}
+                    onPointerUp={(event) => {
+                      if (!drawing.current) return
+                      drawing.current = null
+                      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                        event.currentTarget.releasePointerCapture(event.pointerId)
+                      }
+                      setEdits((count) => count + 1)
+                    }}
+                    onPointerLeave={() => {
+                      if (cursor.current) cursor.current.style.opacity = '0'
+                    }}
+                  />
+                )}
+
+                {masking && (
+                  <div
+                    ref={cursor}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-0 left-0 rounded-full border-2 border-white opacity-0 ring-1 ring-black/70"
                   />
                 )}
               </div>
             )}
-
-            {mode === 'translate' && (
-              <TranslationLayer
-                page={{ width: image.width, height: image.height }}
-                scale={page.scale}
-                lettering={translating.lettering}
-                selected={selected}
-                onSelect={onSelect}
-                onBox={translating.onBox}
-                onTurn={translating.onTurn}
-              />
-            )}
-
-            {mode === 'mask' && !showCleaned && (
-              <canvas
-                ref={overlay}
-                width={image.width}
-                height={image.height}
-                className={`absolute inset-0 h-full w-full ${
-                  masking ? 'cursor-none touch-none' : 'pointer-events-none'
-                }`}
-                onPointerDown={(event) => {
-                  if (!masking || !mask) return
-                  event.currentTarget.setPointerCapture(event.pointerId)
-                  const point = at(event)
-                  drawing.current = point
-                  mask.dot(point, brush)
-                  repaint()
-                }}
-                onPointerMove={(event) => {
-                  if (!masking) return
-                  moveDot(event)
-                  if (!drawing.current || !mask) return
-                  const point = at(event)
-                  mask.stroke(drawing.current, point, brush)
-                  drawing.current = point
-                  repaint()
-                }}
-                onPointerUp={(event) => {
-                  if (!drawing.current) return
-                  drawing.current = null
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId)
-                  }
-                  setEdits((count) => count + 1)
-                }}
-                onPointerLeave={() => {
-                  if (cursor.current) cursor.current.style.opacity = '0'
-                }}
-              />
-            )}
-
-            {masking && (
-              <div
-                ref={cursor}
-                aria-hidden="true"
-                className="pointer-events-none absolute top-0 left-0 rounded-full border-2 border-white opacity-0 ring-1 ring-slate-900/70"
-              />
-            )}
           </div>
-        )}
+        </div>
 
         {!image && <BoardEmpty />}
+
+        {image && (
+          <ViewBar
+            view={view}
+            cleaned={cleaned}
+            name={image.name}
+            showCleaned={showCleaned}
+            onShowCleaned={onShowCleaned}
+          />
+        )}
       </div>
     </section>
+  )
+}
+
+/** Whether a key was pressed into something being typed in. */
+function typingInto(target: EventTarget | null) {
+  const element = target as HTMLElement | null
+  return Boolean(
+    element &&
+      (element.isContentEditable ||
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)),
+  )
+}
+
+/**
+ * The one bar that sits on the page rather than above it: which version is
+ * being looked at, and how closely.
+ *
+ * The original and the cleaned page belong here and not in a banner of their
+ * own — comparing them is looking, not a step, and it is done by the same hand
+ * that is zooming in to see whether the clean held up.
+ */
+function ViewBar({
+  view,
+  cleaned,
+  name,
+  showCleaned,
+  onShowCleaned,
+}: {
+  view: BoardView
+  cleaned: string | null
+  name: string
+  showCleaned: boolean
+  onShowCleaned: (showing: boolean) => void
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">
+      <div className="pointer-events-auto flex max-w-full items-center gap-1.5 overflow-x-auto rounded-xl border border-line bg-surface/85 p-1.5 shadow-lg backdrop-blur">
+        {cleaned && (
+          <>
+            <Segmented
+              label="Which version of the page to show"
+              value={showCleaned ? 'cleaned' : 'original'}
+              onChange={(which) => onShowCleaned(which === 'cleaned')}
+              options={[
+                { value: 'original', label: 'Original', title: 'The page as it came in' },
+                { value: 'cleaned', label: 'Cleaned', title: 'The page with the lettering hidden' },
+              ]}
+            />
+            <a
+              href={cleaned}
+              download={`${name.replace(/\.[^.]+$/, '')}-clean.png`}
+              title="Download the cleaned page"
+              aria-label="Download the cleaned page"
+              className="inline-grid size-7 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="size-4"
+              >
+                <path d="M12 4v11m0 0 4-4m-4 4-4-4" />
+                <path d="M5 19h14" />
+              </svg>
+            </a>
+            <Divider />
+          </>
+        )}
+
+        <IconButton label="Zoom out" title="Zoom out (−)" onClick={view.zoomOut}>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            className="size-4"
+          >
+            <path d="M6 12h12" />
+          </svg>
+        </IconButton>
+
+        <span
+          title="Hold ctrl and scroll to zoom. Middle-drag or hold space to move about."
+          className="w-14 shrink-0 text-center text-xs font-medium text-muted tabular-nums"
+        >
+          {Math.round(view.scale * 100)}%
+        </span>
+
+        <IconButton label="Zoom in" title="Zoom in (+)" onClick={view.zoomIn}>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            className="size-4"
+          >
+            <path d="M12 6v12M6 12h12" />
+          </svg>
+        </IconButton>
+
+        <Divider />
+
+        <Button
+          onClick={view.fit}
+          disabled={view.fitted}
+          title="Fit the whole page on the board (0)"
+        >
+          Fit
+        </Button>
+        <Button
+          onClick={view.actual}
+          disabled={view.scale === 1}
+          title="Show the page at its own size, pixel for pixel (1)"
+        >
+          1:1
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -645,12 +789,12 @@ function Action({
   children: React.ReactNode
 }) {
   return (
-    <button
-      type="button"
+    <Button
+      variant="primary"
+      size="md"
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {stage ? (
         <>
@@ -660,58 +804,7 @@ function Action({
       ) : (
         children
       )}
-    </button>
-  )
-}
-
-function Segment({
-  label,
-  active,
-  onClick,
-}: {
-  label: string
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-        active
-          ? 'bg-indigo-600 text-white'
-          : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10'
-      }`}
-    >
-      {label}
-    </button>
-  )
-}
-
-function Spinner() {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 24 24"
-      className="size-4 animate-spin"
-      fill="none"
-    >
-      <circle
-        cx="12"
-        cy="12"
-        r="9"
-        stroke="currentColor"
-        strokeOpacity="0.3"
-        strokeWidth="3"
-      />
-      <path
-        d="M21 12a9 9 0 0 0-9-9"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
-    </svg>
+    </Button>
   )
 }
 
@@ -785,23 +878,23 @@ function RegionBox({
         aria-pressed={active}
         className={`h-full w-full cursor-move touch-none border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
           excluded
-            ? 'border-dashed border-slate-400/60 hover:border-slate-400'
+            ? 'border-dashed border-faint/60 hover:border-faint'
             : active
-              ? 'border-indigo-500 bg-indigo-500/8'
+              ? 'border-accent bg-accent/10'
               : unsure
-                ? 'border-amber-500/60 hover:border-amber-500 hover:bg-amber-500/8'
-                : 'border-indigo-500/40 hover:border-indigo-500 hover:bg-indigo-500/8'
+                ? 'border-warn/60 hover:border-warn hover:bg-warn/10'
+                : 'border-accent/40 hover:border-accent hover:bg-accent/10'
         }`}
       >
         <span
           className={`absolute -top-px -left-px rounded-br px-1 text-[9px] leading-4 font-medium text-white tabular-nums transition-colors ${
             excluded
-              ? 'bg-slate-500/70 line-through'
+              ? 'bg-faint/70 line-through'
               : active
-                ? 'bg-indigo-500'
+                ? 'bg-accent'
                 : unsure
-                  ? 'bg-amber-500/80'
-                  : 'bg-indigo-500/60'
+                  ? 'bg-warn/80'
+                  : 'bg-accent/60'
           }`}
         >
           {index + 1}
@@ -815,7 +908,7 @@ function RegionBox({
 
 function BoardEmpty() {
   return (
-    <div className="pointer-events-none flex h-full items-center justify-center">
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
       <div className="text-center">
         <svg
           aria-hidden="true"
@@ -824,61 +917,18 @@ function BoardEmpty() {
           stroke="currentColor"
           strokeWidth="1.5"
           strokeLinejoin="round"
-          className="mx-auto size-12 text-slate-300 dark:text-slate-700"
+          className="mx-auto size-12 text-line"
         >
           <rect x="4" y="3" width="16" height="18" rx="2" />
           <path d="M8 8h5M8 12h8M8 16h6" />
         </svg>
-        <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-300">
+        <p className="mt-4 text-sm font-medium text-muted">
           Click a page in the gallery to put it on the board
         </p>
-        <p className="mt-1 text-sm text-slate-400 dark:text-slate-500">
+        <p className="mt-1 text-sm text-faint">
           Then: find the text, hide it, letter it back in.
         </p>
       </div>
     </div>
   )
-}
-
-type FittedPage = { width: number; height: number; scale: number }
-
-/**
- * The size the page is drawn at: as large as the board allows without cropping
- * it or blowing it up past its own pixels. Measured rather than left to
- * `object-contain`, because the boxes and the mask are laid over this exact
- * rect.
- */
-function useFittedPage(
-  surface: React.RefObject<HTMLDivElement | null>,
-  image: GalleryImage | null,
-): FittedPage | null {
-  const [page, setPage] = useState<FittedPage | null>(null)
-  const width = image?.width
-  const height = image?.height
-
-  useEffect(() => {
-    const element = surface.current
-    if (!element || !width || !height) {
-      setPage(null)
-      return
-    }
-
-    const fit = (available: { width: number; height: number }) => {
-      if (available.width === 0 || available.height === 0) return
-      const scale = Math.min(
-        available.width / width,
-        available.height / height,
-        1,
-      )
-      setPage({ width: width * scale, height: height * scale, scale })
-    }
-
-    // ResizeObserver reports the box once on observe, so there is no separate
-    // first measurement — and none taken a different way, past the padding.
-    const observer = new ResizeObserver(([entry]) => fit(entry.contentRect))
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [surface, width, height])
-
-  return page
 }

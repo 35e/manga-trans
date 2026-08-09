@@ -1,4 +1,5 @@
 import type { BoardMode } from '../lib/api'
+import { FOCUS } from './ui'
 
 export type Step = {
   id: BoardMode
@@ -25,39 +26,28 @@ type Props = {
  */
 export function Steps({ steps, current, onPick }: Props) {
   return (
-    <ol className="flex shrink-0 items-center">
+    <ol className="flex shrink-0 items-center gap-0.5 rounded-lg border border-line bg-canvas p-0.5">
       {steps.map((step, at) => (
         <li key={step.id} className="flex items-center">
-          {at > 0 && (
-            <span
-              aria-hidden="true"
-              className={`mx-1 h-px w-4 ${
-                steps[at - 1].done
-                  ? 'bg-indigo-400'
-                  : 'bg-slate-300 dark:bg-white/15'
-              }`}
-            />
-          )}
-
           <button
             type="button"
             onClick={() => onPick(step.id)}
             aria-current={current === step.id ? 'step' : undefined}
-            className={`flex items-center gap-1.5 rounded-lg py-1 pr-2.5 pl-1 text-xs font-medium transition-colors ${
+            className={`flex items-center gap-1.5 rounded-md py-1 pr-2.5 pl-1.5 text-xs font-medium whitespace-nowrap transition-colors ${FOCUS} ${
               current === step.id
-                ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300'
+                ? 'bg-raised text-ink'
                 : step.open
-                  ? 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10'
-                  : 'text-slate-400 hover:bg-slate-100 dark:text-slate-500 dark:hover:bg-white/10'
+                  ? 'text-muted hover:bg-raised/60 hover:text-ink'
+                  : 'text-faint hover:bg-raised/60'
             }`}
           >
             <span
-              className={`flex size-5 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums ${
+              className={`grid size-4 place-items-center rounded-full text-[10px] font-semibold tabular-nums ${
                 step.done
-                  ? 'bg-indigo-600 text-white'
+                  ? 'bg-accent text-white'
                   : current === step.id
-                    ? 'bg-indigo-600/15 text-indigo-700 ring-1 ring-indigo-500 dark:text-indigo-300'
-                    : 'bg-slate-200 text-slate-500 dark:bg-white/10 dark:text-slate-400'
+                    ? 'text-accent-lit ring-1 ring-accent'
+                    : 'text-faint ring-1 ring-line'
               }`}
             >
               {step.done ? (
@@ -69,7 +59,7 @@ export function Steps({ steps, current, onPick }: Props) {
                   strokeWidth="3.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="size-3"
+                  className="size-2.5"
                 >
                   <path d="m5 13 5 5L20 7" />
                 </svg>

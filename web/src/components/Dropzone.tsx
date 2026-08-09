@@ -14,10 +14,10 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
       type="button"
       onClick={() => input.current?.click()}
       disabled={busy}
-      className={`w-full rounded-xl border-2 border-dashed px-3 py-4 text-center transition-colors ${
+      className={`flex w-full items-center gap-3 rounded-xl border border-dashed px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60 ${
         dragging
-          ? 'border-indigo-500 bg-indigo-50 dark:border-indigo-400 dark:bg-indigo-500/10'
-          : 'border-slate-300 hover:border-slate-400 hover:bg-slate-50 dark:border-white/15 dark:hover:border-white/25 dark:hover:bg-white/5'
+          ? 'border-accent bg-accent/10'
+          : 'border-line hover:border-faint hover:bg-raised'
       }`}
     >
       <input
@@ -41,21 +41,21 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
-        className={`mx-auto size-6 transition-colors ${
-          dragging
-            ? 'text-indigo-500 dark:text-indigo-400'
-            : 'text-slate-400 dark:text-slate-500'
+        className={`size-5 shrink-0 transition-colors ${
+          dragging ? 'text-accent-lit' : 'text-faint'
         }`}
       >
         <path d="M12 16V4m0 0L8 8m4-4 4 4" />
         <path d="M3 15v3a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-3" />
       </svg>
 
-      <span className="mt-2 block text-xs font-medium text-slate-900 dark:text-white">
-        {busy ? 'Reading…' : dragging ? 'Drop to add' : 'Drop pages or browse'}
-      </span>
-      <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
-        a zip of them works too, and so does pasting
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-medium text-ink">
+          {busy ? 'Reading…' : dragging ? 'Drop to add' : 'Drop pages or browse'}
+        </span>
+        <span className="block truncate text-[11px] text-faint">
+          a zip works too, and so does pasting
+        </span>
       </span>
     </button>
   )

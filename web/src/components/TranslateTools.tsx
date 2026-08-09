@@ -1,3 +1,5 @@
+import { Button, Field, Note, Select, TextInput, Toolbar } from './ui'
+
 type Props = {
   models: string[]
   model: string
@@ -30,14 +32,12 @@ export function TranslateTools({
   note,
 }: Props) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-slate-50 px-4 py-2 dark:border-white/10 dark:bg-white/5">
-      <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
-        Model
-        <select
+    <Toolbar>
+      <Field label="Model">
+        <Select
           value={model}
           onChange={(event) => onModel(event.target.value)}
           disabled={models.length === 0}
-          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 disabled:opacity-40 dark:border-white/15 dark:bg-slate-900 dark:text-white"
         >
           {models.length === 0 && <option value="">none found</option>}
           {models.map((name) => (
@@ -45,45 +45,38 @@ export function TranslateTools({
               {name}
             </option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Field>
 
-      <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
-        Into
-        <input
+      <Field label="Into">
+        <TextInput
           value={target}
           onChange={(event) => onTarget(event.target.value)}
           spellCheck={false}
-          className="w-28 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-white/15 dark:bg-slate-900 dark:text-white"
+          className="w-28"
         />
-      </label>
+      </Field>
 
-      {note && (
-        <span className="text-xs text-amber-700 dark:text-amber-400">{note}</span>
-      )}
+      {note && <Note>{note}</Note>}
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         {lettered && (
-          <button
-            type="button"
+          <Button
             onClick={onTranslate}
             disabled={!canTranslate}
             title="Translate the page again, against the blocks as they stand now — one added or dropped since is taken in, and every line already set is replaced"
-            className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-white disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
           >
             Translate again
-          </button>
+          </Button>
         )}
-        <button
-          type="button"
+        <Button
           onClick={onFitAll}
           disabled={!canFit}
           title="Set every line at the largest size that lands in its box"
-          className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-white disabled:opacity-40 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
         >
           Fit all
-        </button>
+        </Button>
       </div>
-    </div>
+    </Toolbar>
   )
 }

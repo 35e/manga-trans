@@ -122,7 +122,7 @@ function Line({
         aria-label={`Translation ${index + 1}: ${set.text}`}
         aria-pressed={active}
         className={`flex h-full w-full cursor-move touch-none items-center justify-center text-center text-black ring-1 transition-colors ${
-          active ? 'ring-indigo-500' : 'ring-indigo-500/25 hover:ring-indigo-500/60'
+          active ? 'ring-accent' : 'ring-accent/30 hover:ring-accent/70'
         }`}
         style={{
           fontFamily: FONT_STACK,

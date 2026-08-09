@@ -38,7 +38,7 @@ export function BoxGrips({ drag }: { drag: BoxDrag }) {
         >
           {/* Round, where the ones that resize are square: the shape is what
               says which it is, since both are too small to say anything else. */}
-          <span className="pointer-events-none size-1.5 rounded-full bg-white ring-1 ring-indigo-500" />
+          <span className="pointer-events-none size-1.5 rounded-full bg-white ring-1 ring-accent" />
         </span>
       )}
 
@@ -53,7 +53,7 @@ export function BoxGrips({ drag }: { drag: BoxDrag }) {
           style={{ cursor }}
           className={`absolute z-10 grid touch-none place-items-center ${className}`}
         >
-          <span className="pointer-events-none size-1.5 bg-white ring-1 ring-indigo-500" />
+          <span className="pointer-events-none size-1.5 bg-white ring-1 ring-accent" />
         </span>
       ))}
     </>

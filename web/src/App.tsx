@@ -5,6 +5,7 @@ import { Gallery } from './components/Gallery'
 import { RegionsPanel } from './components/RegionsPanel'
 import { Settings } from './components/Settings'
 import { TranslationsPanel } from './components/TranslationsPanel'
+import { IconButton } from './components/ui'
 import { useFileDrop } from './hooks/useFileDrop'
 import { useImageLibrary } from './hooks/useImageLibrary'
 import { useMasks } from './hooks/useMasks'
@@ -769,20 +770,12 @@ function App() {
   const total = images.reduce((sum, image) => sum + image.size, 0)
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-4 py-2.5 dark:border-white/10">
-        <h1 className="text-sm font-semibold tracking-tight">manga-trans</h1>
-        <div className="flex min-w-0 items-center gap-3">
-          <p className="truncate text-xs text-slate-400 dark:text-slate-500">
-            {API_BASE}
-          </p>
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-            aria-label="Settings"
-            title="Settings"
-            className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white"
-          >
+    <div className="flex h-screen flex-col overflow-hidden bg-canvas text-ink">
+      <header className="flex shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-4 py-2.5">
+        <h1 className="text-sm font-semibold tracking-tight text-ink">manga-trans</h1>
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="truncate font-mono text-[11px] text-faint">{API_BASE}</p>
+          <IconButton label="Settings" onClick={() => setSettingsOpen(true)}>
             <svg
               aria-hidden="true"
               viewBox="0 0 24 24"
@@ -796,7 +789,7 @@ function App() {
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
-          </button>
+          </IconButton>
         </div>
       </header>
 
@@ -812,13 +805,13 @@ function App() {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <aside className="flex shrink-0 flex-col border-slate-200 bg-white max-lg:h-64 max-lg:border-b lg:w-60 lg:border-r xl:w-72 dark:border-white/10 dark:bg-slate-950">
+        <aside className="flex shrink-0 flex-col border-line bg-surface max-lg:h-64 max-lg:border-b lg:w-60 lg:border-r xl:w-72">
           <div className="shrink-0 p-3">
             <Dropzone onFiles={add} dragging={dragging} busy={busy} />
           </div>
 
           {notice && (
-            <div className="mx-3 mb-3 flex shrink-0 items-start justify-between gap-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] leading-snug text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">
+            <div className="mx-3 mb-3 flex shrink-0 items-start justify-between gap-2 rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-2 text-[11px] leading-snug text-warn">
               <span>{notice.text}</span>
               <button
                 type="button"
@@ -841,7 +834,7 @@ function App() {
           </div>
 
           {images.length > 0 && (
-            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 px-3 py-2 text-[11px] text-slate-500 dark:border-white/10 dark:text-slate-400">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-line px-3 py-2 text-[11px] text-faint">
               <span className="tabular-nums">
                 {plural(images.length, 'page')} · {formatBytes(total)}
               </span>
@@ -924,12 +917,10 @@ function App() {
       </div>
 
       {dragging && (
-        <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-indigo-500/10 p-8 backdrop-blur-[2px]">
-          <div className="rounded-2xl border-2 border-dashed border-indigo-400 bg-white/90 px-8 py-6 text-center shadow-xl dark:bg-slate-900/90">
-            <p className="text-base font-semibold">Drop anywhere</p>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Images are added to the gallery
-            </p>
+        <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-accent/10 p-8 backdrop-blur-[2px]">
+          <div className="rounded-2xl border-2 border-dashed border-accent bg-surface/90 px-8 py-6 text-center shadow-xl">
+            <p className="text-base font-semibold text-ink">Drop anywhere</p>
+            <p className="mt-1 text-sm text-faint">Images are added to the gallery</p>
           </div>
         </div>
       )}
@@ -959,10 +950,10 @@ function ClearAll({ onClear }: { onClear: () => void }) {
         }
       }}
       onBlur={() => setArmed(false)}
-      className={`shrink-0 rounded-md px-2 py-1 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 ${
+      className={`shrink-0 rounded-md px-2 py-1 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger ${
         armed
-          ? 'bg-red-600 text-white hover:bg-red-700'
-          : 'text-slate-500 hover:bg-red-50 hover:text-red-600 dark:text-slate-400 dark:hover:bg-red-500/10 dark:hover:text-red-400'
+          ? 'bg-danger text-white'
+          : 'text-faint hover:bg-danger/15 hover:text-danger'
       }`}
     >
       {armed ? 'Sure?' : 'Clear all'}

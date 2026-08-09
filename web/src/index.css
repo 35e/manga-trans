@@ -1,5 +1,69 @@
 @import "tailwindcss";
 
+/* One palette, dark, low chroma. Everything in the app is painted out of these
+   and nothing else, so a surface only ever sits on the one below it. */
+@theme {
+  --color-canvas: oklch(0.145 0.008 266);
+  --color-surface: oklch(0.185 0.009 266);
+  --color-raised: oklch(0.235 0.01 266);
+  --color-line: oklch(0.285 0.012 266);
+  --color-ink: oklch(0.965 0.003 266);
+  --color-muted: oklch(0.76 0.01 266);
+  --color-faint: oklch(0.58 0.012 266);
+  --color-accent: oklch(0.64 0.17 272);
+  --color-accent-lit: oklch(0.71 0.15 272);
+  --color-warn: oklch(0.79 0.13 80);
+  --color-danger: oklch(0.68 0.185 22);
+  --color-good: oklch(0.74 0.14 165);
+}
+
+@layer base {
+  :root {
+    /* Native widgets — selects, scrollbars, the file picker — come out dark. */
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-accent) 45%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-line);
+    background-clip: content-box;
+    border: 3px solid transparent;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--color-line) 60%, white);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
 /* The lettering face. Comic dialogue is set in the regular; the bold and the
    italic are here so emphasis has somewhere to go. */
 @font-face {
@@ -26,20 +90,16 @@
   font-display: swap;
 }
 
-/* The board the page is laid on: dots, so the page's own edges read clearly. */
-.board {
-  --board-dot: oklch(0.55 0.02 260 / 0.28);
+/* The mat the page is laid on: dots, so the page's own edges read clearly, and
+   so panning at a zoom has something to move against. The spacing is set from
+   the zoom, which is what makes it read as one surface with the page rather
+   than a backdrop the page slides over. */
+.board-mat {
   background-image: radial-gradient(
     circle,
-    var(--board-dot) 1.25px,
-    transparent 1.25px
+    oklch(1 0 0 / 0.07) 1.1px,
+    transparent 1.1px
   );
-  background-size: 22px 22px;
+  background-size: var(--mat-grid, 24px) var(--mat-grid, 24px);
   background-position: center;
-}
-
-@media (prefers-color-scheme: dark) {
-  .board {
-    --board-dot: oklch(1 0 0 / 0.09);
-  }
 }

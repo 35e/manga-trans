@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Button, FOCUS, IconButton } from './ui'
 
 type Props = {
   onClose: () => void
@@ -15,14 +16,7 @@ type Props = {
  * Settings, such as they are: what the model is told, and what it is being told
  * it by. Kept in this browser rather than in the API, which stores nothing.
  */
-export function Settings({
-  onClose,
-  prompt,
-  fallback,
-  onSave,
-  apiBase,
-  models,
-}: Props) {
+export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }: Props) {
   const [draft, setDraft] = useState(prompt ?? fallback ?? '')
   const box = useRef<HTMLTextAreaElement>(null)
 
@@ -48,43 +42,43 @@ export function Settings({
       aria-modal="true"
       aria-label="Settings"
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm sm:p-8"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm sm:p-8"
     >
       <div
         onClick={(event) => event.stopPropagation()}
-        className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-slate-950"
+        className="w-full max-w-2xl rounded-2xl border border-line bg-surface shadow-2xl"
       >
-        <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-white/10">
+        <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-              Settings
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-              Kept in this browser. The API stores nothing and is sent these with
-              each page.
+            <h2 className="text-base font-semibold text-ink">Settings</h2>
+            <p className="mt-0.5 text-xs text-faint">
+              Kept in this browser. The API stores nothing and is sent these with each
+              page.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close settings"
-            className="rounded-lg px-2 py-1 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            ✕
-          </button>
+          <IconButton label="Close settings" onClick={onClose}>
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              className="size-4"
+            >
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </IconButton>
         </header>
 
         <div className="space-y-5 px-5 py-5">
           <section>
-            <label
-              htmlFor="prompt"
-              className="text-sm font-medium text-slate-900 dark:text-white"
-            >
+            <label htmlFor="prompt" className="text-sm font-medium text-ink">
               What the model is told
             </label>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            <p className="mt-0.5 text-xs text-faint">
               The system prompt every translation is asked with.{' '}
-              <code className="rounded bg-slate-100 px-1 py-0.5 dark:bg-white/10">
+              <code className="rounded bg-raised px-1 py-0.5 text-muted">
                 {'{target}'}
               </code>{' '}
               is replaced by the language you are translating into.
@@ -98,33 +92,28 @@ export function Settings({
               spellCheck={false}
               onChange={(event) => setDraft(event.target.value)}
               placeholder={fallback ?? 'Loading the default…'}
-              className="mt-2 w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs leading-relaxed text-slate-900 focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-white/15 dark:bg-slate-900 dark:text-white"
+              className={`mt-2 w-full resize-y rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-xs leading-relaxed text-ink ${FOCUS}`}
             />
 
-            <p className="mt-1.5 text-xs text-slate-400 dark:text-slate-500">
-              Asking for one translation per line, in order, is what keeps them
-              lined up with the blocks they came from. Lose that and each line
-              gets asked about on its own instead — slower, and every line loses
-              the rest of the page as context. Asking for a voice — casual,
-              formal, terse — comes through; asking the model to reformat what it
-              hands back mostly does not, since the answers are held to a fixed
-              shape.
+            <p className="mt-1.5 text-xs text-faint">
+              Asking for one translation per line, in order, is what keeps them lined
+              up with the blocks they came from. Lose that and each line gets asked
+              about on its own instead — slower, and every line loses the rest of the
+              page as context. Asking for a voice — casual, formal, terse — comes
+              through; asking the model to reformat what it hands back mostly does
+              not, since the answers are held to a fixed shape.
             </p>
           </section>
 
-          <section className="rounded-lg bg-slate-50 px-3 py-2.5 text-xs dark:bg-white/5">
+          <section className="rounded-lg border border-line bg-canvas px-3 py-2.5 text-xs">
             <dl className="space-y-1">
               <div className="flex justify-between gap-4">
-                <dt className="text-slate-500 dark:text-slate-400">API</dt>
-                <dd className="truncate text-slate-700 dark:text-slate-300">
-                  {apiBase}
-                </dd>
+                <dt className="text-faint">API</dt>
+                <dd className="truncate text-muted">{apiBase}</dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-slate-500 dark:text-slate-400">
-                  Models on its Ollama
-                </dt>
-                <dd className="truncate text-slate-700 dark:text-slate-300">
+                <dt className="text-faint">Models on its Ollama</dt>
+                <dd className="truncate text-muted">
                   {models.length > 0 ? models.join(', ') : 'none found'}
                 </dd>
               </div>
@@ -132,35 +121,32 @@ export function Settings({
           </section>
         </div>
 
-        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-3 dark:border-white/10">
-          <button
-            type="button"
+        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-5 py-3">
+          <Button
+            variant="ghost"
+            size="md"
+            className="mr-auto"
             onClick={() => setDraft(fallback ?? '')}
             disabled={fallback === null || isDefault}
-            className="mr-auto rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white"
           >
             Back to the default
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
-          >
+          </Button>
+          <Button size="md" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
             onClick={() => {
-              // Saved as "the API's own" when it is word for word the API's
-              // own, so a change there is still picked up later.
+              // Saved as "the API's own" when it is word for word the API's own,
+              // so a change there is still picked up later.
               onSave(isDefault || !draft.trim() ? null : draft)
               onClose()
             }}
             disabled={!changed}
-            className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Save
-          </button>
+          </Button>
         </footer>
       </div>
     </div>

@@ -8,11 +8,11 @@ type Props = {
   onRemove: (id: string) => void
 }
 
-/** The rail: every page dropped in, small, the one on the board ringed. */
+/** The rail: every page dropped in, small, the one on the board picked out. */
 export function Gallery({ images, activeId, onOpen, onRemove }: Props) {
   if (images.length === 0) {
     return (
-      <p className="px-1 py-6 text-center text-xs text-slate-500 dark:text-slate-400">
+      <p className="px-1 py-8 text-center text-xs text-faint">
         Pages you drop in show up here.
       </p>
     )
@@ -20,10 +20,11 @@ export function Gallery({ images, activeId, onOpen, onRemove }: Props) {
 
   return (
     <ul className="grid grid-cols-2 gap-2">
-      {images.map((image) => (
+      {images.map((image, index) => (
         <Thumb
           key={image.id}
           image={image}
+          number={index + 1}
           active={image.id === activeId}
           onOpen={() => onOpen(image.id)}
           onRemove={() => onRemove(image.id)}
@@ -33,13 +34,24 @@ export function Gallery({ images, activeId, onOpen, onRemove }: Props) {
   )
 }
 
+/**
+ * One page in the rail.
+ *
+ * The picture is held in a box of its own inside the card's border rather than
+ * against it: a page is any shape it likes, and one that filled the card to the
+ * edge used to sit over the rounded corners at the top. Inset by the card's
+ * padding it cannot reach them, and the two radii are concentric, so the corner
+ * reads as one curve rather than two.
+ */
 function Thumb({
   image,
+  number,
   active,
   onOpen,
   onRemove,
 }: {
   image: GalleryImage
+  number: number
   active: boolean
   onOpen: () => void
   onRemove: () => void
@@ -51,19 +63,29 @@ function Thumb({
         onClick={onOpen}
         aria-current={active}
         title={`${image.name} — ${image.width} × ${image.height}, ${formatBytes(image.size)}`}
-        className={`block w-full overflow-hidden rounded-lg bg-slate-100 ring-2 transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:bg-slate-900 ${
+        className={`block w-full rounded-xl border p-1 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
           active
-            ? 'ring-indigo-500'
-            : 'ring-transparent hover:ring-slate-300 dark:hover:ring-white/20'
+            ? 'border-accent bg-accent/10'
+            : 'border-line bg-surface hover:border-faint hover:bg-raised'
         }`}
       >
-        <img
-          src={image.url}
-          alt={image.name}
-          loading="lazy"
-          className="aspect-[3/4] w-full object-contain"
-        />
-        <span className="block truncate px-1.5 py-1 text-[11px] text-slate-600 dark:text-slate-400">
+        <span className="relative block overflow-hidden rounded-lg bg-canvas">
+          <img
+            src={image.url}
+            alt={image.name}
+            loading="lazy"
+            className="block aspect-[3/4] w-full object-contain"
+          />
+          <span className="absolute top-1 left-1 rounded bg-black/60 px-1 text-[10px] leading-4 font-medium text-white tabular-nums backdrop-blur-sm">
+            {number}
+          </span>
+        </span>
+
+        <span
+          className={`mt-1 block truncate px-0.5 pb-0.5 text-[11px] ${
+            active ? 'text-ink' : 'text-muted'
+          }`}
+        >
           {image.name}
         </span>
       </button>
@@ -72,7 +94,8 @@ function Thumb({
         type="button"
         onClick={onRemove}
         aria-label={`Delete ${image.name}`}
-        className="absolute top-1 right-1 rounded-md bg-white/85 p-1 text-slate-600 opacity-0 shadow-sm backdrop-blur transition group-hover:opacity-100 hover:bg-red-600 hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 max-sm:opacity-100 dark:bg-slate-900/85 dark:text-slate-300"
+        title={`Delete ${image.name}`}
+        className="absolute top-2 right-2 rounded-md bg-black/60 p-1 text-white/80 opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-danger hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger max-sm:opacity-100"
       >
         <svg
           aria-hidden="true"
