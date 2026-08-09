@@ -75,7 +75,8 @@ nor torch generation is reentrant.
   from the block (painted in first, or vertical Japanese cuts the balloon in
   two), fill its holes, erode a margin, then a stack search for the largest
   rectangle on a 128-pixel grid. Every answer is checked and `None` is a real
-  answer. `/api/detect` includes it because it is free there.
+  answer. `bubbles()` then shares one balloon out between any blocks that turn
+  out to be in it together. `/api/detect` includes it because it is free there.
 - `read.py` — manga-ocr. **The only thing that imports torch, and it does so
   inside `Reader.load()`.** Keep that import deferred and keep torch out of
   every other module.
@@ -190,9 +191,24 @@ breaks below 0.8. Err shy: a merge can be split by hand in the dashboard, but
 there is no way to put a wrongly-cut block back together.
 
 **Order in `Detector.__call__` is load-bearing**: split on tight boxes and the
-ungrown mask, *then* pad (`PAD`, a quarter of a character), *then* sort. Padding
-first would close the gaps the split measures and push neighbours together;
-sorting first would leave the halves of a cut block out of reading order.
+ungrown mask, then `suppressed`, then pad (`PAD`, a quarter of a character), then
+sort. Padding before the split would close the gaps it measures; padding before
+`suppressed` could make two neighbours look like one; sorting first would leave
+the halves of a cut block out of reading order.
+
+**Splitting a block has two consequences that must be handled together with it**,
+and both show up as translations lettered on top of each other:
+
+- *Duplicates.* NMS runs on what the head said, before anything is cut, so it
+  never sees the pieces. The head often draws a box round two balloons and
+  another round one of them — under the NMS threshold, so both survive — and
+  cutting the first makes an exact duplicate of the second. `detect.suppressed`
+  drops the less sure of any pair covering the same lettering.
+- *A shared balloon.* Two blocks inside one balloon each ask `bubble.around`
+  what room they are in and get the same answer. `bubble.bubbles` therefore
+  groups blocks whose balloons coincide (`SAME`) and `bubble.divided` shares the
+  balloon out between them, cutting across the axis they are laid out along. This
+  is why `/api/bubbles` takes a list: an answer depends on the other boxes.
 
 ## Style
 

@@ -26,8 +26,10 @@ from .geometry import Box
 
 # How far around a block to look, as a share of its longer side. Close first: a
 # window reaching the next balloon only gives the flood somewhere else to go.
-# Wider only if the close look ran off the edge of its window.
-MARGINS = (0.8, 2.2)
+# Each wider one is tried only where the last ran off the edge of its window,
+# which is what a balloon far larger than the words in it does — one holding
+# several separate lines, or two words in the middle of a big one.
+MARGINS = (0.8, 2.2, 5.0)
 
 # The smallest a block is treated as when the window is measured, as a share of
 # the page's shorter side: a balloon around one character is wider than it.
@@ -57,6 +59,11 @@ GRID = 128
 # grid to count. Well over half: reaching past the outline is worse than stopping
 # short of it.
 MOSTLY = 200
+
+# How much two answers have to cover each other to be one balloon found twice
+# rather than two balloons. Generous, because the same balloon flooded from two
+# different blocks comes back a few pixels different each time.
+SAME = 0.7
 
 
 def window(box: Box, width: int, height: int, spread: float) -> Box:
@@ -260,12 +267,93 @@ def around(grey: np.ndarray, box: Box) -> Box | None:
     return None
 
 
+def sharing(found: list[Box | None]) -> list[list[int]]:
+    """Which blocks came back with the same balloon, gathered by its index."""
+    groups: list[list[int]] = []
+    for at, room in enumerate(found):
+        if room is None:
+            continue
+        for group in groups:
+            if room.covers(found[group[0]]) >= SAME:
+                group.append(at)
+                break
+        else:
+            groups.append([at])
+    return groups
+
+
+def apart(blocks: list[Box], axis: int) -> int:
+    """How much blank lies between the blocks along one axis."""
+    edges = [(b.x0, b.x1) if axis == 0 else (b.y0, b.y1) for b in blocks]
+    edges.sort()
+    total, reach = 0, edges[0][1]
+    for low, high in edges[1:]:
+        total += max(0, low - reach)
+        reach = max(reach, high)
+    return total
+
+
+def divided(room: Box, blocks: list[Box]) -> list[Box]:
+    """``room`` shared out between the blocks written in it, one piece each.
+
+    Two blocks in one balloon would otherwise be answered with that same balloon
+    twice, and their translations set one on top of the other. They were told
+    apart by the blank between them in the first place, so the balloon is cut the
+    same way: across whichever axis they are laid out along, halfway between each
+    pair of neighbours. Each piece keeps the full width of the balloon the other
+    way, which is what the lettering wants.
+    """
+    axis = 0 if apart(blocks, 0) >= apart(blocks, 1) else 1
+    middle = (lambda box: box.cx) if axis == 0 else (lambda box: box.cy)
+    order = sorted(range(len(blocks)), key=lambda at: middle(blocks[at]))
+
+    low, high = (room.x0, room.x1) if axis == 0 else (room.y0, room.y1)
+    cuts = [low]
+    for before, after in zip(order, order[1:]):
+        first, second = blocks[before], blocks[after]
+        far = first.x1 if axis == 0 else first.y1
+        near = second.x0 if axis == 0 else second.y0
+        # Held inside the balloon and past the cut before it, so the pieces come
+        # out in order however far the blocks reach outside it.
+        cuts.append(min(max(round((far + near) / 2), cuts[-1]), high))
+    cuts.append(high)
+
+    shares: list[Box] = [room] * len(blocks)
+    for at, which in enumerate(order):
+        start, end = cuts[at], cuts[at + 1]
+        shares[which] = (
+            Box(start, room.y0, end, room.y1)
+            if axis == 0
+            else Box(room.x0, start, room.x1, end)
+        )
+    return shares
+
+
 def bubbles(image: np.ndarray, boxes: list[Box]) -> list[Box | None]:
     """The balloon each box sits in, in the order the boxes were given.
 
     ``None`` where none could be made out. Colour says nothing about where a
     balloon ends that its own lightness does not, so the page is flattened to one
     channel once and every box measured against that.
+
+    Where several blocks turn out to be written in the same balloon — which is
+    what a block cut in two by :mod:`mangatrans.split` looks like from here — it
+    is shared out between them rather than handed to each of them whole.
     """
     grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    return [around(grey, box) for box in boxes]
+    found = [around(grey, box) for box in boxes]
+
+    for group in sharing(found):
+        if len(group) < 2:
+            continue
+        # The same balloon measured from several seeds, so take the roomiest.
+        room = max((found[at] for at in group), key=lambda box: box.w * box.h)
+        shares = divided(room, [boxes[at] for at in group])
+        for at, share in zip(group, shares):
+            # A piece no bigger than the block leaves nothing to be won by moving
+            # the lettering into it, which is the same answer `around` gives.
+            block = boxes[at]
+            found[at] = (
+                share if share.w * share.h >= block.w * block.h else None
+            )
+    return found

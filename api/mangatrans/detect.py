@@ -50,6 +50,10 @@ GROW_MAX = 64
 PAD = 0.25
 PAD_MIN = 2
 
+# Two blocks covering this much of the smaller of them are the same lettering
+# found twice. See :func:`suppressed` for why NMS does not already catch it.
+DUPLICATE = 0.6
+
 
 @dataclass(frozen=True)
 class Block:
@@ -148,6 +152,25 @@ def page_mask(
     return mask
 
 
+def suppressed(blocks: list[Block]) -> list[Block]:
+    """The same lettering found twice, thinned down to the surest of them.
+
+    The head sometimes draws a box around two balloons *and* a box around one of
+    them, overlapping too little for NMS to throw either away. Splitting the
+    first then turns that pair into an exact duplicate — and a duplicated block
+    is read twice, translated twice, and lettered twice into the same place.
+
+    NMS cannot do this itself: it runs on what the head said, before anything has
+    been cut, so it never sees the pieces. Run on the tight boxes, before they
+    are padded, or a margin could make two neighbours look like one.
+    """
+    kept: list[Block] = []
+    for block in sorted(blocks, key=lambda block: -block.confidence):
+        if not any(block.box.covers(other.box) >= DUPLICATE for other in kept):
+            kept.append(block)
+    return kept
+
+
 class Detector:
     """The loaded network. One page at a time: an OpenCV net is not reentrant."""
 
@@ -225,23 +248,28 @@ class Detector:
         # the gaps the split is measuring.
         text = page_mask(seg, width, height, pad_w, pad_h, 0) > 0
 
-        # Split first and pad after. A margin put on before would close the very
-        # gaps the split is looking for, and would push two neighbours together.
+        # Split first, then pad. A margin put on before would close the very gaps
+        # the split is looking for, and would push two neighbours together.
+        pieces = [
+            Block(box=piece, confidence=block.confidence)
+            for block in found
+            for piece in split.pieces(text, block.box)
+        ]
+
         blocks = []
-        for block in found:
-            for piece in split.pieces(text, block.box):
-                crop = text[piece.y0 : piece.y1, piece.x0 : piece.x1]
-                by = (
-                    max(PAD_MIN, round(PAD * split.character(crop)))
-                    if crop.any()
-                    else PAD_MIN
+        for block in suppressed(pieces):
+            crop = text[block.box.y0 : block.box.y1, block.box.x0 : block.box.x1]
+            by = (
+                max(PAD_MIN, round(PAD * split.character(crop)))
+                if crop.any()
+                else PAD_MIN
+            )
+            blocks.append(
+                Block(
+                    box=block.box.grown(by).clipped(width, height),
+                    confidence=block.confidence,
                 )
-                blocks.append(
-                    Block(
-                        box=piece.grown(by).clipped(width, height),
-                        confidence=block.confidence,
-                    )
-                )
+            )
 
         # Down the page, then right to left. `lib/order.ts` sorts by the same key.
         # After splitting, so the halves of a cut block land where they are read.

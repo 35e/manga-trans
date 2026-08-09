@@ -803,6 +803,85 @@ class TestInked(unittest.TestCase):
         self.assertIsNone(split.inked(np.zeros((10, 10), bool)))
 
 
+class TestSuppressed(unittest.TestCase):
+    """The same lettering found twice, thinned to the surest of them."""
+
+    def test_a_piece_that_repeats_a_whole_block_is_dropped(self):
+        # What splitting turns the head's overlapping guesses into.
+        blocks = [
+            Block(Box(540, 300, 620, 500), 0.91),
+            Block(Box(543, 305, 619, 501), 0.62),
+            Block(Box(540, 640, 620, 840), 0.91),
+        ]
+        kept = detect.suppressed(blocks)
+        self.assertEqual(len(kept), 2)
+        self.assertNotIn(0.62, [b.confidence for b in kept], "the surer one went")
+
+    def test_a_small_block_wholly_inside_a_large_one_is_dropped(self):
+        blocks = [Block(Box(0, 0, 200, 200), 0.9), Block(Box(50, 50, 90, 90), 0.8)]
+        self.assertEqual(len(detect.suppressed(blocks)), 1)
+
+    def test_blocks_merely_next_to_each_other_are_both_kept(self):
+        blocks = [Block(Box(0, 0, 100, 100), 0.9), Block(Box(110, 0, 210, 100), 0.9)]
+        self.assertEqual(len(detect.suppressed(blocks)), 2)
+
+    def test_nothing_is_dropped_where_nothing_repeats(self):
+        blocks = [Block(Box(0, 0, 50, 50), 0.9), Block(Box(0, 60, 50, 110), 0.8)]
+        self.assertEqual(len(detect.suppressed(blocks)), 2)
+
+
+class TestDivided(unittest.TestCase):
+    """One balloon shared out between the blocks written in it."""
+
+    room = Box(100, 100, 500, 400)
+
+    def test_two_blocks_side_by_side_get_a_side_each(self):
+        blocks = [Box(150, 150, 200, 350), Box(400, 150, 450, 350)]
+        left, right = bubble.divided(self.room, blocks)
+        self.assertEqual(left.covers(right), 0.0, "the two shares overlap")
+        self.assertLess(left.x1, right.x0 + 1)
+        self.assertEqual((left.y0, left.y1), (self.room.y0, self.room.y1))
+
+    def test_two_blocks_one_above_the_other_get_a_half_each(self):
+        blocks = [Box(150, 120, 450, 180), Box(150, 320, 450, 380)]
+        top, bottom = bubble.divided(self.room, blocks)
+        self.assertEqual(top.covers(bottom), 0.0)
+        self.assertLess(top.y1, bottom.y0 + 1)
+        self.assertEqual((top.x0, top.x1), (self.room.x0, self.room.x1))
+
+    def test_the_shares_come_back_against_the_blocks_they_belong_to(self):
+        # Reading order runs right to left, so the first block is the rightmost.
+        blocks = [Box(400, 150, 450, 350), Box(150, 150, 200, 350)]
+        first, second = bubble.divided(self.room, blocks)
+        self.assertGreater(first.cx, second.cx, "the shares were handed back swapped")
+
+    def test_every_share_holds_the_block_it_was_cut_for(self):
+        blocks = [Box(150, 150, 200, 350), Box(280, 150, 330, 350), Box(400, 150, 450, 350)]
+        for share, block in zip(bubble.divided(self.room, blocks), blocks):
+            self.assertLessEqual(share.x0, block.x0)
+            self.assertGreaterEqual(share.x1, block.x1)
+
+    def test_the_shares_use_up_the_whole_balloon(self):
+        blocks = [Box(150, 150, 200, 350), Box(400, 150, 450, 350)]
+        shares = bubble.divided(self.room, blocks)
+        self.assertEqual(min(s.x0 for s in shares), self.room.x0)
+        self.assertEqual(max(s.x1 for s in shares), self.room.x1)
+
+
+class TestSharing(unittest.TestCase):
+    def test_the_same_balloon_found_twice_is_one_group(self):
+        found = [Box(0, 0, 100, 100), Box(2, 3, 98, 99)]
+        self.assertEqual(bubble.sharing(found), [[0, 1]])
+
+    def test_two_real_balloons_are_two_groups(self):
+        found = [Box(0, 0, 100, 100), Box(200, 0, 300, 100)]
+        self.assertEqual(bubble.sharing(found), [[0], [1]])
+
+    def test_a_block_with_no_balloon_is_in_no_group(self):
+        found = [Box(0, 0, 100, 100), None]
+        self.assertEqual(bubble.sharing(found), [[0]])
+
+
 def reply(content: str = "", thinking: str = "") -> dict:
     """One answer from Ollama, shaped the way it shapes them."""
     return {"message": {"role": "assistant", "content": content, "thinking": thinking}}

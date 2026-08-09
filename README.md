@@ -120,6 +120,13 @@ deliberately shy: a balloon left merged can be split by hand in the dashboard,
 where a line of dialogue wrongly cut into four cannot be put back so easily. A
 block that does not come apart is answered with exactly as the detector drew it.
 
+Splitting is also why two blocks can come back covering the same lettering: the
+head sometimes draws a box around two balloons *and* a box around one of them,
+overlapping too little for the detector's own non-maximum suppression to throw
+either away, and cutting the first turns that pair into a duplicate. A second
+pass drops any block that covers the same lettering as a surer one, since a
+duplicate is read twice, translated twice and lettered twice into one place.
+
 Every block also comes back with a margin around it — a quarter of a character,
 so it holds at any size — because the block head boxes lettering tightly and
 sometimes clips the edge of a glyph. The margin goes on after the split, or it
@@ -140,6 +147,20 @@ before the flood starts, because a line of Japanese down the middle of a balloon
 cuts its ground into a left half and a right half, and a flood started in one of
 them measures the gap beside the words rather than the room around them. Dark
 balloons with white lettering are found the same way round the other way.
+
+Where several of the boxes turn out to be written in the *same* balloon — which
+is what a block cut in two looks like from here, and what a balloon holding two
+separate lines of dialogue is — it is shared out between them rather than handed
+to each of them whole. They were told apart by the blank between them in the
+first place, so the balloon is cut the same way: across whichever axis they are
+laid out along, halfway between each pair of neighbours, each piece keeping the
+full width of the balloon the other way. Without that, every one of them would be
+answered with the same rectangle and their translations would be lettered one on
+top of another.
+
+This is why the endpoint takes a list rather than one box at a time: the answer
+for a block depends on which other blocks share its balloon. Asking about one box
+on its own is still allowed and still useful — it just cannot know to divide.
 
 `bubble` is null where none could be made out, and then the box is all there is
 to go on: a sound effect over artwork is in no balloon, a balloon whose outline
