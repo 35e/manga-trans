@@ -50,10 +50,10 @@ anywhere — every request carries the page it works on, and the browser is the
 only place a page, its blocks, its mask or its translations live.
 
 The API deliberately never renders end-to-end. Detection is imperfect, so
-`/api/detect` (where the text is), `/api/read` (what it says), `/api/clean`
-(hide it) and `/api/render` (set new text) are separate calls taking boxes back
-in, which is what lets the dashboard show the detection, have it corrected by
-hand, and only then act on it.
+`/api/detect` (where the text is), `/api/bubbles` (what room it was written in),
+`/api/read` (what it says), `/api/clean` (hide it) and `/api/render` (set new
+text) are separate calls taking boxes back in, which is what lets the dashboard
+show the detection, have it corrected by hand, and only then act on it.
 
 ### API (`api/mangatrans/`)
 
@@ -66,6 +66,12 @@ nor torch generation is reentrant.
 - `detect.py` — comic-text-detector on OpenCV's ONNX backend. Two heads off one
   pass: block boxes, and the per-pixel segmentation mask behind `/api/letters`.
   Fetches its own weights on first use.
+- `bubble.py` — the balloon a block was written in, as the largest rectangle
+  inside it. Pure OpenCV on the greyscale page, no model: flood the light ground
+  from the block (painted in first, or vertical Japanese cuts the balloon in
+  two), fill its holes, erode a margin, then a stack search for the largest
+  rectangle on a 128-pixel grid. Every answer is checked and `None` is a real
+  answer. `/api/detect` includes it because it is free there.
 - `read.py` — manga-ocr. **The only thing that imports torch, and it does so
   inside `Reader.load()`.** Keep that import deferred and keep torch out of
   every other module.
@@ -93,6 +99,14 @@ block must carry every one of them plus `selected` — use `insertAt`, `moveAt`,
 its block by `region.id` when the answer comes back, because the list may have
 been reordered while the request was in flight (see `addRegion`, `rereadRegion`,
 `splitRegion` in `App.tsx`).
+
+**A block is not where the translation goes.** `region.box` is where the
+Japanese is; `region.bubble` is the room it was written in, and lettering uses
+`bubble ?? box` (`room` in `App.tsx`). Anything that changes a box by hand must
+drop the bubble with it — a stale one letters into the balloon the block came
+from — and ask `/api/bubbles` again if it is going to the API anyway. Size is
+capped at `originalSize` (`lib/fit.ts`): a balloon is drawn around its words, so
+filling one sets a short line four times too large.
 
 **Reading order is defined twice and must agree.** `(y0, -x1)` — down the page,
 then right to left — in `detect.py` (`blocks.sort`) and in `lib/order.ts`

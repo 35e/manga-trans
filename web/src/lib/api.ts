@@ -14,6 +14,16 @@ export type Region = {
   id: string
   box: Box
   confidence: number
+  /**
+   * The room the block was written in, rather than the room the words take up:
+   * the largest rectangle that fits inside the balloon around them. This is
+   * where a translation goes. Japanese runs down the page, so `box` is a tall
+   * narrow column and English set in it wraps to about a letter a line.
+   *
+   * Null where no balloon could be made out — lettering over artwork is in none
+   * — and then `box` is all there is to go on.
+   */
+  bubble?: Box | null
   /** Drawn by hand, because the detector missed it. Never sure, just certain. */
   manual?: boolean
 }
@@ -43,6 +53,7 @@ export type Stage =
   | 'tracing'
   | 'cleaning'
   | 'translating'
+  | 'fitting'
 
 /** What the board is being used for: looking, hiding, or lettering. */
 export type BoardMode = 'inspect' | 'mask' | 'translate'
@@ -150,6 +161,26 @@ export async function detect(
       id: crypto.randomUUID(),
     })),
   }
+}
+
+/**
+ * The balloon each box is written in, in the order the boxes were given, or
+ * null where none could be made out.
+ *
+ * `detect` already answers with these, so this is for the blocks it did not
+ * find: one drawn by hand, one split in two, one pulled off its neighbour.
+ */
+export async function bubbles(
+  file: File,
+  boxes: Box[],
+  signal?: AbortSignal,
+): Promise<(Box | null)[]> {
+  if (boxes.length === 0) return []
+  const response = await send('/api/bubbles', file, { boxes }, signal)
+  const answer = (await response.json()) as {
+    regions: { bubble: Box | null }[]
+  }
+  return answer.regions.map((region) => region.bubble)
 }
 
 /**

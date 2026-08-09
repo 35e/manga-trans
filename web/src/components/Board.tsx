@@ -30,6 +30,7 @@ export type Translating = {
   onTarget: (target: string) => void
   onTranslate: () => void
   onFitAll: () => void
+  onFitBoxes: () => void
   lettering: (Lettering | null)[]
   onBox: (index: number, box: Box) => void
   onTurn: (index: number, angle: number) => void
@@ -426,6 +427,8 @@ export function Board({
           onTarget={translating.onTarget}
           onFitAll={translating.onFitAll}
           canFit={lettered}
+          onFitBoxes={translating.onFitBoxes}
+          canFitBoxes={lettered && !busy}
           onTranslate={translating.onTranslate}
           canTranslate={Boolean(translating.model) && read && !busy}
           lettered={lettered}
@@ -772,6 +775,7 @@ const LABELS: Record<Stage, string> = {
   tracing: 'Tracing…',
   cleaning: 'Cleaning…',
   translating: 'Translating…',
+  fitting: 'Finding the balloons…',
 }
 
 /** The one button that does the thing this step is for. */

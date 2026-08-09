@@ -126,7 +126,7 @@ export function TranslationsPanel({
 
                   <Button
                     onClick={() => onFit(index)}
-                    title="The largest size that lands in this box"
+                    title="The largest size that lands in this box, held to the size this page is lettered at — the arrow keys go past that"
                     className="px-2 py-1 text-[11px]"
                   >
                     Fit

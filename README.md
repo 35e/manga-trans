@@ -43,15 +43,16 @@ Two models, both baked into the container at build time:
 
 ## The API
 
-Four endpoints. The page goes up as a multipart `image` field every time; boxes
-are `[x0, y0, x1, y1]` in image pixels, sent as JSON in a form field beside it.
+The page goes up as a multipart `image` field every time; boxes are
+`[x0, y0, x1, y1]` in image pixels, sent as JSON in a form field beside it.
 Every response carries `Access-Control-Allow-Origin`, so a front end on another
 port can call it.
 
 | | | |
 | --- | --- | --- |
-| `POST` | `/api/detect` | `image` → every block of lettering, boxed |
+| `POST` | `/api/detect` | `image` → every block of lettering, boxed, with its balloon |
 | `POST` | `/api/letters` | `image` → the lettering itself, pixel by pixel |
+| `POST` | `/api/bubbles` | `image`, `boxes` → the balloon each one is written in |
 | `POST` | `/api/read` | `image`, `boxes` → what each box says |
 | `GET` | `/api/models` | → the models Ollama has to translate with |
 | `GET` | `/api/prompt` | → what the model is told, unless told otherwise |
@@ -62,10 +63,15 @@ port can call it.
 ```bash
 curl -sX POST localhost:8000/api/detect -F image=@001.png
 # {"width": 1114, "height": 1600,
-#  "regions": [{"box": [812, 96, 949, 324], "confidence": 0.93}, ...]}
+#  "regions": [{"box": [812, 96, 949, 324], "confidence": 0.93,
+#               "bubble": [769, 136, 984, 285]}, ...]}
 
 curl -X POST localhost:8000/api/letters -F image=@001.png -o letters.png
 curl -X POST localhost:8000/api/letters -F image=@001.png -F grow=6 -o fatter.png
+
+curl -sX POST localhost:8000/api/bubbles -F image=@001.png \
+     -F 'boxes=[[812,96,949,324]]'
+# {"regions": [{"box": [812, 96, 949, 324], "bubble": [769, 136, 984, 285]}]}
 
 curl -sX POST localhost:8000/api/read -F image=@001.png \
      -F 'boxes=[[812,96,949,324]]'
@@ -86,7 +92,32 @@ curl -X POST localhost:8000/api/render -F image=@001.png \
 
 **`/api/detect`** boxes every piece of lettering it finds. A `confidence` under
 0.8 is worth a second look — the dashboard leaves those blocks alone until one
-has been. It says where the text is, not what it says.
+has been. It says where the text is, not what it says. `bubble` comes along with
+it, as below, because it is worked out from the page and the boxes and both are
+already in hand.
+
+**`/api/bubbles`** answers with the room each block was written in rather than
+the room its words take up: the largest rectangle that fits inside the balloon
+around it. This is where a translation goes. Japanese runs down the page, so a
+block of it comes back forty pixels across and three hundred tall, and English
+set in a column that shape wraps to about a letter a line — which is why a
+translated line used to have to be dragged out to its balloon before it could be
+read at all.
+
+Nothing is drawn to say where a balloon is, but it is not hard to see: it is a
+light shape closed by a dark outline, so the light pixels reachable from the
+lettering without crossing that outline are the balloon. The block is painted in
+before the flood starts, because a line of Japanese down the middle of a balloon
+cuts its ground into a left half and a right half, and a flood started in one of
+them measures the gap beside the words rather than the room around them. Dark
+balloons with white lettering are found the same way round the other way.
+
+`bubble` is null where none could be made out, and then the box is all there is
+to go on: a sound effect over artwork is in no balloon, a balloon whose outline
+a scan has broken cannot be followed, and a balloon drawn no wider than the words
+already are has nothing to offer. It is a guess, and saying so beats answering
+with a rectangle somewhere in the artwork. No model is involved — this is the one
+call on an image that never stands the detector up.
 
 **`/api/letters`** answers with the lettering itself rather than the box around
 it: a page-sized PNG, opaque white on the ink and clear everywhere else, which
@@ -199,6 +230,8 @@ api/
   mangatrans/
     detect.py     comic-text-detector on OpenCV's ONNX backend: blocks, and
                   the per-pixel mask of the lettering inside them
+    bubble.py     the balloon a block was written in, which is where a
+                  translation goes — the block is only where the words are
     read.py       manga-ocr, and the cropping that feeds it
     ollama.py     translating a page by a model on this machine
     inpaint.py    making what was hidden out of the page around it
@@ -225,8 +258,21 @@ hiding — not the boxes around it — and that mask can be brushed by hand, dra
 wider or erased back, with blocks worth keeping dropped from it one at a time.
 **Hide under** beside the brush is what a clean puts back where the marks were:
 the art around them, filled in, or flat white.
-**Translate** sets each translated line back where its original was, in Anime
-Ace, in a box that can be dragged about, pulled wider or narrower by its edges,
+**Translate** sets each translated line in the balloon its original was written
+in — not in the box the original came out of, which for a vertical line of
+Japanese is a column too narrow to set one word of English across. It is set in
+Anime Ace, as large as it will go in that balloon but no larger than the page is
+lettered: a balloon is drawn around its words rather than to them, so the largest
+type that fits one is far bigger than the type it was drawn around whenever the
+line is short, and "OK!" left to fill its balloon comes out four times the height
+of the dialogue on either side of it. How large the page is lettered is read off
+the original — Japanese is set on a square em, so a block of *n* characters
+covering *w × h* was set at about the square root of *wh/n*. **Fit to balloons**
+puts every line back where that says, which is what to reach for after drawing a
+block by hand, cutting one in two, or dragging a box somewhere it should not have
+gone; a block with no balloon around it is left exactly where it is.
+
+The box can be dragged about, pulled wider or narrower by its edges,
 sized with the up and down arrows and turned with the left and right ones — or
 by the round handle standing above the box, which follows the pointer round it,
 holding shift for 15° at a time. Manga letters plenty of things on the slant: a

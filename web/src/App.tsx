@@ -15,6 +15,7 @@ import type { Analysis, BoardMode, Box, Fill, Lettering, Stage } from './lib/api
 import {
   API_BASE,
   UNSURE,
+  bubbles,
   clean,
   defaultPrompt,
   detect,
@@ -24,7 +25,7 @@ import {
   translate,
 } from './lib/api'
 import { compose, save } from './lib/compose'
-import { SIZE_MAX, SIZE_MIN, fitSize, ready } from './lib/fit'
+import { SIZE_MAX, SIZE_MIN, fitSize, originalSize, ready } from './lib/fit'
 import type { GalleryImage } from './lib/images'
 import { formatBytes, plural } from './lib/images'
 import { halves, insertAt, insertionFor, moveAt, movedIndex } from './lib/order'
@@ -37,6 +38,37 @@ const said = (cause: unknown) =>
  * ask for more spread and it is a different tracing, not the same one again.
  */
 const traceKey = (id: string, spread: number) => `${id}@${spread}`
+
+/**
+ * Where a translation of this block goes: the balloon it was written in when one
+ * was found, and the block itself when none was.
+ *
+ * The block is where the Japanese is, and Japanese runs down the page — a line
+ * of a dozen characters is a column forty pixels across. English set in that
+ * column wraps to about a letter a line, which is why every line used to have to
+ * be dragged out to its balloon before it could be read.
+ */
+const room = (region: { box: Box; bubble?: Box | null }): Box =>
+  region.bubble ?? region.box
+
+/**
+ * How large a translation is set in `box`: as large as it will go there, but no
+ * larger than the page is lettered, which is worked out from the block the
+ * original was in and what it said.
+ *
+ * A balloon is drawn around the words rather than to them, so the largest type
+ * that fits one is much bigger than the type it was drawn around whenever the
+ * line is short. Both halves are needed: without the box, a long line overruns
+ * its balloon; without the ceiling, a short one fills it.
+ */
+function sizeFor(text: string, box: Box, original: string, block: Box): number {
+  return fitSize(
+    text,
+    box[2] - box[0],
+    box[3] - box[1],
+    originalSize(original, block[2] - block[0], block[3] - block[1]),
+  )
+}
 
 /** The same record without one key. */
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
@@ -357,7 +389,12 @@ function App() {
       setError(null)
       setWorking({ id, stage: 'reading' })
       try {
-        const [text] = await read(file, [box])
+        // What it says and what room it was said in, asked for together: a block
+        // drawn by hand should end up knowing both, the same as a detected one.
+        const [[text], [balloon]] = await Promise.all([
+          read(file, [box]),
+          bubbles(file, [box]),
+        ])
         setAnalyses((current) => {
           const now = current[id]
           if (!now?.texts) return current
@@ -369,7 +406,16 @@ function App() {
           if (where === -1) return current
           const said = [...now.texts]
           said[where] = text ?? ''
-          return { ...current, [id]: { ...now, texts: said } }
+          const regions = [...now.detection.regions]
+          regions[where] = { ...regions[where], bubble: balloon }
+          return {
+            ...current,
+            [id]: {
+              ...now,
+              detection: { ...now.detection, regions },
+              texts: said,
+            },
+          }
         })
       } catch (cause) {
         setError(said(cause))
@@ -396,7 +442,12 @@ function App() {
         const region = held?.detection.regions[index]
         if (!held || !region) return current
         const regions = [...held.detection.regions]
-        regions[index] = { ...region, box }
+        // The balloon this block was written in was worked out from where the
+        // block was. It is dropped rather than dragged along: a block pulled
+        // onto its neighbour is in that neighbour's balloon now, and a stale
+        // answer would letter the translation into the one it came from.
+        // `rereadRegion` asks again once the drag is over.
+        regions[index] = { ...region, box, bubble: null }
         return {
           ...current,
           [id]: { ...held, detection: { ...held.detection, regions } },
@@ -442,7 +493,10 @@ function App() {
       setError(null)
       setWorking({ id, stage: 'reading' })
       try {
-        const [text] = await read(file, [box])
+        const [[text], [balloon]] = await Promise.all([
+          read(file, [box]),
+          bubbles(file, [box]),
+        ])
         setAnalyses((current) => {
           const now = current[id]
           if (!now?.texts) return current
@@ -452,7 +506,16 @@ function App() {
           if (where === -1) return current
           const said = [...now.texts]
           said[where] = text ?? ''
-          return { ...current, [id]: { ...now, texts: said } }
+          const regions = [...now.detection.regions]
+          regions[where] = { ...regions[where], bubble: balloon }
+          return {
+            ...current,
+            [id]: {
+              ...now,
+              detection: { ...now.detection, regions },
+              texts: said,
+            },
+          }
         })
       } catch (cause) {
         setError(said(cause))
@@ -544,7 +607,9 @@ function App() {
         if (!now || target?.id !== region.id) return current
 
         const regions = [...now.detection.regions]
-        regions[index] = { ...target, box: firstBox }
+        // Two bubbles, so two balloons: whichever one the block as a whole was
+        // said to be in was the wrong answer for at least one of the halves.
+        regions[index] = { ...target, box: firstBox, bubble: null }
         const texts = now.texts ?? now.detection.regions.map(() => '')
 
         return {
@@ -573,11 +638,19 @@ function App() {
         const was = page?.[index]
         if (!page || !was) return current
 
+        // Held to the size of the block before the cut, not of the half: the
+        // page is lettered at one size, and half a block holds half the
+        // characters in half the room, which says nothing new about it.
+        const most = originalSize(
+          held.texts?.[index] ?? '',
+          region.box[2] - region.box[0],
+          region.box[3] - region.box[1],
+        )
         const put = (text: string, box: Box): Lettering => ({
           ...was,
           text,
           box,
-          size: fitSize(text, box[2] - box[0], box[3] - box[1]),
+          size: fitSize(text, box[2] - box[0], box[3] - box[1], most),
         })
 
         const next = [...page]
@@ -589,7 +662,10 @@ function App() {
       setError(null)
       setWorking({ id, stage: 'reading' })
       try {
-        const readings = await read(file, [firstBox, secondBox])
+        const [readings, balloons] = await Promise.all([
+          read(file, [firstBox, secondBox]),
+          bubbles(file, [firstBox, secondBox]),
+        ])
         setAnalyses((current) => {
           const now = current[id]
           if (!now?.texts) return current
@@ -605,7 +681,13 @@ function App() {
           const texts = [...now.texts]
           texts[first] = readings[0] ?? ''
           texts[second] = readings[1] ?? ''
-          return { ...current, [id]: { ...now, texts } }
+          const regions = [...now.detection.regions]
+          regions[first] = { ...regions[first], bubble: balloons[0] }
+          regions[second] = { ...regions[second], bubble: balloons[1] }
+          return {
+            ...current,
+            [id]: { ...now, detection: { ...now.detection, regions }, texts },
+          }
         })
       } catch (cause) {
         setError(said(cause))
@@ -695,8 +777,9 @@ function App() {
 
   /**
    * Translate the page: every block that was read and not left alone, sent
-   * together. Each line lands in the box its original came out of, set at
-   * whatever size fits that box.
+   * together. Each line lands in the balloon its original was written in, set at
+   * whatever size fits it — not in the box the original came out of, which for
+   * vertical Japanese is a column too narrow to set a word of English across.
    */
   const translatePage = useCallback(
     async (page: GalleryImage, found: Analysis): Promise<boolean> => {
@@ -725,11 +808,14 @@ function App() {
         wanted.forEach((line, at) => {
           const text = (got[at] ?? '').trim()
           if (!text) return
-          const box = found.detection.regions[line.index].box
+          const block = found.detection.regions[line.index]
+          const box = room(block)
           set[line.index] = {
             text,
             box,
-            size: fitSize(text, box[2] - box[0], box[3] - box[1]),
+            // `line.text` is the original this was translated from, which is
+            // what says how large this page is lettered.
+            size: sizeFor(text, box, line.text, block.box),
             angle: 0,
           }
         })
@@ -816,12 +902,15 @@ function App() {
 
   const fitOne = useCallback(
     (index: number) => {
+      const held = active ? analyses[active.id] : null
       const line = active ? lettering[active.id]?.[index] : null
-      if (!line) return
-      const [x0, y0, x1, y1] = line.box
-      changeLettering(index, { size: fitSize(line.text, x1 - x0, y1 - y0) })
+      const block = held?.detection.regions[index]
+      if (!line || !block) return
+      changeLettering(index, {
+        size: sizeFor(line.text, line.box, held?.texts?.[index] ?? '', block.box),
+      })
     },
-    [active, lettering, changeLettering],
+    [active, analyses, lettering, changeLettering],
   )
 
   /** Arrow keys on the board: one point at a time, five with shift. */
@@ -860,26 +949,97 @@ function App() {
   const fitAll = useCallback(() => {
     if (!active) return
     const { id } = active
+    const held = analyses[id]
     setLettering((current) => {
       const page = current[id]
       if (!page) return current
       return {
         ...current,
-        [id]: page.map((line) =>
-          line === null
-            ? null
-            : {
-                ...line,
-                size: fitSize(
-                  line.text,
-                  line.box[2] - line.box[0],
-                  line.box[3] - line.box[1],
-                ),
-              },
-        ),
+        [id]: page.map((line, at) => {
+          const block = held?.detection.regions[at]
+          if (line === null || !block) return line
+          return {
+            ...line,
+            size: sizeFor(line.text, line.box, held?.texts?.[at] ?? '', block.box),
+          }
+        }),
       }
     })
-  }, [active])
+  }, [active, analyses])
+
+  /**
+   * Put every line back in the balloon its block was written in, and resize it
+   * to suit.
+   *
+   * Detecting already answers with those balloons, so this is for the blocks it
+   * never saw: one drawn by hand, one cut in two, one pulled off the bubble
+   * beside it. It is also the way back after a box has been dragged about by
+   * hand and made worse rather than better.
+   *
+   * A block with no balloon around it — a sound effect over artwork, a caption
+   * in the margin — is left exactly where it is. There is nowhere better to put
+   * it, and moving it somewhere arbitrary would be worse than leaving it.
+   */
+  const fitBoxes = useCallback(async () => {
+    if (!active) return
+    const { id, file } = active
+    const found = analyses[id]
+    if (!found) return
+
+    setError(null)
+    setWorking({ id, stage: 'fitting' })
+    try {
+      const [balloons] = await Promise.all([
+        bubbles(
+          file,
+          found.detection.regions.map((region) => region.box),
+        ),
+        // Sizes are about to be worked out by measuring: the face has to be in.
+        ready(),
+      ])
+
+      // Both lists are held by block position, so an answer only means anything
+      // while the page still has the blocks it was asked about.
+      setAnalyses((current) => {
+        const now = current[id]
+        if (now?.detection.regions.length !== balloons.length) return current
+        return {
+          ...current,
+          [id]: {
+            ...now,
+            detection: {
+              ...now.detection,
+              regions: now.detection.regions.map((region, at) => ({
+                ...region,
+                bubble: balloons[at],
+              })),
+            },
+          },
+        }
+      })
+      setLettering((current) => {
+        const page = current[id]
+        if (page?.length !== balloons.length) return current
+        return {
+          ...current,
+          [id]: page.map((line, at) => {
+            const box = balloons[at]
+            const block = found.detection.regions[at]
+            if (!line || !box || !block) return line
+            return {
+              ...line,
+              box,
+              size: sizeFor(line.text, box, found.texts?.[at] ?? '', block.box),
+            }
+          }),
+        }
+      })
+    } catch (cause) {
+      setError(said(cause))
+    } finally {
+      setWorking(null)
+    }
+  }, [active, analyses])
 
   const total = images.reduce((sum, image) => sum + image.size, 0)
 
@@ -991,6 +1151,7 @@ function App() {
             onTarget: setTarget,
             onTranslate: runTranslate,
             onFitAll: fitAll,
+            onFitBoxes: fitBoxes,
             lettering: pageLettering,
             onBox: setLetteringBox,
             onTurn: setLetteringAngle,

@@ -173,6 +173,42 @@ function lands(
   )
 }
 
+/**
+ * How large the page itself is lettered, read off the block the original came
+ * out of.
+ *
+ * Japanese is set on a square em — every character fills its box, however the
+ * lines run — so a block of `n` characters covering `width × height` was set at
+ * about `sqrt(width × height / n)`. That is the size the artist chose for this
+ * page, and it is the size a translation belongs near.
+ *
+ * It is needed because a balloon is drawn around the words rather than to them:
+ * the largest type that fits a balloon is far bigger than the words that were in
+ * it whenever the line is short. Left to fill its balloon, "OK!" comes out four
+ * times the height of the dialogue on either side of it, which is the one thing
+ * a page of lettering must not do.
+ *
+ * Latin is set a little larger than the em it is matched to, because a capital
+ * fills about two thirds of its em where a kanji fills all of it, and two lines
+ * on the same em do not look the same size.
+ */
+export const LATIN = 1.25
+
+export function originalSize(
+  original: string,
+  width: number,
+  height: number,
+): number {
+  const characters = original.replace(/\s+/g, '').length
+  // Nothing was read here — a block drawn by hand and never gone over — so
+  // there is nothing to hold the size to, and the box is all there is to go on.
+  if (!characters || width <= 0 || height <= 0) return SIZE_MAX
+  return Math.max(
+    SIZE_MIN,
+    Math.round(LATIN * Math.sqrt((width * height) / characters)),
+  )
+}
+
 /** The largest size that lands, or null if not even the smallest does. */
 function largestThatLands(
   context: CanvasRenderingContext2D,
@@ -180,10 +216,11 @@ function largestThatLands(
   width: number,
   height: number,
   whole: boolean,
+  most: number,
 ): number | null {
   let best: number | null = null
   let low = SIZE_MIN
-  let high = Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.floor(height)))
+  let high = Math.min(most, Math.max(SIZE_MIN, Math.floor(height)))
 
   while (low <= high) {
     const size = Math.floor((low + high) / 2)
@@ -211,15 +248,26 @@ function largestThatLands(
  * Never smaller than SIZE_MIN: text too long for its box is set small and left
  * to overrun rather than dropped, which is what the API does when it letters a
  * page too.
+ *
+ * `most` is as large as it may go however much room there is — see
+ * :func:`originalSize`, which is where it comes from. A box is the balloon, not
+ * the words, so without a ceiling a short line is set to fill a balloon it
+ * should only be sitting in.
  */
-export function fitSize(text: string, width: number, height: number): number {
+export function fitSize(
+  text: string,
+  width: number,
+  height: number,
+  most: number = SIZE_MAX,
+): number {
   const context = measurer()
   const words = text.trim()
   if (!context || !words || width <= 0 || height <= 0) return SIZE_MIN
 
+  const ceiling = Math.max(SIZE_MIN, Math.min(SIZE_MAX, Math.round(most)))
   return (
-    largestThatLands(context, words, width, height, true) ??
-    largestThatLands(context, words, width, height, false) ??
+    largestThatLands(context, words, width, height, true, ceiling) ??
+    largestThatLands(context, words, width, height, false, ceiling) ??
     SIZE_MIN
   )
 }

@@ -10,7 +10,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image, ImageDraw
 
-from mangatrans import detect, inpaint, ollama, read, render, server
+from mangatrans import bubble, detect, inpaint, ollama, read, render, server
 from mangatrans.detect import Block
 from mangatrans.geometry import Box
 
@@ -348,6 +348,171 @@ class TestOverlay(unittest.TestCase):
         self.assertTrue((self.rendered("WAY TOO MANY WORDS " * 30) < 128).any())
 
 
+def ballooned(
+    balloon: Box = Box(120, 60, 480, 300),
+    column: Box = Box(285, 100, 315, 260),
+    size=(600, 800),
+    ground=(255, 255, 255),
+    ink=(0, 0, 0),
+) -> Image.Image:
+    """A page of artwork with one balloon on it, and a column of writing inside.
+
+    The column is what a detector hands back for Japanese: tall, narrow, and
+    down the middle, which cuts the balloon's ground in two. The artwork around
+    it is mid tone, so nothing outside the balloon is light enough to be mistaken
+    for part of it.
+    """
+    image = Image.new("RGB", size, (120, 120, 120))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse(
+        (balloon.x0, balloon.y0, balloon.x1 - 1, balloon.y1 - 1),
+        fill=ground,
+        outline=ink,
+        width=3,
+    )
+    for y in range(column.y0, column.y1, 30):
+        draw.rectangle((column.x0, y, column.x1 - 1, y + 20), fill=ink)
+    return image
+
+
+def stub_balloon(size=(300, 200)) -> Image.Image:
+    """A page with a balloon drawn around the block :class:`StubDetector` finds.
+
+    Rounded rather than oval, because that block is nearly square and nearly
+    fills it: the largest rectangle inside an oval drawn round a square is
+    smaller than the square, which is an answer /api/bubbles is right to
+    withhold and not what this is here to show.
+    """
+    image = Image.new("RGB", size, (120, 120, 120))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        (2, 2, 96, 66), radius=12, fill=(255, 255, 255), outline=(0, 0, 0), width=3
+    )
+    ink = StubDetector.ink
+    draw.rectangle((ink.x0, ink.y0, ink.x1 - 1, ink.y1 - 1), fill=(0, 0, 0))
+    return image
+
+
+def grey(image: Image.Image) -> np.ndarray:
+    return np.array(image.convert("L"))
+
+
+class TestUnder(unittest.TestCase):
+    def test_one_flat_row_is_as_wide_as_it_is(self):
+        self.assertEqual(bubble.under([2, 2, 2]), (6, 0, 3, 2))
+
+    def test_a_dip_is_worth_more_wide_than_tall(self):
+        area, x0, x1, height = bubble.under([2, 1, 2])
+        self.assertEqual((area, x0, x1, height), (3, 0, 3, 1))
+
+    def test_a_gap_ends_the_rectangle(self):
+        self.assertEqual(bubble.under([3, 0, 1]), (3, 0, 1, 3))
+
+    def test_nothing_standing_is_no_rectangle(self):
+        self.assertEqual(bubble.under([0, 0]), (0, 0, 0, 0))
+
+
+class TestStanding(unittest.TestCase):
+    def test_the_rectangle_is_where_the_pixels_are(self):
+        mask = np.zeros((20, 30), np.uint8)
+        mask[4:12, 5:25] = 255
+        self.assertEqual(bubble.standing(mask > 0), Box(5, 4, 25, 12))
+
+    def test_an_empty_mask_has_no_rectangle(self):
+        self.assertIsNone(bubble.standing(np.zeros((10, 10), np.uint8) > 0))
+
+    def test_the_larger_of_two_shapes_wins(self):
+        mask = np.zeros((40, 40), np.uint8)
+        mask[0:4, 0:4] = 255
+        mask[10:30, 10:35] = 255
+        self.assertEqual(bubble.standing(mask > 0), Box(10, 10, 35, 30))
+
+
+class TestSolid(unittest.TestCase):
+    def test_a_hole_inside_the_shape_is_filled_in(self):
+        region = np.zeros((40, 40), np.uint8)
+        region[5:35, 5:35] = 255
+        region[15:25, 15:25] = 0
+        self.assertTrue((bubble.solid(region)[15:25, 15:25] == 255).all())
+
+    def test_the_outside_is_left_outside(self):
+        region = np.zeros((40, 40), np.uint8)
+        region[5:35, 5:35] = 255
+        self.assertTrue((bubble.solid(region)[0:4, 0:4] == 0).all())
+
+    def test_a_shape_running_to_the_edge_does_not_swallow_the_window(self):
+        region = np.zeros((40, 40), np.uint8)
+        region[:, 0:10] = 255
+        self.assertTrue((bubble.solid(region)[:, 20:] == 0).all())
+
+
+class TestAround(unittest.TestCase):
+    balloon = Box(120, 60, 480, 300)
+    column = Box(285, 100, 315, 260)
+
+    def found(self, image: Image.Image, box: Box | None = None) -> Box | None:
+        return bubble.around(grey(image), box or self.column)
+
+    def test_a_column_of_writing_answers_with_the_balloon_around_it(self):
+        found = self.found(ballooned())
+        assert found is not None
+        self.assertGreater(found.w, self.column.w * 3)
+        self.assertGreater(found.w, found.h, "English wants the wider way round")
+
+    def test_the_answer_stays_inside_the_balloon(self):
+        found = self.found(ballooned())
+        assert found is not None
+        self.assertGreater(found.x0, self.balloon.x0)
+        self.assertGreater(found.y0, self.balloon.y0)
+        self.assertLess(found.x1, self.balloon.x1)
+        self.assertLess(found.y1, self.balloon.y1)
+
+    def test_the_writing_is_still_covered_by_where_it_will_be_set(self):
+        found = self.found(ballooned())
+        assert found is not None
+        self.assertLess(found.x0, self.column.cx)
+        self.assertGreater(found.x1, self.column.cx)
+        self.assertLess(found.y0, self.column.cy)
+        self.assertGreater(found.y1, self.column.cy)
+
+    def test_the_column_is_not_measured_as_the_gap_beside_it(self):
+        # Without the block painted in, the flood starts in one half of a
+        # balloon a line of Japanese has cut in two, and answers with that half.
+        found = self.found(ballooned())
+        assert found is not None
+        self.assertGreater(found.x1 - found.x0, self.balloon.w / 2)
+
+    def test_white_words_on_a_dark_balloon_are_found_the_same_way(self):
+        image = ballooned(ground=(15, 15, 15), ink=(255, 255, 255))
+        found = self.found(image)
+        assert found is not None
+        self.assertGreater(found.w, self.column.w * 3)
+
+    def test_lettering_with_no_balloon_around_it_has_no_answer(self):
+        # A page of flat white with writing on it: the flood has the whole page
+        # to spread over, which is not a balloon however it is measured.
+        image = Image.new("RGB", (600, 800), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+        for y in range(self.column.y0, self.column.y1, 30):
+            draw.rectangle(
+                (self.column.x0, y, self.column.x1 - 1, y + 20), fill=(0, 0, 0)
+            )
+        self.assertIsNone(self.found(image))
+
+    def test_a_balloon_no_wider_than_the_words_is_left_alone(self):
+        # There is nothing to be won by moving a line into a balloon that is
+        # already drawn tight around it.
+        wide = Box(40, 170, 560, 230)
+        image = ballooned(balloon=wide, column=Box(60, 180, 540, 220))
+        self.assertIsNone(self.found(image, Box(60, 180, 540, 220)))
+
+    def test_a_box_too_small_to_hold_lettering_has_no_answer(self):
+        self.assertIsNone(self.found(ballooned(), Box(300, 180, 302, 182)))
+
+    def test_a_box_off_the_page_has_no_answer(self):
+        self.assertIsNone(self.found(ballooned(), Box(900, 900, 1000, 1000)))
+
+
 def reply(content: str = "", thinking: str = "") -> dict:
     """One answer from Ollama, shaped the way it shapes them."""
     return {"message": {"role": "assistant", "content": content, "thinking": thinking}}
@@ -508,9 +673,50 @@ class TestApi(unittest.TestCase):
             {
                 "width": 200,
                 "height": 140,
-                "regions": [{"box": [10, 10, 60, 40], "confidence": 0.912}],
+                "regions": [
+                    # Flat tone from edge to edge: there is no balloon to find,
+                    # and saying so is the answer that leaves the box alone.
+                    {"box": [10, 10, 60, 40], "confidence": 0.912, "bubble": None}
+                ],
             },
         )
+
+    def test_detect_answers_with_the_balloon_a_block_is_written_in(self):
+        with mock.patch.object(server, "Detector", StubDetector):
+            response = client().post("/api/detect", data=payload(stub_balloon()))
+        [region] = response.json["regions"]
+        self.assertIsNotNone(region["bubble"], "the balloon was not found")
+
+    def test_bubbles_answers_with_one_balloon_per_box_in_order(self):
+        boxes = [[285, 100, 315, 260], [0, 0, 30, 30]]
+        response = client().post(
+            "/api/bubbles", data=payload(ballooned(), boxes=boxes)
+        )
+        self.assertEqual(response.status_code, 200)
+        first, second = response.json["regions"]
+        self.assertEqual(first["box"], boxes[0])
+        self.assertGreater(first["bubble"][2] - first["bubble"][0], 100)
+        self.assertIsNone(second["bubble"], "the corner of the page is no balloon")
+
+    def test_bubbles_stands_no_model_up(self):
+        # Nothing here needs the detector, and a caller that only wants balloons
+        # should not pay ~95 MB to find that out.
+        with mock.patch.object(server, "Detector", side_effect=AssertionError):
+            response = client().post(
+                "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 315, 260]])
+            )
+        self.assertEqual(response.status_code, 200)
+
+    def test_bubbles_clips_a_box_that_runs_off_the_page(self):
+        response = client().post(
+            "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 900, 900]])
+        )
+        self.assertEqual(response.json["regions"][0]["box"], [285, 100, 600, 800])
+
+    def test_bubbles_needs_boxes(self):
+        response = client().post("/api/bubbles", data=payload(ballooned()))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("boxes", response.json["error"])
 
     def test_detect_needs_an_image(self):
         with mock.patch.object(server, "Detector", StubDetector):

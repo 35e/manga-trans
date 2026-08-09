@@ -16,7 +16,7 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
 
-from . import ollama, render
+from . import bubble, ollama, render
 from .detect import GROW, GROW_MAX, Detector
 from .geometry import Box
 from .read import Reader
@@ -198,16 +198,54 @@ def create_app(
 
     @app.post("/api/detect")
     def detect():
-        """Every block of lettering on the page, boxed."""
+        """Every block of lettering on the page, boxed, with the balloon it is in.
+
+        The box is where the words are; `bubble` is the room they were written
+        in, which is what a translation wants — see /api/bubbles. It comes back
+        here as well as there because it is worked out from the page and the
+        boxes alone, and both are already in hand.
+        """
         image = page()
-        blocks = detector()(np.array(image))
+        pixels = np.array(image)
+        blocks = detector()(pixels)
+        balloons = bubble.bubbles(pixels, [block.box for block in blocks])
         return jsonify(
             width=image.width,
             height=image.height,
             regions=[
-                {"box": block.box.as_list(), "confidence": round(block.confidence, 3)}
-                for block in blocks
+                {
+                    "box": block.box.as_list(),
+                    "confidence": round(block.confidence, 3),
+                    "bubble": balloon.as_list() if balloon else None,
+                }
+                for block, balloon in zip(blocks, balloons)
             ],
+        )
+
+    @app.post("/api/bubbles")
+    def balloons():
+        """The balloon each box is written in, boxed, in the order they were given.
+
+        Japanese runs down the page, so a block of it is a tall narrow column
+        and a translation set in that column has nowhere to go. This answers
+        with the room around it instead: the largest rectangle that fits inside
+        the shape the words sit in, which is what a line of English should be
+        lettered into.
+
+        `bubble` is null where no balloon could be made out — lettering over
+        artwork is in none, and a balloon whose outline the scan has broken
+        cannot be followed — and the caller should keep the box it has. No model
+        is involved, so this is the one call on an image that never stands the
+        detector up.
+        """
+        image = page()
+        boxes = [box_in(values, image) for values in sent("boxes")]
+        found = bubble.bubbles(np.array(image), boxes)
+        return jsonify(
+            regions=[
+                {"box": box.as_list(), "bubble": balloon.as_list() if balloon else None}
+                for box, balloon in zip(boxes, found)
+            ]
         )
 
     @app.post("/api/letters")
