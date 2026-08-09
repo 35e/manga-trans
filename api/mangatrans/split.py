@@ -4,16 +4,17 @@ Two balloons that overlap are often boxed as one. That is worse than it looks:
 the block is read as one string, so two speakers arrive at the translator as a
 single line, and the lettering that comes back is set into one balloon.
 
-What separates them is blank. Inside a balloon the lettering is set solid —
-columns of vertical Japanese sit about a fifth of a character apart — while
+What separates them is blank. Inside a balloon the lettering is set solid, while
 between two balloons there is padding, an outline and usually some art. So the
 per-pixel text mask is projected onto each axis and cut across any run of blank
-wide enough to be a wall rather than a line gap, over and over until nothing is
-wide enough. Cuts are axis-aligned because a block is a rectangle; a gap no
-straight line can follow is left alone.
+wide enough to be a wall rather than the gap between two lines, over and over
+until nothing is wide enough. Cuts are axis-aligned because a block is a
+rectangle; a gap no straight line can follow is left alone.
 
-This is measured in characters rather than pixels, since a page may be lettered
-at any size. See :func:`character` for how that size is read off the mask.
+How much blank that takes depends on what the cut would stand through, which is
+the one thing that makes this safe to do at all — see :data:`GAP`. Everything is
+measured in characters rather than pixels, since a page may be lettered at any
+size; see :func:`character`.
 """
 
 from __future__ import annotations
@@ -23,21 +24,38 @@ import numpy as np
 
 from .geometry import Box
 
-# How much blank means two balloons rather than two lines of one, in characters.
-# Measured on both: the worst gap inside a single column — small kana and
-# punctuation, which leave most of their cell empty — reaches about 1.1, and the
-# tightest gap between two balloons the detector had run together was about 2.6.
-# This sits between them with room either side.
-GAP = 1.6
+# How much blank means two balloons rather than two lines of one, in characters,
+# for a cut standing through several lines at once.
+#
+# Such a cut is a strong signal: every line it crosses has to fall blank in the
+# same place at the same time, which lettering set inside one balloon does not do
+# — the widest gap measured through a whole balloon was 0.37 of a character. So
+# barely more than a line gap is already worth cutting on.
+GAP = 0.8
 
-# A floor in pixels, for text small enough that 1.6 characters is a few pixels
-# and a stray speck of blank would cut a line in half.
+# The same, for a cut running the length of a single line, where there are no
+# other lines to agree with it.
+#
+# Every gap between two characters is then a candidate, and small kana and
+# punctuation leave most of their cell empty: a column reading あっ、、、そうっ、か
+# has gaps of 1.1 characters in it and is still one line of one balloon. This has
+# to clear that, so a lone line is only ever cut on a plainly larger blank.
+GAP_ALONE = 1.5
+
+# How many lines a cut must stand through to be read the first way. Two would be
+# the natural reading, but a block exactly two characters across is the awkward
+# middle — that is one column of vertical Japanese with its punctuation as often
+# as it is two — so the strict measure is held on a little past it.
+LINES = 2.5
+
+# A floor in pixels, for text small enough that a character is a few pixels and a
+# stray speck of blank would cut a line in half.
 GAP_MIN = 8
 
 # How large one character is, as a percentile of the ink marks. A median is what
 # this wants to be, but punctuation and small kana are a large enough minority of
-# the marks in a line to drag one down — on a column reading あっ、、、そうっ、か
-# the median says 23px where the characters are 42.
+# the marks in a line to drag one down — on the column above, the median says
+# 23px where the characters are 42.
 CHARACTER = 75
 
 
@@ -85,6 +103,18 @@ def widest_blank(profile: np.ndarray) -> tuple[int, int]:
     return best_at, best
 
 
+def wide_enough(run: int, through: float, em: float) -> bool:
+    """Whether a blank run is a wall between balloons rather than a line gap.
+
+    ``through`` is how much lettering the cut would stand through, in characters,
+    measured across the cut. A cut crossing several lines has all of them
+    agreeing that the page is blank there; a cut along a lone line has only that
+    line's own gaps to go on, and has to clear the widest of them.
+    """
+    need = GAP if through >= LINES else GAP_ALONE
+    return run >= max(GAP_MIN, round(need * em))
+
+
 def inked(text: np.ndarray) -> Box | None:
     """The box around everything set in ``text``, or None if nothing is."""
     across = np.flatnonzero(text.any(axis=0))
@@ -94,34 +124,44 @@ def inked(text: np.ndarray) -> Box | None:
     return Box(int(across[0]), int(down[0]), int(across[-1]) + 1, int(down[-1]) + 1)
 
 
-def where(text: np.ndarray, widest: int) -> tuple[int, int] | None:
+def where(text: np.ndarray, em: float) -> tuple[int, int] | None:
     """Which axis to cut across and where, or None if no gap is wide enough.
 
-    The wider of the two gaps wins, so a page cut both ways comes apart at its
-    plainest seam first and the rest is left to the recursion.
+    The wider of the two gaps wins, so a block that comes apart both ways is cut
+    at its plainest seam first and the rest is left to the recursion.
     """
-    across = widest_blank(text.any(axis=0))
-    down = widest_blank(text.any(axis=1))
-    axis, (start, run) = (0, across) if across[1] >= down[1] else (1, down)
-    if run < widest:
+    height, width = text.shape[:2]
+    # A cut across x is a wall standing through the height, and the other way about.
+    candidates = [
+        (0, widest_blank(text.any(axis=0)), height / em),
+        (1, widest_blank(text.any(axis=1)), width / em),
+    ]
+    walls = [
+        (axis, start, run)
+        for axis, (start, run), through in candidates
+        if run > 0 and wide_enough(run, through, em)
+    ]
+    if not walls:
         return None
+
+    axis, start, run = max(walls, key=lambda wall: wall[2])
     return axis, start + run // 2
 
 
-def parts(text: np.ndarray, widest: int) -> list[Box]:
+def parts(text: np.ndarray, em: float) -> list[Box]:
     """``text`` cut apart at every wide enough blank, boxed, in its own pixels."""
-    found = where(text, widest)
+    found = where(text, em)
     if found is None:
         here = inked(text)
         return [here] if here else []
 
     axis, cut = found
     if axis == 0:
-        return parts(text[:, :cut], widest) + [
-            box.moved(cut, 0) for box in parts(text[:, cut:], widest)
+        return parts(text[:, :cut], em) + [
+            box.moved(cut, 0) for box in parts(text[:, cut:], em)
         ]
-    return parts(text[:cut, :], widest) + [
-        box.moved(0, cut) for box in parts(text[cut:, :], widest)
+    return parts(text[:cut, :], em) + [
+        box.moved(0, cut) for box in parts(text[cut:, :], em)
     ]
 
 
@@ -132,16 +172,17 @@ def pieces(text: np.ndarray, box: Box) -> list[Box]:
     one: growing it to cover the halo around a letter also closes the gaps this
     is here to measure.
 
-    A block that does not come apart is handed back exactly as the detector drew
-    it, untightened — this only ever answers differently for a block that was
-    really two.
+    A block that does not come apart is handed back exactly as it came in,
+    untightened — this only ever answers differently for a block that was really
+    two. The character size is read once, off the whole block, rather than again
+    for each piece: half a bubble is a small sample, and the size does not change
+    partway down a block.
     """
     crop = text[box.y0 : box.y1, box.x0 : box.x1]
     if crop.size == 0 or not crop.any():
         return [box]
 
-    widest = max(GAP_MIN, round(GAP * character(crop)))
-    found = parts(crop, widest)
+    found = parts(crop, character(crop))
     if len(found) < 2:
         return [box]
     return [piece.moved(box.x0, box.y0) for piece in found]

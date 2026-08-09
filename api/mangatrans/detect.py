@@ -39,6 +39,17 @@ SEG_THRESHOLD = 0.5
 GROW = 4
 GROW_MAX = 64
 
+# A margin left around every block, as a share of one character. The block head
+# boxes lettering tightly and sometimes inside it, clipping the edge of a glyph:
+# a box a fraction of a character wider holds the whole of what it found, gives
+# the reader the stroke it was cutting through, and covers the whole letter when
+# the block is cleaned by its box rather than by the traced ink.
+#
+# Measured in characters rather than pixels or a share of the box, so it comes
+# out the same on a page scanned at any size and on a block of any shape.
+PAD = 0.25
+PAD_MIN = 2
+
 
 @dataclass(frozen=True)
 class Block:
@@ -213,11 +224,24 @@ class Detector:
         # Ungrown: growing the mask to cover the halo around a letter also closes
         # the gaps the split is measuring.
         text = page_mask(seg, width, height, pad_w, pad_h, 0) > 0
-        blocks = [
-            Block(box=piece, confidence=block.confidence)
-            for block in found
-            for piece in split.pieces(text, block.box)
-        ]
+
+        # Split first and pad after. A margin put on before would close the very
+        # gaps the split is looking for, and would push two neighbours together.
+        blocks = []
+        for block in found:
+            for piece in split.pieces(text, block.box):
+                crop = text[piece.y0 : piece.y1, piece.x0 : piece.x1]
+                by = (
+                    max(PAD_MIN, round(PAD * split.character(crop)))
+                    if crop.any()
+                    else PAD_MIN
+                )
+                blocks.append(
+                    Block(
+                        box=piece.grown(by).clipped(width, height),
+                        confidence=block.confidence,
+                    )
+                )
 
         # Down the page, then right to left. `lib/order.ts` sorts by the same key.
         # After splitting, so the halves of a cut block land where they are read.

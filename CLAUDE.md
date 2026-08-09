@@ -175,11 +175,24 @@ threshold tweak cost 550 MB. Keep that import deferred.
 happens in `Detector.__call__` and not in the dashboard: the block is read as one
 string, translated as one line, and lettered into one balloon. `split.pieces`
 hands a block back **unchanged** when it does not come apart — it must never
-re-box a block it did not cut, or every block on the page would shift. The
-thresholds are tuned to a measured valley: the worst gap inside a single column
-of kana and punctuation is ~1.1 characters, the tightest real merge ~2.6, and
-`GAP` sits at 1.6. Err shy — a merge can be split by hand in the dashboard, but
+re-box a block it did not cut, or every block on the page would shift.
+
+**The split threshold depends on what the cut stands through**, and that is what
+makes a gap this small safe. A cut crossing several lines at once (`GAP`, 0.8
+characters) is a strong signal — every line has to fall blank in the same place
+at once. A cut along a lone line (`GAP_ALONE`, 1.5) has only that line's own
+character gaps to go on, and a column of small kana and punctuation reaches 1.1.
+`LINES` (2.5) is which of the two applies. A single threshold cannot do this: at
+1.6 it misses balloons a character apart, and anything below ~1.1 shatters that
+punctuation column. Tuned by grid search over 21 rendered cases — the binding
+constraint at the low end is a balloon whose own lines are set far apart, which
+breaks below 0.8. Err shy: a merge can be split by hand in the dashboard, but
 there is no way to put a wrongly-cut block back together.
+
+**Order in `Detector.__call__` is load-bearing**: split on tight boxes and the
+ungrown mask, *then* pad (`PAD`, a quarter of a character), *then* sort. Padding
+first would close the gaps the split measures and push neighbours together;
+sorting first would leave the halves of a cut block out of reading order.
 
 ## Style
 

@@ -39,6 +39,10 @@ class Box:
     def moved(self, dx: int, dy: int) -> Box:
         return Box(self.x0 + dx, self.y0 + dy, self.x1 + dx, self.y1 + dy)
 
+    def grown(self, by: int) -> Box:
+        """The same box with ``by`` pixels added on every side."""
+        return Box(self.x0 - by, self.y0 - by, self.x1 + by, self.y1 + by)
+
     def as_list(self) -> list[int]:
         return [self.x0, self.y0, self.x1, self.y1]
 

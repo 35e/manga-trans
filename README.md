@@ -101,15 +101,29 @@ looks: the block would be read as one string, so two speakers reach the
 translator as a single line and the lettering that comes back is set into one
 balloon. So a block is cut apart before it is answered with, wherever a run of
 blank inside it is wide enough to be a wall rather than the gap between two
-lines — about one and a half characters, measured against the size the page is
-lettered at rather than in pixels. The cuts are axis-aligned, since a block is a
-rectangle. Each piece keeps the confidence of the block it came from and gets its
-own `bubble`, and the pieces are put in reading order along with everything else.
+lines. The cuts are axis-aligned, since a block is a rectangle. Each piece keeps
+the confidence of the block it came from and gets its own `bubble`, and the
+pieces are put in reading order along with everything else.
 
-This is deliberately shy: a balloon left merged can be split by hand in the
-dashboard, where a line of dialogue wrongly cut into four cannot be put back so
-easily. A block that does not come apart is answered with exactly as the detector
-drew it.
+How much blank that takes depends on what the cut stands through, and everything
+is measured in characters rather than pixels so it holds at any size the page is
+lettered at. A cut crossing several lines at once needs only **0.8 of a
+character**: every line it crosses has to fall blank in the same place at the
+same time, which lettering inside one balloon does not do. A cut running the
+length of a single line has no other line to agree with it — the gap between two
+characters is then a candidate, and small kana and punctuation leave most of
+their cell empty — so that one needs **1.5**.
+
+Under about 0.8 the line spacing of a generously set balloon starts being read
+as a wall, so that is the floor rather than a preference. Beyond that this is
+deliberately shy: a balloon left merged can be split by hand in the dashboard,
+where a line of dialogue wrongly cut into four cannot be put back so easily. A
+block that does not come apart is answered with exactly as the detector drew it.
+
+Every block also comes back with a margin around it — a quarter of a character,
+so it holds at any size — because the block head boxes lettering tightly and
+sometimes clips the edge of a glyph. The margin goes on after the split, or it
+would close the very gaps the split is measuring.
 
 **`/api/bubbles`** answers with the room each block was written in rather than
 the room its words take up: the largest rectangle that fits inside the balloon

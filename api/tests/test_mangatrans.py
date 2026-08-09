@@ -7,6 +7,7 @@ import json
 import unittest
 from unittest import mock
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -582,6 +583,37 @@ class TestSplit(unittest.TestCase):
         box = around(one)
         self.assertEqual(split.pieces(written(one), box), [box])
 
+    def test_a_lone_line_needs_a_wider_gap_than_a_block_of_several(self):
+        """The rule that makes a gap this small safe to cut on at all.
+
+        A cut standing through several lines has all of them agreeing the page is
+        blank there. A cut along a single line has only that line's own gaps, and
+        the gap between two characters is one of those — so the same blank that
+        splits a block of three columns must leave one column alone.
+        """
+        gap = EM  # one character of blank, in the middle of both
+
+        alone = lettering(20, 20, 1, 5) + lettering(20, 20 + 5 * EM + gap, 1, 5)
+        self.assertEqual(
+            split.pieces(written(alone), around(alone)),
+            [around(alone)],
+            "a single column was cut at the gap between two characters",
+        )
+
+        several = lettering(20, 20, 3, 5) + lettering(20, 20 + 5 * EM + gap, 3, 5)
+        self.assertEqual(
+            len(split.pieces(written(several), around(several))),
+            2,
+            "three columns falling blank at once is a wall and was not cut",
+        )
+
+    def test_two_balloons_a_character_apart_come_apart(self):
+        # What the wider gap used to miss: close together, but not one thing.
+        one = lettering(20, 20, 2, 5)
+        other = lettering(20 + 2 * EM + EM, 25, 2, 5)
+        pieces = split.pieces(written(one, other), around(one, other))
+        self.assertEqual(len(pieces), 2)
+
     def test_a_block_that_holds_one_balloon_is_handed_back_untouched(self):
         one = lettering(20, 20, 3, 4)
         # Deliberately looser than the lettering: a block that does not come
@@ -654,6 +686,94 @@ class TestCharacter(unittest.TestCase):
         mask = written(column)
         found = split.character(mask[20 : 20 + 8 * EM, 20 : 20 + EM])
         self.assertLessEqual(found, EM * 1.5)
+
+
+class TestDetectorBlocks(unittest.TestCase):
+    """The wiring in Detector.__call__: split, then pad, then reading order.
+
+    The network itself is replaced by its outputs, so this needs no weights: what
+    is under test is what the detector does with them.
+    """
+
+    size = (200, 140)
+
+    def seg_for(self, glyphs: list[Box]) -> np.ndarray:
+        """The per-pixel text map the segmentation head would answer with."""
+        width, height = self.size
+        page = np.zeros((height, width), np.float32)
+        for glyph in glyphs:
+            page[glyph.y0 : glyph.y1, glyph.x0 : glyph.x1] = 1.0
+        _, pad_w, pad_h = detect.letterbox(np.zeros((height, width, 3), np.uint8))
+        kept = cv2.resize(
+            page,
+            (detect.INPUT_SIZE - pad_w, detect.INPUT_SIZE - pad_h),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        seg = np.zeros((detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
+        seg[: detect.INPUT_SIZE - pad_h, : detect.INPUT_SIZE - pad_w] = kept
+        return seg
+
+    def head_for(self, boxes: list[Box]) -> np.ndarray:
+        """The block head's rows for those boxes, in the letterboxed canvas."""
+        width, height = self.size
+        _, pad_w, pad_h = detect.letterbox(np.zeros((height, width, 3), np.uint8))
+        scale_x = (detect.INPUT_SIZE - pad_w) / width
+        scale_y = (detect.INPUT_SIZE - pad_h) / height
+        rows = np.zeros((1, len(boxes), 6), np.float32)
+        for i, box in enumerate(boxes):
+            rows[0, i] = [
+                box.cx * scale_x,
+                box.cy * scale_y,
+                box.w * scale_x,
+                box.h * scale_y,
+                0.99,
+                0.99,
+            ]
+        return rows
+
+    def detector(self, glyphs: list[Box], boxes: list[Box]) -> detect.Detector:
+        made = detect.Detector.__new__(detect.Detector)
+        _, pad_w, pad_h = detect.letterbox(np.zeros((*self.size[::-1], 3), np.uint8))
+        head, seg = self.head_for(boxes), self.seg_for(glyphs)
+        made.run = lambda image: (head, seg, pad_w, pad_h)
+        return made
+
+    def page(self) -> np.ndarray:
+        return np.zeros((self.size[1], self.size[0], 3), np.uint8)
+
+    def test_one_box_over_two_balloons_is_answered_with_two_blocks(self):
+        one = lettering(20, 20, 2, 3, EM)
+        other = lettering(120, 25, 2, 3, EM)
+        found = self.detector(one + other, [around(one, other)])(self.page())
+        self.assertEqual(len(found), 2)
+
+    def test_each_piece_keeps_the_confidence_of_the_block_it_came_from(self):
+        one = lettering(20, 20, 2, 3, EM)
+        other = lettering(120, 25, 2, 3, EM)
+        found = self.detector(one + other, [around(one, other)])(self.page())
+        self.assertTrue(all(round(b.confidence, 2) == 0.98 for b in found))
+
+    def test_a_block_comes_back_with_a_margin_around_its_lettering(self):
+        glyphs = lettering(40, 40, 2, 3, EM)
+        tight = around(glyphs)
+        [found] = self.detector(glyphs, [tight])(self.page())
+        self.assertLess(found.box.x0, tight.x0, "no margin on the left")
+        self.assertLess(found.box.y0, tight.y0, "no margin on the top")
+        self.assertGreater(found.box.x1, tight.x1, "no margin on the right")
+        self.assertGreater(found.box.y1, tight.y1, "no margin on the bottom")
+
+    def test_the_margin_never_runs_off_the_page(self):
+        glyphs = lettering(0, 0, 2, 2, EM)
+        [found] = self.detector(glyphs, [around(glyphs)])(self.page())
+        self.assertEqual(found.box, found.box.clipped(*self.size))
+
+    def test_the_pieces_come_back_in_reading_order(self):
+        # Down the page, then right to left: the left one is read second.
+        left = lettering(20, 60, 2, 2, EM)
+        right = lettering(130, 20, 2, 2, EM)
+        found = self.detector(left + right, [around(left, right)])(self.page())
+        self.assertEqual(len(found), 2)
+        self.assertLess(found[0].box.y0, found[1].box.y0)
 
 
 class TestWidestBlank(unittest.TestCase):
