@@ -1,0 +1,138 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+`README.md` documents every endpoint, its form fields and its behaviour, plus the
+full environment-variable table. Read it before changing anything in the API's
+surface — it is kept accurate and should stay that way.
+
+## Commands
+
+Python runs in a container, never on the host. The image bakes the code in, so a
+running container ignores edits until it is rebuilt — mount the working copy
+instead when iterating.
+
+```bash
+podman build -t manga-trans api                       # ~2 GB, bakes both models in
+podman run --rm --init -p 8000:8000 manga-trans       # http://localhost:8000/api
+
+# Tests, with the working copy mounted so no rebuild is needed:
+podman run --rm --entrypoint python -w /app \
+    -v "$PWD/api/mangatrans:/app/mangatrans:ro" -v "$PWD/api/tests:/app/tests:ro" \
+    manga-trans -m unittest discover -s tests -t .
+
+# One class or one test — same mounts, last argument changes:
+    manga-trans -m unittest tests.test_mangatrans.TestOllama
+    manga-trans -m unittest tests.test_mangatrans.TestApi.test_clean_hides_the_boxes
+```
+
+`docker` takes the same commands. Tests stub the detector and reader
+(`StubDetector`/`StubReader`, patched onto `server.Detector`/`server.Reader`) and
+`mock.patch.object(ollama, "ask", ...)` for translation, so they need no model,
+no network and no torch.
+
+Front end, from `web/`:
+
+```bash
+pnpm install
+pnpm dev        # 5173, talks to http://localhost:8000 unless VITE_API_URL says otherwise
+pnpm build      # tsc -b && vite build
+pnpm lint       # oxlint
+```
+
+There are no front-end tests.
+
+## Architecture
+
+Two halves that only meet over HTTP: `api/` is a stateless Flask service, `web/`
+is a Vite/React dashboard that holds all the state. Nothing is persisted
+anywhere — every request carries the page it works on, and the browser is the
+only place a page, its blocks, its mask or its translations live.
+
+The API deliberately never renders end-to-end. Detection is imperfect, so
+`/api/detect` (where the text is), `/api/read` (what it says), `/api/clean`
+(hide it) and `/api/render` (set new text) are separate calls taking boxes back
+in, which is what lets the dashboard show the detection, have it corrected by
+hand, and only then act on it.
+
+### API (`api/mangatrans/`)
+
+`server.py` is the whole HTTP surface; the rest are libraries it composes.
+Models load lazily behind a lock on first use and are shared thereafter — an API
+only ever asked to detect never stands the OCR reader (and torch) up at all.
+`Detector` and `Reader` each hold their own lock because neither an OpenCV net
+nor torch generation is reentrant.
+
+- `detect.py` — comic-text-detector on OpenCV's ONNX backend. Two heads off one
+  pass: block boxes, and the per-pixel segmentation mask behind `/api/letters`.
+  Fetches its own weights on first use.
+- `read.py` — manga-ocr. **The only thing that imports torch, and it does so
+  inside `Reader.load()`.** Keep that import deferred and keep torch out of
+  every other module.
+- `ollama.py` — the whole page goes over in one request, held to a JSON schema;
+  if the model returns the wrong number of lines it falls back to one line at a
+  time. Prompts are never stored: callers send `system` each time.
+- `inpaint.py` / `render.py` — hiding and lettering. `render.marked()` turns
+  boxes + mask into one greyscale page (white hidden), `render.hidden()` picks
+  fill.
+- `geometry.py` — `Box`, x1/y1 exclusive, corners normalised on construction.
+
+### Web (`web/src/`)
+
+`App.tsx` owns nearly all state, keyed by page id: `analyses`, `lettering`,
+`letters` (traced bitmaps), masks and cleaned pages come from hooks. `Board.tsx`
+draws the page and its overlays; `lib/` holds the pure parts.
+
+## Invariants worth knowing before editing
+
+**Per-page arrays are positionally aligned.** `analysis.detection.regions`,
+`analysis.texts`, `analysis.excluded` (indices) and `lettering[pageId]` are all
+indexed by the same block position. Anything that inserts, moves or splits a
+block must carry every one of them plus `selected` — use `insertAt`, `moveAt`,
+`movedIndex` in `lib/order.ts`. Anything **asynchronous** must instead re-find
+its block by `region.id` when the answer comes back, because the list may have
+been reordered while the request was in flight (see `addRegion`, `rereadRegion`,
+`splitRegion` in `App.tsx`).
+
+**Reading order is defined twice and must agree.** `(y0, -x1)` — down the page,
+then right to left — in `detect.py` (`blocks.sort`) and in `lib/order.ts`
+(`key`). A hand-drawn block is inserted where that rule puts it, not appended,
+because the order is also the order the page is translated in as one
+conversation.
+
+**There are two independent letterers.** `/api/render` sets text with PIL
+(`render.py`: binary search for the largest fitting size, greedy wrap). The
+dashboard's "Apply to image" sets it with canvas (`lib/compose.ts`), sharing
+`lib/fit.ts` with the on-board preview so what is arranged is what comes out —
+same font, sizes, wrapping and hyphenation. They are not expected to produce
+identical output; `/api/render` is for callers that are not this dashboard.
+`lib/fit.ts` must be awaited via `ready()` before measuring, or it measures the
+fallback font.
+
+**Masks.** Greyscale, page-sized, white hidden, greys partial. `server.mask_in`
+believes an alpha channel only when some of it is actually clear, since a
+browser canvas always exports one — do not "simplify" that check. `lib/mask.ts`
+exports white-on-black for exactly this reason.
+
+**`fill` defaults differ by endpoint**: `art` for `/api/clean`, `white` for
+`/api/render`. `inpaint.fill` grows the hole by `EDGE` for *sampling* only, and
+still paints just what was marked — the soft rim around lettering must not
+become the material the fill is made of.
+
+**Traced masks are cached per `(pageId, spread)`** (`traceKey` in `App.tsx`),
+and the `ImageBitmap`s are explicitly `close()`d on removal — a different
+`grow`/`spread` is a different tracing, not the same one again.
+
+**Dockerfile layer order is load-bearing.** Only `__init__.py`, `geometry.py`,
+`detect.py` and `read.py` are copied before the model prefetch step; editing any
+of those four invalidates ~550 MB of baked weights and forces a re-download on
+the next build. Everything else is copied after.
+
+## Style
+
+The prose in this codebase is part of it. Module and function docstrings explain
+*why* a thing is done the way it is — what the alternative was, what breaks
+otherwise — and are written in plain sentences rather than in reference-manual
+shorthand. Python tests are named as statements of behaviour
+(`test_the_far_edge_is_exclusive`). Match this when adding code; a bare
+signature with no explanation reads as unfinished here.
