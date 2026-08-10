@@ -147,11 +147,20 @@ would close the very gaps the split is measuring.
 
 **`/api/bubbles`** answers with the room each block was written in rather than
 the room its words take up: the largest rectangle that fits inside the balloon
-around it. This is where a translation goes. Japanese runs down the page, so a
-block of it comes back forty pixels across and three hundred tall, and English
-set in a column that shape wraps to about a letter a line — which is why a
-translated line used to have to be dragged out to its balloon before it could be
-read at all.
+*around that block*. This is where a translation goes. Japanese runs down the
+page, so a block of it comes back forty pixels across and three hundred tall, and
+English set in a column that shape wraps to about a letter a line — which is why
+a translated line used to have to be dragged out to its balloon before it could
+be read at all.
+
+Around the block, not simply the largest rectangle in the balloon: an answer
+always holds every pixel of the box it was asked about, and only ever says how
+much wider or taller the room around the words runs. The largest rectangle
+anywhere is in the wrong part of the balloon as often as the right one — a
+balloon with a tail, one drawn around two lines with the words in one of them,
+one whose outline a scan has broken into the panel beside it — and a translation
+set there is one the reader has to go looking for, half a page from the Japanese
+it is for.
 
 Nothing is drawn to say where a balloon is, but it is not hard to see: it is a
 light shape closed by a dark outline, so the light pixels reachable from the
@@ -163,13 +172,20 @@ balloons with white lettering are found the same way round the other way.
 
 Where several of the boxes turn out to be written in the *same* balloon — which
 is what a block cut in two looks like from here, and what a balloon holding two
-separate lines of dialogue is — it is shared out between them rather than handed
-to each of them whole. They were told apart by the blank between them in the
-first place, so the balloon is cut the same way: at the widest blank between
-them, on whichever axis that blank is widest, and then each side again until
-every block has a piece to itself. Without that, every one of them would be
-answered with the same rectangle and their translations lettered one on top of
-another.
+separate lines of dialogue is — their answers overlap, and each is cut back to
+its own side rather than left running across the others. They were told apart by
+the blank between them in the first place, so the page is cut the same way: at
+the widest blank between them, on whichever axis that blank is widest, and then
+each side again until every block has a cell to itself, and every answer is
+cropped to the cell of the block it was measured around. Without that, two of
+them would be lettered one on top of another.
+
+Each block keeps its own answer through this, cropped — never a share of a
+neighbour's. Handing a whole group one balloon and cutting *that* up is what
+sends a translation to the far side of the page: the odd one out of the group is
+in a different balloon, and its piece of this one is nowhere near its words. A
+block with no answer of its own is the exception, and it borrows only from an
+answer that holds it.
 
 Cutting once along one axis is not enough, which is why this recurses: four
 blocks set two across and two down are not in a row, and one line of cuts hands
@@ -179,17 +195,17 @@ inside.
 What counts as "the same balloon" is that two answers *overlap*, not that they
 match. One balloon does not come back as the same rectangle twice: an irregular
 one holds a wide short rectangle and a tall narrow one of nearly the same area,
-and a pixel of the flood decides which of them a given block is answered with, so
-two blocks in one balloon can come back barely half agreeing. A block no balloon
-could be made out for is gathered in too, by the box it will be lettered in —
-otherwise its neighbour keeps the whole balloon and sets its translation straight
-over the top of it.
+and which of them a block is answered with depends on where in the balloon that
+block sits, so two blocks in one balloon can come back barely half agreeing. A
+block no balloon could be made out for is gathered in too, by the box it will be
+lettered in — otherwise its neighbour keeps the whole balloon and sets its
+translation straight over the top of it.
 
 This is why the endpoint takes a list rather than one box at a time: the answer
 for a block depends on which other blocks share its balloon. Ask about a box on
-its own and it is handed the whole balloon, since nothing else is known to be in
-it — so send every box on the page whenever the answer is going to be used for
-lettering.
+its own and its answer is left uncropped, since nothing else is known to be in
+the balloon with it — so send every box on the page whenever the answer is going
+to be used for lettering.
 
 `bubble` is null where none could be made out, and then the box is all there is
 to go on: a sound effect over artwork is in no balloon, a balloon whose outline

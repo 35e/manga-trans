@@ -77,12 +77,13 @@ any new work that needs the segmentation on this path rather than adding a pass.
   already has from the same pass. Thresholds are in characters, not pixels; see
   the note on the deferred import below.
 - `bubble.py` — the balloon a block was written in, as the largest rectangle
-  inside it. Pure OpenCV on the greyscale page, no model: flood the light ground
-  from the block (painted in first, or vertical Japanese cuts the balloon in
-  two), fill its holes, erode a margin, then a stack search for the largest
-  rectangle on a 128-pixel grid. Every answer is checked and `None` is a real
-  answer. `bubbles()` then shares one balloon out between any blocks that turn
-  out to be in it together. `/api/detect` includes it because it is free there.
+  inside it *around that block*. Pure OpenCV on the greyscale page, no model:
+  flood the light ground from the block (painted in first, or vertical Japanese
+  cuts the balloon in two), fill its holes, erode a margin, then search out from
+  the block on a 128-pixel grid (`holding`). Every answer is checked and `None`
+  is a real answer. `bubbles()` then cuts overlapping answers back to a cell each
+  when several blocks turn out to share a balloon. `/api/detect` includes it
+  because it is free there.
 - `read.py` — manga-ocr. **The only thing that imports torch, and it does so
   inside `Reader.load()`.** Keep that import deferred and keep torch out of
   every other module.
@@ -160,6 +161,15 @@ fallback font.
 believes an alpha channel only when some of it is actually clear, since a
 browser canvas always exports one — do not "simplify" that check. `lib/mask.ts`
 exports white-on-black for exactly this reason.
+
+**A block is marked into a mask by the lettering in it, never by its box.**
+`mask.mark` falls back to stamping the whole rectangle when it is handed no
+tracing, and that fallback is for the "Blocks" button and for a tracing that
+failed — not for the ordinary path. So anything marking a block after the mask
+has been seeded goes through `App.markLetters`, which asks for the tracing if it
+is not already held: a spread changed since, or a page whose tracing was dropped
+at the end of a folder run, otherwise leaves a block put back by hand or one
+drawn where the detector missed one cleaning out the whole square that was drawn.
 
 **`fill` defaults differ by endpoint**: `art` for `/api/clean`, `white` for
 `/api/render`. `inpaint.fill` grows the hole by `EDGE` for *sampling* only, and
@@ -249,33 +259,47 @@ and both show up as translations lettered on top of each other:
   cutting the first makes an exact duplicate of the second. `detect.suppressed`
   drops the less sure of any pair covering the same lettering.
 - *A shared balloon.* Two blocks inside one balloon each ask `bubble.around`
-  what room they are in and are answered with that one balloon. `bubble.bubbles`
-  therefore gathers them (`bubble.sharing`) and `bubble.divided` shares the
-  balloon out between them. That division **recurses** — cut at the widest blank
-  on whichever axis it is widest, then each side again — because blocks set two
-  across and two down are not in a row, and one line of cuts gives the two on
-  the right a left and a right half of a balloon they are stacked inside.
+  what room they are in and are answered with overlapping pieces of that one
+  balloon. `bubble.bubbles` therefore gathers them (`bubble.sharing`) and
+  `bubble.divided` cuts the page into a cell apiece, which each answer is then
+  cropped to. That division **recurses** — cut at the widest blank on whichever
+  axis it is widest, then each side again — because blocks set two across and
+  two down are not in a row, and one line of cuts gives the two on the right a
+  left and a right half of a balloon they are stacked inside.
+
+**A room always holds the block it is for.** `bubble.holding` searches out from
+the block rather than for the largest rectangle in the balloon, so an answer is
+the words plus whatever room is around them and never a rectangle somewhere else
+on the page. Without that, the largest rectangle is in the wrong place as often
+as it is in the right one: a balloon with a tail, one drawn round two lines with
+the words in one of them, one whose outline a scan has broken into the panel
+beside it — measured, that last one answers with a rectangle holding *none* of
+the block it was asked about. Everything downstream leans on this: the sharing
+out below only crops, `lines.roomFor` letters into whatever comes back, and there
+is nothing else on the page saying where the words belong.
 
 **`sharing` gathers blocks whose answers collide, not blocks whose answers
 agree**, and the difference is the whole of it. `around` does not answer with the
 same rectangle twice for one balloon: an irregular balloon holds a wide short
-rectangle and a tall narrow one of nearly the same area, and a pixel of the
-flood decides which of them a block comes back with — measured, two blocks in one
-balloon come back agreeing 0.54, where the old test wanted 0.7. Anything keyed on
-agreement leaves those two lettered on top of each other. `sharing` is also given
-the box of any block `around` answered `None` for, because that box is where the
-block is lettered and so is what a neighbour's balloon collides with; and it
-gathers **transitively**, since A over B and B over C is one balloon holding
-three blocks however little A and C touch.
+rectangle and a tall narrow one of nearly the same area, and which one a block
+comes back with depends on where in it that block sits — measured, two blocks in
+one balloon come back agreeing 0.54, where the old test wanted 0.7. Anything
+keyed on agreement leaves those two lettered on top of each other. `sharing` is
+also given the box of any block `around` answered `None` for, because that box is
+where the block is lettered and so is what a neighbour's balloon collides with;
+and it gathers **transitively**, since A over B and B over C is one balloon
+holding three blocks however little A and C touch.
 
-The room shared out is the answer holding the most of the group's lettering
-(`bubble.within`), not the largest of them: where the answers disagree it is
-usually the largest that is the odd one out, holding only the block it happened
-to be flooded from. A block that came in with a balloon is never refused its
-share — refusing drops it back on its box, which is where the *Japanese* is and
-so squarely under the neighbour it was crowding. Only a block that came in with
-no balloon at all is refused, and only when the balloon does not hold it
-(`HELD`), which leaves it exactly where it already was.
+Every block in such a group keeps *its own* answer, cropped to its own cell —
+never a share of a neighbour's. Handing the group one balloon and cutting that up
+is what puts a translation on the far side of the page from its Japanese: the
+odd one out is in a different balloon, and its piece of this one is nowhere near
+its words. Only a block `around` answered `None` for borrows (`bubble.borrowed`),
+and only from an answer that holds it (`HELD`) — a balloon merely reaching over a
+sound effect beside it is not the room that was written in, and refusing leaves
+the block exactly where it already was. A cropped answer that no longer holds its
+block is refused for the same reason; that only happens where the blocks
+themselves overlap, and there the box is the honest answer.
 
 **An answer from `/api/bubbles` depends on which other boxes were asked about**,
 so anything whose answer will be lettered with must send *every* box on the page,
