@@ -377,6 +377,35 @@ def ballooned(
     return image
 
 
+def run_together(
+    small: Box = Box(80, 80, 300, 240),
+    large: Box = Box(240, 180, 520, 520),
+    join: Box = Box(255, 195, 285, 290),
+    column: Box = Box(150, 110, 180, 210),
+    size=(600, 800),
+) -> Image.Image:
+    """Two balloons whose outline is broken where they meet, writing in the small
+    one.
+
+    What a scan does to a balloon drawn against the next one: the flood has both
+    of them to spread over, so the largest rectangle in what comes back is in the
+    wrong one — a translation set half a page from the words it translates.
+    """
+    image = Image.new("RGB", size, (120, 120, 120))
+    draw = ImageDraw.Draw(image)
+    for balloon in (small, large):
+        draw.ellipse(
+            (balloon.x0, balloon.y0, balloon.x1 - 1, balloon.y1 - 1),
+            fill=(255, 255, 255),
+            outline=(0, 0, 0),
+            width=3,
+        )
+    draw.rectangle((join.x0, join.y0, join.x1 - 1, join.y1 - 1), fill=(255, 255, 255))
+    for y in range(column.y0, column.y1, 30):
+        draw.rectangle((column.x0, y, column.x1 - 1, y + 20), fill=(0, 0, 0))
+    return image
+
+
 def stub_balloon(size=(300, 200)) -> Image.Image:
     """A page with a balloon drawn around the block :class:`StubDetector` finds.
 
@@ -399,35 +428,38 @@ def grey(image: Image.Image) -> np.ndarray:
     return np.array(image.convert("L"))
 
 
-class TestUnder(unittest.TestCase):
-    def test_one_flat_row_is_as_wide_as_it_is(self):
-        self.assertEqual(bubble.under([2, 2, 2]), (6, 0, 3, 2))
+class TestHolding(unittest.TestCase):
+    """The largest rectangle around a block, which is not the largest anywhere."""
 
-    def test_a_dip_is_worth_more_wide_than_tall(self):
-        area, x0, x1, height = bubble.under([2, 1, 2])
-        self.assertEqual((area, x0, x1, height), (3, 0, 3, 1))
+    def test_the_rectangle_is_opened_out_around_the_block(self):
+        mask = np.zeros((20, 30), bool)
+        mask[4:12, 5:25] = True
+        self.assertEqual(bubble.holding(mask, Box(10, 6, 14, 9)), Box(5, 4, 25, 12))
 
-    def test_a_gap_ends_the_rectangle(self):
-        self.assertEqual(bubble.under([3, 0, 1]), (3, 0, 1, 3))
+    def test_a_larger_rectangle_the_block_is_not_in_does_not_win(self):
+        mask = np.zeros((40, 40), bool)
+        mask[0:6, 0:8] = True
+        mask[10:30, 10:35] = True
+        self.assertEqual(bubble.holding(mask, Box(2, 2, 5, 4)), Box(0, 0, 8, 6))
 
-    def test_nothing_standing_is_no_rectangle(self):
-        self.assertEqual(bubble.under([0, 0]), (0, 0, 0, 0))
+    def test_a_shape_that_does_not_hold_the_whole_block_has_no_rectangle(self):
+        mask = np.zeros((20, 20), bool)
+        mask[5:15, 5:15] = True
+        self.assertIsNone(bubble.holding(mask, Box(10, 10, 18, 18)))
 
+    def test_nothing_set_is_no_rectangle(self):
+        self.assertIsNone(bubble.holding(np.zeros((10, 10), bool), Box(2, 2, 5, 5)))
 
-class TestStanding(unittest.TestCase):
-    def test_the_rectangle_is_where_the_pixels_are(self):
-        mask = np.zeros((20, 30), np.uint8)
-        mask[4:12, 5:25] = 255
-        self.assertEqual(bubble.standing(mask > 0), Box(5, 4, 25, 12))
-
-    def test_an_empty_mask_has_no_rectangle(self):
-        self.assertIsNone(bubble.standing(np.zeros((10, 10), np.uint8) > 0))
-
-    def test_the_larger_of_two_shapes_wins(self):
-        mask = np.zeros((40, 40), np.uint8)
-        mask[0:4, 0:4] = 255
-        mask[10:30, 10:35] = 255
-        self.assertEqual(bubble.standing(mask > 0), Box(10, 10, 35, 30))
+    def test_the_block_is_still_held_when_the_search_is_scaled_down(self):
+        # Measured on a coarse grid, so the block is rounded outwards into it and
+        # the answer inwards out of it: rounded the other way it comes back
+        # holding all but a few pixels of the words it was measured around.
+        mask = np.zeros((600, 600), np.uint8)
+        mask[100:500, 100:500] = 255
+        block = Box(203, 307, 251, 353)
+        found = bubble.largest(mask, block)
+        assert found is not None
+        self.assertEqual(bubble.within(found, block), 1.0)
 
 
 class TestSolid(unittest.TestCase):
@@ -472,10 +504,16 @@ class TestAround(unittest.TestCase):
     def test_the_writing_is_still_covered_by_where_it_will_be_set(self):
         found = self.found(ballooned())
         assert found is not None
-        self.assertLess(found.x0, self.column.cx)
-        self.assertGreater(found.x1, self.column.cx)
-        self.assertLess(found.y0, self.column.cy)
-        self.assertGreater(found.y1, self.column.cy)
+        self.assertEqual(bubble.within(found, self.column), 1.0)
+
+    def test_a_balloon_run_into_the_next_one_is_measured_where_the_words_are(self):
+        # The largest rectangle in what the flood comes back with is in the other
+        # balloon, and lettering it there is lettering it nowhere near the words.
+        column = Box(150, 110, 180, 210)
+        found = self.found(run_together(), column)
+        assert found is not None
+        self.assertEqual(bubble.within(found, column), 1.0)
+        self.assertLess(found.y1, 260, "the room ran on into the other balloon")
 
     def test_the_column_is_not_measured_as_the_gap_beside_it(self):
         # Without the block painted in, the flood starts in one half of a
@@ -1099,6 +1137,20 @@ class TestSharing(unittest.TestCase):
         self.assertEqual(bubble.sharing(rooms), [[0, 1, 2]])
 
 
+class TestCropped(unittest.TestCase):
+    def test_what_comes_back_is_the_part_they_have_in_common(self):
+        room, cell = Box(0, 0, 100, 100), Box(50, 20, 200, 80)
+        self.assertEqual(bubble.cropped(room, cell), Box(50, 20, 100, 80))
+
+    def test_a_box_already_inside_is_left_as_it_is(self):
+        room = Box(10, 10, 20, 20)
+        self.assertEqual(bubble.cropped(room, Box(0, 0, 100, 100)), room)
+
+    def test_two_that_do_not_meet_leave_nothing(self):
+        empty = bubble.cropped(Box(0, 0, 10, 10), Box(50, 50, 60, 60))
+        self.assertEqual((empty.w, empty.h), (0, 0))
+
+
 class TestWithin(unittest.TestCase):
     def test_a_block_wholly_inside_a_room_is_all_of_it(self):
         self.assertEqual(bubble.within(Box(0, 0, 100, 100), Box(10, 10, 30, 30)), 1.0)
@@ -1187,24 +1239,22 @@ class TestBubbles(unittest.TestCase):
             for other in range(one + 1, len(rooms)):
                 self.assertEqual(rooms[one].covers(rooms[other]), 0.0)
 
-    def test_the_balloon_shared_out_is_the_one_holding_the_lettering(self):
-        # Where the answers disagree the largest is often the odd one out, with
-        # only the block it was flooded from inside it. Sharing that one out
-        # hands the rest of them a piece of a balloon they are not in.
-        boxes = [Box(120, 300, 160, 400), Box(200, 300, 240, 400), Box(400, 100, 440, 500)]
-        answers = [Box(100, 280, 300, 420), Box(100, 280, 300, 420), Box(380, 80, 600, 520)]
-        self.assertGreater(
-            answers[2].w * answers[2].h, answers[0].w * answers[0].h, "not the largest"
-        )
-        # The odd one out touches the others, so all three are gathered together.
-        answers[2] = Box(280, 80, 600, 520)
+    def test_no_block_is_handed_a_piece_of_a_balloon_it_is_not_in(self):
+        # Two balloons whose answers touch: two blocks in one and a third, on
+        # its own, in the other. Cutting a single balloon up between all three
+        # hands that third one a piece of a balloon its words are nowhere near —
+        # a translation set the width of the page from the Japanese it is for.
+        boxes = [Box(120, 300, 160, 400), Box(200, 300, 240, 400), Box(430, 150, 470, 250)]
+        answers = [Box(100, 280, 420, 420), Box(100, 280, 420, 420), Box(400, 120, 560, 300)]
 
-        found = self.bubbles(boxes, answers)
-        for at in (0, 1):
-            self.assertIsNotNone(found[at], "a block was moved out of its balloon")
+        rooms = self.rooms(boxes, self.bubbles(boxes, answers))
+        for at, room in enumerate(rooms):
             self.assertGreaterEqual(
-                bubble.within(found[at], boxes[at]), 0.99, "its lettering was left out"
+                bubble.within(room, boxes[at]), 0.99, f"block {at} is not in its room"
             )
+        for one in range(len(rooms)):
+            for other in range(one + 1, len(rooms)):
+                self.assertEqual(rooms[one].covers(rooms[other]), 0.0)
 
 
 def reply(content: str = "", thinking: str = "") -> dict:

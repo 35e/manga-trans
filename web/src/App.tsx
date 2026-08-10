@@ -311,29 +311,52 @@ function App() {
   )
 
   /**
+   * Mark these boxes into the page's mask by the lettering inside them, tracing
+   * the page first if that has not been asked for yet.
+   *
+   * Tracing rather than taking whatever is already held is the whole of it:
+   * without it there is nothing to mark but the box, and the clean takes out the
+   * whole rectangle instead of the words in it. Which is what a block put back
+   * by hand, or one drawn where the detector missed one, used to come out as.
+   *
+   * Only where something is marked already — an untouched mask is seeded in one
+   * go when the clean step is opened, and clearing it means it.
+   */
+  const markLetters = useCallback(
+    async (page: GalleryImage, boxes: Box[]) => {
+      const mask = forPage(page)
+      if (!mask || mask.empty) return
+      const letters = await tracePage(page)
+      // It may have been cleared while the tracing was in the air.
+      if (!mask.empty) mark(mask, boxes, letters)
+    },
+    [forPage, tracePage],
+  )
+
+  /**
    * Take one block out of what will be cleaned, or put it back. The mask is kept
    * in step, so what is marked always matches what the list says.
    */
   const toggleExcluded = useCallback(
-    (index: number) => {
+    async (index: number) => {
       if (!active) return
       const held = analyses[active.id]
       const box = held?.detection.regions[index]?.box
       if (!held || !box) return
 
-      const mask = forPage(active)
-      if (held.excluded.includes(index)) {
-        if (mask && !mask.empty) mask.boxes([box])
-      } else {
-        mask?.boxes([box], true)
-      }
-
+      const putBack = held.excluded.includes(index)
       setAnalyses((current) => ({
         ...current,
         [active.id]: blocks.toggledExcluded(held, index),
       }))
+
+      // Put back, it is marked by its lettering as the rest of the page was;
+      // taken out, the whole box is erased — right either way round, since all
+      // that was ever marked inside it is that lettering.
+      if (putBack) await markLetters(active, [box])
+      else forPage(active)?.boxes([box], true)
     },
-    [active, analyses, forPage],
+    [active, analyses, forPage, markLetters],
   )
 
   /**
@@ -363,12 +386,10 @@ function App() {
       setSelected(at)
 
       // Marked for hiding along with the rest, if the rest already are.
-      const mask = forPage(active)
-      if (mask && !mask.empty) mark(mask, [box], traced.at(active.id, spread))
-
+      await markLetters(active, [box])
       await reread(active, [box], [added.id])
     },
-    [active, analyses, forPage, traced, spread, reread],
+    [active, analyses, markLetters, reread],
   )
 
   /**
@@ -401,20 +422,15 @@ function App() {
       const region = held?.detection.regions[index]
       if (!held || !region || region.box.join() === was.join()) return
 
-      const mask = forPage(active)
-      if (mask && !mask.empty) {
-        mask.boxes([was], true)
-        if (!held.excluded.includes(index)) {
-          mark(mask, [region.box], traced.at(active.id, spread))
-        }
-      }
+      forPage(active)?.boxes([was], true)
+      if (!held.excluded.includes(index)) await markLetters(active, [region.box])
 
       // Nothing has been read on this page yet, so there is nothing to bring up
       // to date: detecting will read the lot.
       if (!held.texts) return
       await reread(active, [region.box], [region.id])
     },
-    [active, analyses, forPage, traced, spread, reread],
+    [active, analyses, forPage, markLetters, reread],
   )
 
   /**
