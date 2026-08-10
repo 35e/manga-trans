@@ -107,14 +107,13 @@ export function split(
 }
 
 /**
- * What one block says and what room it was said in, found again by name because
- * the list may have been added to or reordered while the reader was working.
+ * What one block says, found again by name because the list may have been added
+ * to or reordered while the reader was working.
  */
 export function withReading(
   analysis: Analysis,
   id: string,
   text: string | undefined,
-  bubble: Box | null | undefined,
 ): Analysis {
   if (!analysis.texts) return analysis
   const where = analysis.detection.regions.findIndex((region) => region.id === id)
@@ -122,9 +121,31 @@ export function withReading(
 
   const said = [...analysis.texts]
   said[where] = text ?? ''
-  const regions = [...analysis.detection.regions]
-  regions[where] = { ...regions[where], bubble: bubble ?? null }
-  return { ...withRegions(analysis, regions), texts: said }
+  return { ...analysis, texts: said }
+}
+
+/**
+ * The room each of those blocks is in, by name rather than by position.
+ *
+ * Blocks that go missing while the answer is in the air are skipped, and blocks
+ * that were not asked about are left alone. Used where the list may have moved
+ * under the request — {@link withBubbles} is the same thing for an answer that
+ * is known to still line up.
+ */
+export function withRooms(
+  analysis: Analysis,
+  ids: string[],
+  rooms: (Box | null)[],
+): Analysis {
+  const where = new Map(ids.map((id, at) => [id, at]))
+  let touched = false
+  const regions = analysis.detection.regions.map((region) => {
+    const at = where.get(region.id)
+    if (at === undefined || at >= rooms.length) return region
+    touched = true
+    return { ...region, bubble: rooms[at] }
+  })
+  return touched ? withRegions(analysis, regions) : analysis
 }
 
 /**

@@ -165,15 +165,22 @@ Where several of the boxes turn out to be written in the *same* balloon — whic
 is what a block cut in two looks like from here, and what a balloon holding two
 separate lines of dialogue is — it is shared out between them rather than handed
 to each of them whole. They were told apart by the blank between them in the
-first place, so the balloon is cut the same way: across whichever axis they are
-laid out along, halfway between each pair of neighbours, each piece keeping the
-full width of the balloon the other way. Without that, every one of them would be
-answered with the same rectangle and their translations would be lettered one on
-top of another.
+first place, so the balloon is cut the same way: at the widest blank between
+them, on whichever axis that blank is widest, and then each side again until
+every block has a piece to itself. Without that, every one of them would be
+answered with the same rectangle and their translations lettered one on top of
+another.
+
+Cutting once along one axis is not enough, which is why this recurses: four
+blocks set two across and two down are not in a row, and one line of cuts hands
+the two on the right a left half and a right half of a balloon they are stacked
+inside.
 
 This is why the endpoint takes a list rather than one box at a time: the answer
-for a block depends on which other blocks share its balloon. Asking about one box
-on its own is still allowed and still useful — it just cannot know to divide.
+for a block depends on which other blocks share its balloon. Ask about a box on
+its own and it is handed the whole balloon, since nothing else is known to be in
+it — so send every box on the page whenever the answer is going to be used for
+lettering.
 
 `bubble` is null where none could be made out, and then the box is all there is
 to go on: a sound effect over artwork is in no balloon, a balloon whose outline

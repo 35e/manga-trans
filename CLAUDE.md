@@ -221,8 +221,17 @@ and both show up as translations lettered on top of each other:
 - *A shared balloon.* Two blocks inside one balloon each ask `bubble.around`
   what room they are in and get the same answer. `bubble.bubbles` therefore
   groups blocks whose balloons coincide (`SAME`) and `bubble.divided` shares the
-  balloon out between them, cutting across the axis they are laid out along. This
-  is why `/api/bubbles` takes a list: an answer depends on the other boxes.
+  balloon out between them. That division **recurses** — cut at the widest blank
+  on whichever axis it is widest, then each side again — because blocks set two
+  across and two down are not in a row, and one line of cuts gives the two on
+  the right a left and a right half of a balloon they are stacked inside.
+
+**An answer from `/api/bubbles` depends on which other boxes were asked about**,
+so anything whose answer will be lettered with must send *every* box on the page,
+not just the ones that changed. A box asked about alone is handed the whole
+balloon — correct in isolation, and on top of its neighbours in practice. This is
+why `reread` in `App.tsx` reads only the changed blocks (the slow half) but asks
+for balloons for all of them, and applies the result to every region by id.
 
 ## Style
 

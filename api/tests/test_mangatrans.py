@@ -1019,6 +1019,50 @@ class TestDivided(unittest.TestCase):
             self.assertLessEqual(share.x0, block.x0)
             self.assertGreaterEqual(share.x1, block.x1)
 
+    def test_blocks_two_across_and_two_down_get_a_quarter_each(self):
+        """The arrangement one line of cuts cannot describe.
+
+        Cut only along x, the two on the right are handed a left half and a
+        right half of a balloon they are stacked inside — which is the same
+        lettering set twice in nearly the same place.
+        """
+        blocks = [
+            Box(140, 130, 220, 220),  # top left
+            Box(380, 130, 460, 220),  # top right
+            Box(140, 280, 220, 370),  # bottom left
+            Box(380, 280, 460, 370),  # bottom right
+        ]
+        shares = bubble.divided(self.room, blocks)
+        for one in range(len(shares)):
+            for other in range(one + 1, len(shares)):
+                self.assertEqual(
+                    shares[one].covers(shares[other]),
+                    0.0,
+                    f"shares {one} and {other} overlap",
+                )
+        for share, block in zip(shares, blocks):
+            self.assertGreaterEqual(share.covers(block), 0.99, "a block lost its share")
+
+    def test_blocks_in_an_ell_are_each_given_their_own_room(self):
+        blocks = [
+            Box(380, 130, 460, 220),  # top right
+            Box(140, 200, 220, 300),  # middle left
+            Box(380, 280, 460, 370),  # bottom right
+        ]
+        shares = bubble.divided(self.room, blocks)
+        for one in range(len(shares)):
+            for other in range(one + 1, len(shares)):
+                self.assertEqual(shares[one].covers(shares[other]), 0.0)
+        for share, block in zip(shares, blocks):
+            self.assertGreaterEqual(share.covers(block), 0.99)
+
+    def test_blocks_that_overlap_every_way_still_get_a_piece_each(self):
+        # Nothing sensible to cut on, but two pieces beat one balloon twice.
+        blocks = [Box(150, 150, 400, 350), Box(160, 160, 410, 360)]
+        first, second = bubble.divided(self.room, blocks)
+        self.assertEqual(first.covers(second), 0.0)
+        self.assertNotEqual(first, second)
+
     def test_the_shares_use_up_the_whole_balloon(self):
         blocks = [Box(150, 150, 200, 350), Box(400, 150, 450, 350)]
         shares = bubble.divided(self.room, blocks)

@@ -282,15 +282,37 @@ def sharing(found: list[Box | None]) -> list[list[int]]:
     return groups
 
 
-def apart(blocks: list[Box], axis: int) -> int:
-    """How much blank lies between the blocks along one axis."""
-    edges = [(b.x0, b.x1) if axis == 0 else (b.y0, b.y1) for b in blocks]
-    edges.sort()
-    total, reach = 0, edges[0][1]
-    for low, high in edges[1:]:
-        total += max(0, low - reach)
+def span(box: Box, axis: int) -> tuple[int, int]:
+    """Where a box starts and ends along one axis."""
+    return (box.x0, box.x1) if axis == 0 else (box.y0, box.y1)
+
+
+def cut(room: Box, axis: int, at: int) -> tuple[Box, Box]:
+    """``room`` in two along one axis, the near side first."""
+    low, high = span(room, axis)
+    at = min(max(at, low + 1), high - 1)
+    if axis == 0:
+        return Box(room.x0, room.y0, at, room.y1), Box(at, room.y0, room.x1, room.y1)
+    return Box(room.x0, room.y0, room.x1, at), Box(room.x0, at, room.x1, room.y1)
+
+
+def seam(blocks: list[Box], among: list[int], axis: int) -> tuple[int, int, list[int]]:
+    """Where a group of blocks comes apart along one axis.
+
+    The widest blank between them, as (how wide, where to cut, which of them lie
+    on the near side of it). A group that overlaps everywhere still comes back
+    with its narrowest overlap, so there is always somewhere to cut.
+    """
+    order = sorted(among, key=lambda at: span(blocks[at], axis))
+    best = (0, 0, order[:1])
+    reach = span(blocks[order[0]], axis)[1]
+    for edge in range(1, len(order)):
+        low, high = span(blocks[order[edge]], axis)
+        gap = low - reach
+        if edge == 1 or gap > best[0]:
+            best = (gap, (low + reach) // 2, order[:edge])
         reach = max(reach, high)
-    return total
+    return best
 
 
 def divided(room: Box, blocks: list[Box]) -> list[Box]:
@@ -299,33 +321,29 @@ def divided(room: Box, blocks: list[Box]) -> list[Box]:
     Two blocks in one balloon would otherwise be answered with that same balloon
     twice, and their translations set one on top of the other. They were told
     apart by the blank between them in the first place, so the balloon is cut the
-    same way: across whichever axis they are laid out along, halfway between each
-    pair of neighbours. Each piece keeps the full width of the balloon the other
-    way, which is what the lettering wants.
+    same way: at the widest blank between them, on whichever axis that blank is
+    widest — and then each side again, until every block has a piece to itself.
+
+    Cutting once along one axis is not enough. Four blocks set two across and two
+    down are not in a row, and a single line of cuts hands the two on the right a
+    left half and a right half of a balloon they are stacked inside.
     """
-    axis = 0 if apart(blocks, 0) >= apart(blocks, 1) else 1
-    middle = (lambda box: box.cx) if axis == 0 else (lambda box: box.cy)
-    order = sorted(range(len(blocks)), key=lambda at: middle(blocks[at]))
-
-    low, high = (room.x0, room.x1) if axis == 0 else (room.y0, room.y1)
-    cuts = [low]
-    for before, after in zip(order, order[1:]):
-        first, second = blocks[before], blocks[after]
-        far = first.x1 if axis == 0 else first.y1
-        near = second.x0 if axis == 0 else second.y0
-        # Held inside the balloon and past the cut before it, so the pieces come
-        # out in order however far the blocks reach outside it.
-        cuts.append(min(max(round((far + near) / 2), cuts[-1]), high))
-    cuts.append(high)
-
     shares: list[Box] = [room] * len(blocks)
-    for at, which in enumerate(order):
-        start, end = cuts[at], cuts[at + 1]
-        shares[which] = (
-            Box(start, room.y0, end, room.y1)
-            if axis == 0
-            else Box(room.x0, start, room.x1, end)
+
+    def share(space: Box, among: list[int]) -> None:
+        if len(among) == 1:
+            shares[among[0]] = space
+            return
+        (_, at, near), axis = max(
+            ((seam(blocks, among, axis), axis) for axis in (0, 1)),
+            key=lambda option: option[0][0],
         )
+        first, second = cut(space, axis, at)
+        rest = [held for held in among if held not in set(near)]
+        share(first, near)
+        share(second, rest)
+
+    share(room, list(range(len(blocks))))
     return shares
 
 

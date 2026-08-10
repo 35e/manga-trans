@@ -172,11 +172,29 @@ function App() {
     [],
   )
 
-  /** What one block says and what room it was said in, asked for together. */
+  /**
+   * What the blocks that just changed say, and what room every block on the
+   * page is now in.
+   *
+   * Reading is asked only about the blocks that changed, since it is the slow
+   * half. The balloons are asked about all of them, because where several blocks
+   * share one balloon it is shared out between them — so adding or moving one
+   * changes the answer for its neighbours too, and asking about it alone would
+   * hand it the whole balloon and letter it over the top of them.
+   */
   const reread = useCallback(
     async (page: GalleryImage, boxes: Box[], ids: string[]) => {
+      const every = analysesNow.current[page.id]?.detection.regions ?? []
+      const everyId = every.map((region) => region.id)
+
       const answered = await during(page.id, 'reading', () =>
-        Promise.all([read(page.file, boxes), bubbles(page.file, boxes)]),
+        Promise.all([
+          read(page.file, boxes),
+          bubbles(
+            page.file,
+            every.map((region) => region.box),
+          ),
+        ]),
       )
       if (!answered) return
       const [texts, balloons] = answered
@@ -184,10 +202,11 @@ function App() {
       setAnalyses((current) => {
         const now = current[page.id]
         if (!now) return current
-        const next = ids.reduce(
-          (held, id, at) => blocks.withReading(held, id, texts[at], balloons[at]),
+        const said = ids.reduce(
+          (held, id, at) => blocks.withReading(held, id, texts[at]),
           now,
         )
+        const next = blocks.withRooms(said, everyId, balloons)
         return next === now ? current : { ...current, [page.id]: next }
       })
     },
