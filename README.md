@@ -176,6 +176,15 @@ blocks set two across and two down are not in a row, and one line of cuts hands
 the two on the right a left half and a right half of a balloon they are stacked
 inside.
 
+What counts as "the same balloon" is that two answers *overlap*, not that they
+match. One balloon does not come back as the same rectangle twice: an irregular
+one holds a wide short rectangle and a tall narrow one of nearly the same area,
+and a pixel of the flood decides which of them a given block is answered with, so
+two blocks in one balloon can come back barely half agreeing. A block no balloon
+could be made out for is gathered in too, by the box it will be lettered in —
+otherwise its neighbour keeps the whole balloon and sets its translation straight
+over the top of it.
+
 This is why the endpoint takes a list rather than one box at a time: the answer
 for a block depends on which other blocks share its balloon. Ask about a box on
 its own and it is handed the whole balloon, since nothing else is known to be in

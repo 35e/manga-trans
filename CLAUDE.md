@@ -219,12 +219,33 @@ and both show up as translations lettered on top of each other:
   cutting the first makes an exact duplicate of the second. `detect.suppressed`
   drops the less sure of any pair covering the same lettering.
 - *A shared balloon.* Two blocks inside one balloon each ask `bubble.around`
-  what room they are in and get the same answer. `bubble.bubbles` therefore
-  groups blocks whose balloons coincide (`SAME`) and `bubble.divided` shares the
+  what room they are in and are answered with that one balloon. `bubble.bubbles`
+  therefore gathers them (`bubble.sharing`) and `bubble.divided` shares the
   balloon out between them. That division **recurses** — cut at the widest blank
   on whichever axis it is widest, then each side again — because blocks set two
   across and two down are not in a row, and one line of cuts gives the two on
   the right a left and a right half of a balloon they are stacked inside.
+
+**`sharing` gathers blocks whose answers collide, not blocks whose answers
+agree**, and the difference is the whole of it. `around` does not answer with the
+same rectangle twice for one balloon: an irregular balloon holds a wide short
+rectangle and a tall narrow one of nearly the same area, and a pixel of the
+flood decides which of them a block comes back with — measured, two blocks in one
+balloon come back agreeing 0.54, where the old test wanted 0.7. Anything keyed on
+agreement leaves those two lettered on top of each other. `sharing` is also given
+the box of any block `around` answered `None` for, because that box is where the
+block is lettered and so is what a neighbour's balloon collides with; and it
+gathers **transitively**, since A over B and B over C is one balloon holding
+three blocks however little A and C touch.
+
+The room shared out is the answer holding the most of the group's lettering
+(`bubble.within`), not the largest of them: where the answers disagree it is
+usually the largest that is the odd one out, holding only the block it happened
+to be flooded from. A block that came in with a balloon is never refused its
+share — refusing drops it back on its box, which is where the *Japanese* is and
+so squarely under the neighbour it was crowding. Only a block that came in with
+no balloon at all is refused, and only when the balloon does not hold it
+(`HELD`), which leaves it exactly where it already was.
 
 **An answer from `/api/bubbles` depends on which other boxes were asked about**,
 so anything whose answer will be lettered with must send *every* box on the page,

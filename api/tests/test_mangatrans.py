@@ -1071,17 +1071,140 @@ class TestDivided(unittest.TestCase):
 
 
 class TestSharing(unittest.TestCase):
+    """Which blocks would be lettered one on top of the other."""
+
     def test_the_same_balloon_found_twice_is_one_group(self):
-        found = [Box(0, 0, 100, 100), Box(2, 3, 98, 99)]
-        self.assertEqual(bubble.sharing(found), [[0, 1]])
+        rooms = [Box(0, 0, 100, 100), Box(2, 3, 98, 99)]
+        self.assertEqual(bubble.sharing(rooms), [[0, 1]])
 
     def test_two_real_balloons_are_two_groups(self):
-        found = [Box(0, 0, 100, 100), Box(200, 0, 300, 100)]
-        self.assertEqual(bubble.sharing(found), [[0], [1]])
+        rooms = [Box(0, 0, 100, 100), Box(200, 0, 300, 100)]
+        self.assertEqual(bubble.sharing(rooms), [[0], [1]])
 
-    def test_a_block_with_no_balloon_is_in_no_group(self):
-        found = [Box(0, 0, 100, 100), None]
-        self.assertEqual(bubble.sharing(found), [[0]])
+    def test_two_answers_that_merely_collide_are_still_one_group(self):
+        # One balloon can come back as a wide rectangle from one of the blocks
+        # in it and a tall one from another, agreeing nowhere near enough to be
+        # called the same balloon and overlapping quite enough to show.
+        rooms = [Box(0, 40, 200, 100), Box(120, 0, 200, 300)]
+        self.assertLess(rooms[0].covers(rooms[1]), 0.5, "these two answers agree")
+        self.assertEqual(bubble.sharing(rooms), [[0, 1]])
+
+    def test_a_block_with_no_balloon_is_grouped_by_its_own_box(self):
+        # It is lettered in its box, so that is what a neighbour collides with.
+        rooms = [Box(0, 0, 100, 100), Box(80, 80, 120, 200)]
+        self.assertEqual(bubble.sharing(rooms), [[0, 1]])
+
+    def test_blocks_joined_through_a_third_come_back_together(self):
+        rooms = [Box(0, 0, 100, 50), Box(60, 0, 160, 50), Box(120, 0, 220, 50)]
+        self.assertEqual(bubble.sharing(rooms), [[0, 1, 2]])
+
+
+class TestWithin(unittest.TestCase):
+    def test_a_block_wholly_inside_a_room_is_all_of_it(self):
+        self.assertEqual(bubble.within(Box(0, 0, 100, 100), Box(10, 10, 30, 30)), 1.0)
+
+    def test_half_a_block_hanging_out_is_half_of_it(self):
+        self.assertEqual(bubble.within(Box(0, 0, 100, 100), Box(50, 0, 150, 100)), 0.5)
+
+    def test_a_block_larger_than_the_room_is_measured_against_itself(self):
+        # `Box.covers` divides by the smaller of the two, which would call this
+        # one whole; the question here is how much of the *block* is inside.
+        self.assertEqual(bubble.within(Box(0, 0, 50, 100), Box(0, 0, 100, 100)), 0.5)
+
+    def test_a_block_nowhere_near_is_none_of_it(self):
+        self.assertEqual(bubble.within(Box(0, 0, 10, 10), Box(50, 50, 60, 60)), 0.0)
+
+
+class TestBubbles(unittest.TestCase):
+    """Sharing one balloon out, which is what keeps two translations apart.
+
+    The flood is stubbed: what is under test is what :func:`bubble.bubbles` does
+    with the answers, and the answers worth testing are the awkward ones.
+    """
+
+    page = np.full((600, 600), 255, np.uint8)
+
+    def bubbles(self, boxes: list[Box], answers: list[Box | None]) -> list[Box | None]:
+        with mock.patch.object(bubble, "around", side_effect=lambda _, box: answers[
+            boxes.index(box)
+        ]):
+            return bubble.bubbles(self.page, boxes)
+
+    def rooms(self, boxes: list[Box], found: list[Box | None]) -> list[Box]:
+        """Where each block is really lettered: its balloon, or its own box."""
+        return [box if room is None else room for box, room in zip(boxes, found)]
+
+    def test_one_balloon_answered_two_ways_is_still_shared_out(self):
+        # The answers for one balloon need not agree: it holds a wide short
+        # rectangle and a tall narrow one of nearly the same area, and a pixel
+        # of the flood decides which of them a block comes back with. Asking
+        # whether they agree misses this; asking whether they collide does not.
+        boxes = [Box(150, 200, 190, 400), Box(300, 380, 340, 520)]
+        answers = [Box(100, 180, 500, 420), Box(260, 160, 400, 560)]
+        self.assertLess(answers[0].covers(answers[1]), 0.7, "these two agree")
+
+        found = self.bubbles(boxes, answers)
+        first, second = self.rooms(boxes, found)
+        self.assertEqual(first.covers(second), 0.0, "the two translations overlap")
+
+    def test_a_balloon_holding_a_block_it_has_no_answer_for_is_shared_with_it(self):
+        # `around` fails on plenty of lettering that is in a balloon all the
+        # same. Its neighbour's answer says where it is, and being handed whole
+        # would set that neighbour's translation straight over it.
+        boxes = [Box(200, 200, 240, 300), Box(200, 400, 240, 500)]
+        answers = [None, Box(150, 150, 450, 550)]
+
+        found = self.bubbles(boxes, answers)
+        rooms = self.rooms(boxes, found)
+        self.assertEqual(rooms[0].covers(rooms[1]), 0.0, "the two overlap")
+        self.assertGreaterEqual(
+            bubble.within(rooms[0], boxes[0]), 0.99, "its lettering was left out"
+        )
+
+    def test_a_balloon_is_cut_clear_of_lettering_it_only_reaches_over(self):
+        # A block mostly outside the balloon is not in it — a sound effect
+        # alongside, say. It stays where it is and the balloon gives way.
+        boxes = [Box(300, 100, 340, 280), Box(200, 350, 240, 450)]
+        answers = [None, Box(150, 260, 450, 550)]
+
+        found = self.bubbles(boxes, answers)
+        self.assertIsNone(found[0], "a block was pulled into a balloon it is beside")
+        self.assertEqual(
+            found[1].covers(boxes[0]), 0.0, "the balloon still reaches over it"
+        )
+
+    def test_two_balloons_that_do_not_touch_are_left_alone(self):
+        boxes = [Box(60, 200, 100, 300), Box(400, 200, 440, 300)]
+        answers = [Box(20, 150, 220, 350), Box(360, 150, 560, 350)]
+        self.assertEqual(self.bubbles(boxes, answers), answers)
+
+    def test_three_blocks_in_one_balloon_get_a_piece_each(self):
+        boxes = [Box(120, 200, 160, 400), Box(260, 200, 300, 400), Box(400, 200, 440, 400)]
+        answers = [Box(100, 180, 460, 420)] * 3
+
+        rooms = self.rooms(boxes, self.bubbles(boxes, answers))
+        for one in range(len(rooms)):
+            for other in range(one + 1, len(rooms)):
+                self.assertEqual(rooms[one].covers(rooms[other]), 0.0)
+
+    def test_the_balloon_shared_out_is_the_one_holding_the_lettering(self):
+        # Where the answers disagree the largest is often the odd one out, with
+        # only the block it was flooded from inside it. Sharing that one out
+        # hands the rest of them a piece of a balloon they are not in.
+        boxes = [Box(120, 300, 160, 400), Box(200, 300, 240, 400), Box(400, 100, 440, 500)]
+        answers = [Box(100, 280, 300, 420), Box(100, 280, 300, 420), Box(380, 80, 600, 520)]
+        self.assertGreater(
+            answers[2].w * answers[2].h, answers[0].w * answers[0].h, "not the largest"
+        )
+        # The odd one out touches the others, so all three are gathered together.
+        answers[2] = Box(280, 80, 600, 520)
+
+        found = self.bubbles(boxes, answers)
+        for at in (0, 1):
+            self.assertIsNotNone(found[at], "a block was moved out of its balloon")
+            self.assertGreaterEqual(
+                bubble.within(found[at], boxes[at]), 0.99, "its lettering was left out"
+            )
 
 
 def reply(content: str = "", thinking: str = "") -> dict:
