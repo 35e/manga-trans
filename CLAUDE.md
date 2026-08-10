@@ -184,6 +184,23 @@ being installed second it wins. The Dockerfile drops it and lays the headless
 build back down afterwards; do not "simplify" those three lines into one `pip
 install`.
 
+**onnxruntime hunts for a GPU as it loads**, and handed a card whose make it
+cannot read — which is every container on a Mac — says so at warning level, from
+C++, straight to the descriptor. There is no logger to turn down and no env var
+for it: the severity can only be raised from Python once the environment exists,
+by which time the line has been written. So `read.quieted()` catches fd 2 for the
+length of a reader's load and writes back everything that is *not* that line. Not
+a blanket silencer, and it must not become one: a reader that cannot find its
+weights says so the same way, and that has to get out.
+
+**Ollama runs on the machine, not in the container, and Docker and Podman
+disagree about what that machine is called** — `host.docker.internal` against
+`host.containers.internal`. Naming either one in the image leaves the other
+unresolvable, which shows up as a page that reads perfectly and then will not
+translate, so `ollama.answering()` tries each in turn and keeps the first that
+answers. Keep the host out of the Dockerfile. A miss is deliberately not
+remembered: Ollama is as often started after the dashboard as before it.
+
 **There are two independent letterers.** `/api/render` sets text with PIL
 (`render.py`: binary search for the largest fitting size, greedy wrap). The
 dashboard's "Apply to image" sets it with canvas (`lib/compose.ts`), sharing

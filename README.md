@@ -48,6 +48,12 @@ Only the reader a page actually needs is ever loaded, so an API only ever asked
 to detect stands none of them up, and one only ever asked for Korean never
 imports torch.
 
+onnxruntime goes looking for a GPU as it loads and, in a container that has been
+shown a card it cannot read the make of, complains that it cannot — which is
+every container on a Mac, and which is not a failure of anything: the reading is
+on the CPU either way. The line is dropped rather than left in the log to be
+mistaken for the reason a page did not come back.
+
 ## Languages
 
 The detector knows nothing about scripts — it was trained on comics rather than
@@ -325,8 +331,14 @@ schema follows a prompt loosely. Asking for a voice — casual, formal, terse �
 comes through; asking it to reformat what it returns mostly does not.
 
 The model runs under [Ollama](https://ollama.com) on your own machine, and
-nothing is sent anywhere else. Set `MANGA_TRANS_OLLAMA` if it is not on this
-one. All three endpoints answer `503` when there is nothing listening there.
+nothing is sent anywhere else. In a container that machine is not `localhost`,
+and what it *is* called is the runtime's to say: Docker answers to
+`host.docker.internal`, Podman to `host.containers.internal`. So each is tried
+in turn and whichever answers is used, which is why nothing about the host is
+baked into the image. Set `MANGA_TRANS_OLLAMA` to say where it is instead — for
+Docker on Linux, where neither name resolves unless the container was started
+with `--add-host=host.docker.internal:host-gateway`. All three endpoints answer
+`503` when nothing is listening at any of them, and say where they looked.
 
 **`/api/clean`** takes what is marked out of the page and hands it back as a
 PNG. What is marked can be boxes, a `mask`, or both — but not neither. A mask is
@@ -384,7 +396,7 @@ Everything is set by environment variable:
 | `MANGA_TRANS_MODEL` | `~/.cache/manga-trans/comictextdetector.pt.onnx` |
 | `MANGA_TRANS_OCR_MODEL` | `kha-white/manga-ocr-base` — the Japanese reader |
 | `MANGA_TRANS_OCR_MODELS` | `~/.cache/manga-trans/ppocr` — where every other reader's weights go |
-| `MANGA_TRANS_OLLAMA` | `http://localhost:11434`, or `http://host.containers.internal:11434` in the container |
+| `MANGA_TRANS_OLLAMA` | unset — `localhost`, `host.docker.internal` and `host.containers.internal` on port 11434 are tried in that order |
 | `HF_HOME` | where the reader's weights are cached; `/opt/models/hf` in the container |
 | `MANGA_TRANS_FONT` | DejaVu Sans Bold, or Pillow's default |
 
@@ -489,7 +501,8 @@ Translating needs Ollama running with a model pulled:
 
 ```bash
 ollama pull gemma4:12b
-podman run --rm --init -p 8000:8000 manga-trans   # reaches Ollama on the host
+podman run --rm --init -p 8000:8000 manga-trans   # finds Ollama on the host
+docker run --rm --init -p 8000:8000 manga-trans   # so does this
 ```
 
 The dashboard is a Vite app. `cd web && pnpm install && pnpm dev` serves it on

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import sys
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -1416,6 +1419,71 @@ class TestOllama(unittest.TestCase):
         self.assertEqual(ollama.base("http://elsewhere:11434/"), "http://elsewhere:11434")
 
 
+class TestOllamaHost(unittest.TestCase):
+    """Finding Ollama when nothing said where it is.
+
+    It runs on the machine rather than in the container, and Docker and Podman
+    call that machine different things, so each is tried.
+    """
+
+    def setUp(self):
+        # No host set, and nothing found yet: the state a fresh process is in.
+        for patch in (
+            mock.patch.dict(os.environ, {ollama.OLLAMA_ENV: ""}),
+            mock.patch.object(ollama, "_answering", None),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def answering(self, *hosts: str):
+        """An Ollama that answers at those hosts and nowhere else."""
+        self.asked: list[str] = []
+
+        def ask(path, body=None, timeout=None, host=None):
+            self.asked.append(host)
+            if host not in hosts:
+                raise ollama.Unreachable(f"no ollama answering at {host}")
+            return {"models": []}
+
+        return mock.patch.object(ollama, "ask", ask)
+
+    def test_the_host_that_answers_is_the_one_used(self):
+        with self.answering("http://host.docker.internal:11434"):
+            self.assertEqual(ollama.base(), "http://host.docker.internal:11434")
+
+    def test_every_usual_place_is_tried(self):
+        with self.answering("http://host.containers.internal:11434"):
+            self.assertEqual(ollama.base(), "http://host.containers.internal:11434")
+        self.assertEqual(self.asked, list(ollama.OLLAMA_HOSTS))
+
+    def test_the_one_that_answered_is_not_looked_for_again(self):
+        with self.answering(*ollama.OLLAMA_HOSTS):
+            ollama.base()
+            ollama.base()
+        self.assertEqual(self.asked, [ollama.OLLAMA_HOSTS[0]], "it looked twice")
+
+    def test_a_miss_is_not_remembered(self):
+        # Ollama is often started after the page it is wanted for is opened.
+        with self.answering():
+            with self.assertRaises(ollama.Unreachable):
+                ollama.base()
+        with self.answering(ollama.OLLAMA_HOSTS[-1]):
+            self.assertEqual(ollama.base(), ollama.OLLAMA_HOSTS[-1])
+
+    def test_nothing_answering_says_everywhere_it_looked(self):
+        with self.answering():
+            with self.assertRaises(ollama.Unreachable) as caught:
+                ollama.base()
+        for host in ollama.OLLAMA_HOSTS:
+            self.assertIn(host, str(caught.exception))
+
+    def test_a_host_that_was_set_is_never_looked_for(self):
+        with mock.patch.dict(os.environ, {ollama.OLLAMA_ENV: "http://said:11434/"}):
+            with self.answering(*ollama.OLLAMA_HOSTS):
+                self.assertEqual(ollama.base(), "http://said:11434")
+        self.assertEqual(self.asked, [], "it went looking anyway")
+
+
 class TestLanguages(unittest.TestCase):
     """The table both ends look a language up in."""
 
@@ -1574,6 +1642,86 @@ class TestPpocr(unittest.TestCase):
         made = self.reader("zh", ["你"])
         made.line(Image.new("RGB", (40, 20), (200, 210, 220)))
         self.assertEqual(tuple(self.shown[0][0, 0]), (220, 210, 200))
+
+
+class TestQuieted(unittest.TestCase):
+    """Standing a reader up without onnxruntime's hunt for a GPU in the log.
+
+    It is written from C++ straight to the descriptor, so it is the descriptor
+    that is caught rather than a logger that is turned down — and everything else
+    written while it is caught has to come back out.
+    """
+
+    HUNT = (
+        b'2026-01-01 00:00:00 [W:onnxruntime:Default, device_discovery.cc:285 '
+        b'GetGpuDevices] Failed to detect devices under "/sys/class/drm/card0"\n'
+    )
+
+    def said(self, write) -> str:
+        """Whatever is left on stderr after `write` has run inside quieted()."""
+        kept = io.StringIO()
+        with mock.patch.object(sys, "stderr", kept):
+            with read.quieted():
+                write()
+        return kept.getvalue()
+
+    def test_the_gpu_hunt_is_dropped(self):
+        self.assertEqual(self.said(lambda: os.write(2, self.HUNT)), "")
+
+    def test_everything_else_is_let_through(self):
+        # A reader that cannot find its weights says so exactly this way.
+        trouble = b"[ERROR] Download failed: https://example.invalid/rec.onnx\n"
+        said = self.said(lambda: os.write(2, self.HUNT + trouble))
+        self.assertNotIn("GetGpuDevices", said)
+        self.assertIn("Download failed", said)
+
+    def test_what_was_caught_is_let_out_even_when_the_load_fails(self):
+        def write():
+            os.write(2, b"halfway through\n")
+            raise RuntimeError("no weights")
+
+        kept = io.StringIO()
+        with mock.patch.object(sys, "stderr", kept):
+            with self.assertRaises(RuntimeError):
+                with read.quieted():
+                    write()
+        self.assertIn("halfway through", kept.getvalue())
+
+    def test_stderr_is_put_back_afterwards(self):
+        before = os.fstat(2)
+        with read.quieted():
+            caught = os.fstat(2)
+        after = os.fstat(2)
+        self.assertNotEqual(caught.st_ino, before.st_ino, "stderr was not caught")
+        self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
+
+
+class TestUnfetched(unittest.TestCase):
+    """A reader whose weights are not there and cannot be had."""
+
+    def rapidocr(self, trouble: Exception):
+        """A stand-in for the package, whose engine will not build."""
+        module = types.ModuleType("rapidocr")
+        module.EngineType = types.SimpleNamespace(ONNXRUNTIME="onnxruntime")
+        module.ModelType = types.SimpleNamespace(MOBILE="mobile")
+        module.LangRec = lambda value: value
+        module.OCRVersion = lambda value: value
+
+        def engine(**kwargs):
+            raise trouble
+
+        module.RapidOCR = engine
+        return mock.patch.dict(sys.modules, {"rapidocr": module})
+
+    def test_it_says_which_language_and_where_the_weights_go(self):
+        # What comes back otherwise is a modelscope URL and nothing else.
+        with self.rapidocr(RuntimeError("Failed to download https://example.invalid")):
+            with self.assertRaises(read.Unfetched) as caught:
+                read.Ppocr.load(languages.of("zh"))
+        said = str(caught.exception)
+        self.assertIn("Chinese (simplified)", said)
+        self.assertIn(str(read.ppocr_models()), said)
+        self.assertIn("Failed to download", said, "what went wrong was lost")
 
 
 class TestRead(unittest.TestCase):

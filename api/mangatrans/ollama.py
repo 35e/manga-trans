@@ -13,16 +13,33 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import urllib.error
 import urllib.request
 
 OLLAMA_ENV = "MANGA_TRANS_OLLAMA"
-OLLAMA_DEFAULT = "http://localhost:11434"
+
+# Where to look when nothing says. Ollama runs on the machine, not in the
+# container, and what that machine is called from inside one depends on what is
+# running it: Docker answers to host.docker.internal, Podman to
+# host.containers.internal. Naming either in the image leaves the other with a
+# name that does not resolve — and a page that reads perfectly and then cannot be
+# translated at all — so each is tried and whichever answers is the one used.
+OLLAMA_HOSTS = (
+    "http://localhost:11434",
+    "http://host.docker.internal:11434",
+    "http://host.containers.internal:11434",
+)
+OLLAMA_DEFAULT = OLLAMA_HOSTS[0]
 
 TARGET_DEFAULT = "English"
 SOURCE_DEFAULT = "Japanese"
 TIMEOUT = 600
 LISTING_TIMEOUT = 15
+# Long enough to answer, short enough that all three misses are a wait rather
+# than a hang: nothing is listening is a refused connection or an unknown name,
+# and both come back at once.
+FINDING_TIMEOUT = 5
 
 SCHEMA = {
     "type": "object",
@@ -52,9 +69,38 @@ class Unreachable(RuntimeError):
     """Ollama is not answering where it was expected to be."""
 
 
+_answering: str | None = None
+_finding = threading.Lock()
+
+
 def base(explicit: str | None = None) -> str:
-    """Where Ollama is: the one asked for, the one set, else this machine."""
-    return (explicit or os.environ.get(OLLAMA_ENV) or OLLAMA_DEFAULT).rstrip("/")
+    """Where Ollama is: the one asked for, the one set, else wherever it answers."""
+    said = explicit or os.environ.get(OLLAMA_ENV)
+    return said.rstrip("/") if said else answering()
+
+
+def answering() -> str:
+    """The first of the usual places Ollama answers at, kept once one does.
+
+    Only a host that answered is remembered: a page may well be worked on before
+    Ollama has been started, and a miss then must not settle the question for the
+    life of the process.
+    """
+    global _answering
+    with _finding:
+        if _answering:
+            return _answering
+        for host in OLLAMA_HOSTS:
+            try:
+                ask("/api/tags", timeout=FINDING_TIMEOUT, host=host)
+            except Unreachable:
+                continue
+            _answering = host
+            return host
+    raise Unreachable(
+        f"no ollama answering at any of {', '.join(OLLAMA_HOSTS)} — "
+        f"start it, or set {OLLAMA_ENV} to say where it is"
+    )
 
 
 def ask(path: str, body: dict | None = None, timeout: int = TIMEOUT, host=None) -> dict:
