@@ -113,6 +113,24 @@ export function PageIcon(props: Props) {
   )
 }
 
+/** An archive dropped in, which the gallery keeps as a folder of its pages. */
+export function FolderIcon(props: Props) {
+  return (
+    <Line {...props} width={1.5}>
+      <path d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6L11.5 7H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </Line>
+  )
+}
+
+/** Back out of a folder, to everything that was dropped in. */
+export function BackIcon(props: Props) {
+  return (
+    <Line {...props}>
+      <path d="M14 6l-6 6 6 6" />
+    </Line>
+  )
+}
+
 /** The dots on a row that can be dragged to reorder it. */
 export function GripIcon({ className = 'size-3.5' }: Props) {
   return (

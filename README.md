@@ -336,6 +336,24 @@ go in as a `.zip` or `.cbz`, which is opened in the browser. The pages come out
 in the order their names put them, counting properly: page 2 before page 10.
 Folders, dotfiles and the `__MACOSX` rubbish a Mac packs in are left behind.
 
+An archive arrives as a **folder** in the rail rather than as fifty more
+thumbnails. Clicking it goes in, and the arrow at the top of the rail comes back
+out. The same archive dropped twice fills the same folder rather than putting a
+second one beside it, and a page is only ever the duplicate of another in the same
+folder: two chapters both hold a `001.png`, and those are two pages. Deleting a
+folder deletes its pages, and deleting the last page deletes the folder.
+
+**Clean & translate all**, inside an opened folder, puts every page in it through
+the whole of the above — detect, read, hide, letter — one page at a time, since
+the API holds one detector and one reader behind a lock each and pages sent
+together only queue there anyway. The bar above the rail says which page is in
+hand and what is being done to it, and stays where it is when the folder is
+closed; clicking the page's name puts that page on the board. **Stop** stops after
+the page in hand, a request already sent being left to land. A page that falls over
+is named with the reason it gave and the rest carry on. A folder that has been
+lettered already asks once before doing it over, since a line moved or rewritten
+by hand cannot be got back.
+
 The dashboard puts a page on a board and works it in three tabs. **Inspect**
 boxes the lettering and reads it; a block the detector is less than 80% sure of
 is read and listed like any other but starts left alone, since a box over half a

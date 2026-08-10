@@ -79,6 +79,11 @@ export type Lettering = {
  */
 export const UNSURE = 0.8
 
+/** What went wrong, as a line to show. Everything thrown here is an Error. */
+export function said(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
 /** Every error the API raises comes back as {"error": "..."}. */
 async function refuse(response: Response): Promise<never> {
   const said = await response
