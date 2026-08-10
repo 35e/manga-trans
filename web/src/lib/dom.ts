@@ -12,3 +12,26 @@ export function typingInto(target: EventTarget | null): boolean {
 export function typingNow(): boolean {
   return typingInto(document.activeElement)
 }
+
+/**
+ * What this browser was told to remember. The API keeps no settings, so
+ * everything chosen once and meant thereafter — the prompt, the language — is
+ * kept here. A browser that will not remember anything is still a browser to
+ * work in, so neither of these ever throws.
+ */
+export function held(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+export function keep(key: string, value: string | null) {
+  try {
+    if (value === null) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, value)
+  } catch {
+    /* nothing to be done, and nothing worth stopping for */
+  }
+}

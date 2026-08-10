@@ -20,6 +20,7 @@ OLLAMA_ENV = "MANGA_TRANS_OLLAMA"
 OLLAMA_DEFAULT = "http://localhost:11434"
 
 TARGET_DEFAULT = "English"
+SOURCE_DEFAULT = "Japanese"
 TIMEOUT = 600
 LISTING_TIMEOUT = 15
 
@@ -29,13 +30,17 @@ SCHEMA = {
     "required": ["translations"],
 }
 
-# ``{target}`` is replaced by the language being translated into. The schema
-# above is what makes the answer JSON, whatever this says; what the wording holds
-# up is the count and the order, and losing those only costs a slower pass line
-# by line. So this can be rewritten freely.
+# ``{target}`` is replaced by the language being translated into and ``{source}``
+# by the one the page was lettered in. Saying the source is worth the words: the
+# same characters are Japanese or Chinese depending on nothing the model can see
+# from a line of dialogue, and asked to guess it will translate a Chinese page as
+# though it were Japanese. The schema above is what makes the answer JSON,
+# whatever this says; what the wording holds up is the count and the order, and
+# losing those only costs a slower pass line by line. So this can be rewritten
+# freely.
 SYSTEM_DEFAULT = (
-    "You translate manga dialogue into {target}. You are given the lines of one "
-    "page, in order, and they are one conversation: read them together. Reply "
+    "You translate {source} manga dialogue into {target}. You are given the lines "
+    "of one page, in order, and they are one conversation: read them together. Reply "
     "with a JSON object holding one translation per line, in the same order, the "
     "same number of them. Keep it short enough to letter back into a speech "
     "bubble. Translate only: no notes, no romaji, no quotation marks around the "
@@ -110,17 +115,24 @@ def answered(message: dict) -> list | None:
     return None
 
 
-def briefing(target: str, system: str | None = None) -> str:
-    """What the model is told, with the language filled in.
+def briefing(
+    target: str, system: str | None = None, source: str = SOURCE_DEFAULT
+) -> str:
+    """What the model is told, with the languages filled in.
 
     Replaced rather than formatted: a hand-written prompt may have braces of its
     own, and str.format would choke on them.
     """
-    return (system or SYSTEM_DEFAULT).replace("{target}", target)
+    said = system or SYSTEM_DEFAULT
+    return said.replace("{target}", target).replace("{source}", source)
 
 
 def request_for(
-    lines: list[str], model: str, target: str, system: str | None = None
+    lines: list[str],
+    model: str,
+    target: str,
+    system: str | None = None,
+    source: str = SOURCE_DEFAULT,
 ) -> dict:
     return {
         "model": model,
@@ -131,7 +143,7 @@ def request_for(
         "options": {"temperature": 0.2},
         "format": SCHEMA,
         "messages": [
-            {"role": "system", "content": briefing(target, system)},
+            {"role": "system", "content": briefing(target, system, source)},
             {
                 "role": "user",
                 "content": "\n".join(
@@ -142,9 +154,17 @@ def request_for(
     }
 
 
-def one(text: str, model: str, target: str, host=None, system: str | None = None) -> str:
+def one(
+    text: str,
+    model: str,
+    target: str,
+    host=None,
+    system: str | None = None,
+    source: str = SOURCE_DEFAULT,
+) -> str:
     """One line on its own, for when a whole page came back miscounted."""
-    sent = ask("/api/chat", request_for([text], model, target, system), host=host)
+    body = request_for([text], model, target, system, source)
+    sent = ask("/api/chat", body, host=host)
     message = sent["message"]
     got = answered(message)
     if got:
@@ -158,6 +178,7 @@ def translate(
     target: str = TARGET_DEFAULT,
     host=None,
     system: str | None = None,
+    source: str = SOURCE_DEFAULT,
 ) -> list[str]:
     """One translation per text, in the order they were given.
 
@@ -170,13 +191,13 @@ def translate(
         return done
 
     lines = [text for _, text in wanted]
-    sent = ask("/api/chat", request_for(lines, model, target, system), host=host)
-    got = answered(sent["message"])
+    body = request_for(lines, model, target, system, source)
+    got = answered(ask("/api/chat", body, host=host)["message"])
 
     if got is None or len(got) != len(lines):
         # It lost count. Asked one line at a time it cannot, though it loses the
         # rest of the page as context.
-        got = [one(line, model, target, host, system) for line in lines]
+        got = [one(line, model, target, host, system, source) for line in lines]
 
     for (at, _), answer in zip(wanted, got):
         done[at] = str(answer).strip()

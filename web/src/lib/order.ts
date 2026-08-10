@@ -1,23 +1,23 @@
 import type { Box } from './api'
 
 /**
- * Where a box falls in reading order: down the page, then right to left, which
- * is the way a Japanese page is read.
+ * Where a box falls in reading order: down the page, then across it the way the
+ * language is read — right to left for Japanese, left to right for Korean.
  *
- * `detect.py` sorts its own blocks by the same key. A block added by hand has to
- * land where the detector would have put it, or the page translates as a jumbled
- * conversation.
+ * `detect.py` sorts its own blocks by the same key, and is told the same way
+ * round. A block added by hand has to land where the detector would have put it,
+ * or the page translates as a jumbled conversation.
  */
-function key(box: Box): [number, number] {
-  return [box[1], -box[2]]
+function key(box: Box, rtl: boolean): [number, number] {
+  return [box[1], rtl ? -box[2] : box[0]]
 }
 
 function after(one: [number, number], other: [number, number]): boolean {
   return one[0] !== other[0] ? one[0] > other[0] : one[1] > other[1]
 }
 
-function readsBefore(one: Box, other: Box): boolean {
-  return !after(key(one), key(other))
+function readsBefore(one: Box, other: Box, rtl: boolean): boolean {
+  return !after(key(one, rtl), key(other, rtl))
 }
 
 /** No half of a box cut in two may be thinner than this, in page pixels. */
@@ -34,7 +34,7 @@ function cutAt(length: number, share: number): number {
  * are read in — which depends on how it was cut, so it is asked of the same rule
  * that orders every other block rather than assumed here.
  */
-export function halves(box: Box, share: number): [Box, Box] {
+export function halves(box: Box, share: number, rtl: boolean): [Box, Box] {
   const [x0, y0, x1, y1] = box
   const width = x1 - x0
   const height = y1 - y0
@@ -51,13 +51,13 @@ export function halves(box: Box, share: number): [Box, Box] {
     other = [cut, y0, x1, y1]
   }
 
-  return readsBefore(one, other) ? [one, other] : [other, one]
+  return readsBefore(one, other, rtl) ? [one, other] : [other, one]
 }
 
 /** The index a box belongs at, among blocks already in reading order. */
-export function insertionFor(boxes: Box[], box: Box): number {
-  const mine = key(box)
-  const at = boxes.findIndex((held) => after(key(held), mine))
+export function insertionFor(boxes: Box[], box: Box, rtl: boolean): number {
+  const mine = key(box, rtl)
+  const at = boxes.findIndex((held) => after(key(held, rtl), mine))
   return at === -1 ? boxes.length : at
 }
 

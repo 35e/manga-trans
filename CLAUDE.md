@@ -84,9 +84,15 @@ any new work that needs the segmentation on this path rather than adding a pass.
   is a real answer. `bubbles()` then cuts overlapping answers back to a cell each
   when several blocks turn out to share a balloon. `/api/detect` includes it
   because it is free there.
-- `read.py` — manga-ocr. **The only thing that imports torch, and it does so
-  inside `Reader.load()`.** Keep that import deferred and keep torch out of
-  every other module.
+- `languages.py` — the one table of what a page can be written in: which reader
+  reads it, which way round it is read, whether its script stacks into columns
+  and whether its words are spaced. Both ends look languages up here, the
+  dashboard through `/api/languages` rather than by holding a copy.
+- `read.py` — manga-ocr for Japanese, PP-OCR (RapidOCR on onnxruntime) for
+  everything else, behind one `Reader` that stands up only the language it is
+  asked for. **The only thing that imports torch, and it does so inside
+  `Reader.load()`.** Keep that import deferred, keep `rapidocr` deferred the same
+  way inside `Ppocr.load()`, and keep both out of every other module.
 - `ollama.py` — the whole page goes over in one request, held to a JSON schema;
   if the model returns the wrong number of lines it falls back to one line at a
   time. Prompts are never stored: callers send `system` each time.
@@ -108,17 +114,19 @@ through `lib/`.
 - `lib/fit.ts` (measuring and wrapping), `lib/order.ts` (reading order),
   `lib/mask.ts` (the brushed mask), `lib/compose.ts` (the canvas letterer),
   `lib/api.ts` (the client, and every shared type).
-- `components/Board.tsx` draws the page and switches tools by `mode`; the
-  overlays over it are `RegionsLayer`, `DrawRegion`, `MaskCanvas`,
-  `TranslationLayer` and `ViewBar`, one per thing that can be done to a page.
+- `components/Board.tsx` draws the page and switches tools by `mode`; the tool
+  rows are `InspectTools`, `MaskTools` and `TranslateTools`, and the overlays
+  over it are `RegionsLayer`, `DrawRegion`, `MaskCanvas`, `TranslationLayer` and
+  `ViewBar`, one per thing that can be done to a page.
 - `components/Sidebar.tsx` is the rail: it owns which folder is open, and holds
   `Gallery` (folder cards, then pages), the folder's own bar and
   `BatchProgress`.
 - `components/icons.tsx` holds every line icon; `components/ui.tsx` every
   control.
 - Hooks own one concern each: `useImageLibrary`, `useBatch`, `useMasks`,
-  `useLetterMasks`, `useObjectUrls`, `useOllama`, `usePrompt`, `useBoardView`,
-  `useBoardKeys`, `useBoxDrag`, `useFileDrop`, `useLetteringFont`.
+  `useLetterMasks`, `useObjectUrls`, `useOllama`, `usePrompt`, `useLanguage`,
+  `useBoardView`, `useBoardKeys`, `useBoxDrag`, `useFileDrop`,
+  `useLetteringFont`.
 
 ## Invariants worth knowing before editing
 
@@ -142,11 +150,39 @@ already does the dropping. Size is capped at `originalSize` (`lib/fit.ts`): a
 balloon is drawn around its words, so filling one sets a short line four times
 too large.
 
-**Reading order is defined twice and must agree.** `(y0, -x1)` — down the page,
-then right to left — in `detect.py` (`blocks.sort`) and in `lib/order.ts`
-(`key`). A hand-drawn block is inserted where that rule puts it, not appended,
-because the order is also the order the page is translated in as one
+**Reading order is defined twice and must agree.** Down the page, then across it
+the way the language is read — `(y0, -x1)` right to left, `(y0, x0)` left to
+right — in `detect.py` (`blocks.sort`, from `Detector.__call__`'s `rtl`) and in
+`lib/order.ts` (`key`, from the same flag). Both take it from
+`languages.Language.rtl`, the API directly and the dashboard through
+`useLanguage`. A hand-drawn block is inserted where that rule puts it, not
+appended, because the order is also the order the page is translated in as one
 conversation.
+
+**The language decides three things and nothing else.** Which reader stands up;
+which way the blocks are sorted; and what `/api/translate` is told the page is in
+(`source`, a word rather than a code — a caller may be translating something
+there is no reader for). Detection, the segmentation mask, the balloon-finding
+and the splitting are all language-blind and must stay that way: the detector was
+trained on comics rather than on a script, and `split.py` measures in characters,
+which holds for lines running down a page and across it alike.
+
+**PP-OCR reads across a page and nothing else**, so `read.pieces` takes a
+balloon apart before it goes over — into lines, or into columns each set out as a
+line by `read.unstacked`. Which way the lettering runs is measured off the ink of
+the block (`read.upright`, the shape of what was set) rather than taken from the
+language: a page of Korean carries a sound effect written down the side of it
+just as a page of Japanese does. The gaps look like the better signal — line
+spacing against character spacing — and are not: CJK is set solid both ways and
+the air between two columns is the letterer's taste. `read.inked` decides ink
+from ground at the *edge* of the crop rather than by taking the rarer of the two,
+which gets a heavy sound effect exactly backwards.
+
+**`rapidocr` asks for `opencv-python`, the GUI build.** It is the same cv2 as the
+headless one everything here uses, linked against a libGL no server has, and
+being installed second it wins. The Dockerfile drops it and lays the headless
+build back down afterwards; do not "simplify" those three lines into one `pip
+install`.
 
 **There are two independent letterers.** `/api/render` sets text with PIL
 (`render.py`: binary search for the largest fitting size, greedy wrap). The
@@ -209,9 +245,11 @@ is a different tracing, not the same one again. That hook writes its ref before
 its state so a tracing can be marked into a mask the moment it arrives.
 
 **Dockerfile layer order is load-bearing.** Only `__init__.py`, `geometry.py`,
-`detect.py` and `read.py` are copied before the model prefetch step; editing any
-of those four invalidates ~550 MB of baked weights and forces a re-download on
-the next build. Everything else is copied after.
+`languages.py`, `detect.py` and `read.py` are copied before the model prefetch
+step; editing any of those five invalidates ~550 MB of baked weights and forces a
+re-download on the next build. Everything else is copied after. `languages.py` is
+in that set because `read.ensure_readers` needs it to know what to fetch, which
+is honest enough — adding a language is adding weights.
 
 This is why `detect.py` imports `split` **inside** `Detector.__call__` rather
 than at the top: `split.py` is copied after the prefetch, so a top-level import

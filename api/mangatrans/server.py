@@ -17,7 +17,7 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
 
-from . import bubble, ollama, render
+from . import bubble, languages, ollama, render
 from .detect import GROW, GROW_MAX, Detector
 from .geometry import Box
 from .read import Reader
@@ -85,6 +85,22 @@ def number(field: str, default: int, low: int, high: int) -> int:
     except ValueError as exc:
         raise BadRequest(f"'{field}' must be a whole number") from exc
     return max(low, min(high, value))
+
+
+def language_in() -> languages.Language:
+    """What the page is lettered in, which decides who reads it and which way round.
+
+    Nothing sent means Japanese: this was written for manga first, and a caller
+    that predates any of the rest still means that.
+    """
+    asked = request.form.get("language")
+    try:
+        return languages.of(asked)
+    except KeyError as exc:
+        raise BadRequest(
+            f"'language' is not one this reads: {asked!r} "
+            f"(try one of {', '.join(languages.CODES)})"
+        ) from exc
 
 
 def box_in(values, image: Image.Image) -> Box:
@@ -169,6 +185,20 @@ def create_app(
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         return response
 
+    @app.get("/api/languages")
+    def written():
+        """Every language a page can be read in, and which way round it is read.
+
+        Handed out so a front end can offer them rather than hold its own copy of
+        the list: which reader exists for what is the API's business.
+        """
+        return jsonify(
+            languages=[
+                {"code": language.code, "name": language.name, "rtl": language.rtl}
+                for language in languages.LANGUAGES
+            ]
+        )
+
     @app.get("/api/models")
     def models():
         """Every model Ollama has to translate with."""
@@ -193,16 +223,22 @@ def create_app(
         No image: this is the one thing here that works on words alone. Which
         model does it is the caller's choice out of /api/models, and so is what
         the model is told — send `system` to say something other than the
-        default, with `{target}` anywhere the language should go.
+        default, with `{target}` and `{source}` anywhere the languages should go.
+
+        `source` and `target` are language names rather than codes: they are only
+        ever words in a prompt, and a caller may well be translating something
+        this API has no reader for.
         """
         texts = [str(text) for text in sent("texts")]
         model = request.form.get("model", "").strip()
         if not model:
             raise BadRequest("nothing to translate with (form field 'model')")
         target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
+        source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
         system = request.form.get("system", "").strip() or None
         try:
-            return jsonify(texts=ollama.translate(texts, model, target, system=system))
+            said = ollama.translate(texts, model, target, system=system, source=source)
+            return jsonify(texts=said)
         except ollama.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 
@@ -214,10 +250,13 @@ def create_app(
         in, which is what a translation wants — see /api/bubbles. It comes back
         here too because it is worked out from the page and the boxes alone, and
         both are already in hand.
+
+        Finding the text needs no model of the language, but the order they come
+        back in does: `language` says which way across the page it is read.
         """
         image = page()
         pixels = np.array(image)
-        blocks = detector()(pixels)
+        blocks = detector()(pixels, language_in().rtl)
         balloons = bubble.bubbles(pixels, [block.box for block in blocks])
         return jsonify(
             width=image.width,
@@ -236,9 +275,10 @@ def create_app(
     def balloons():
         """The balloon each box is written in, boxed, in the order they were given.
 
-        Japanese runs down the page, so a block of it is a tall narrow column and
-        a translation set in that column has nowhere to go. This answers with the
-        room around it instead.
+        Japanese and much Chinese run down the page, so a block of either is a
+        tall narrow column and a translation set in that column has nowhere to
+        go. This answers with the room around it instead. No language is named:
+        a balloon is a shape on the page, and finding one reads nothing.
 
         `bubble` is null where no balloon could be made out — lettering over
         artwork is in none — and the caller should keep the box it has. No model
@@ -272,9 +312,14 @@ def create_app(
 
     @app.post("/api/read")
     def read():
-        """What the lettering in each box says, in the order they were given."""
+        """What the lettering in each box says, in the order they were given.
+
+        `language` is what it is lettered in, out of /api/languages, and decides
+        which reader is stood up: manga-ocr for Japanese, PP-OCR for the rest.
+        Only the reader asked for is ever loaded.
+        """
         image = page()
-        return jsonify(texts=reader()(image, boxes_in(image)))
+        return jsonify(texts=reader()(image, boxes_in(image), language_in()))
 
     @app.post("/api/clean")
     def clean():
