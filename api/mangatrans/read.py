@@ -14,7 +14,10 @@ read Korean never pays for it. PP-OCR's onnxruntime is deferred the same way.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, Sequence
@@ -57,6 +60,13 @@ SPECK = 3
 # share of the character. Only so the model is not handed a column's worth of
 # glyphs run solid together.
 LOOSE = 0.06
+
+# onnxruntime goes looking for a GPU as it loads and, in a container that has
+# been shown a graphics card it cannot read the make of — which is every
+# container on a Mac — says so at warning level on the way past. Nothing here
+# wants a GPU and the reading is unaffected, but it is the loudest thing in the
+# log and it reads like a failure. See :func:`quieted`.
+GPU_HUNT = ("device_discovery.cc", "GetGpuDevices")
 
 
 def model_name(explicit: str | None = None) -> str:
@@ -252,6 +262,41 @@ def pieces(crop: Image.Image, language: Language) -> list[Image.Image]:
 # --- The readers ------------------------------------------------------------
 
 
+class Unfetched(RuntimeError):
+    """A reader's weights are not here and could not be had."""
+
+
+@contextlib.contextmanager
+def quieted():
+    """stderr with onnxruntime's hunt for a GPU taken out of it.
+
+    The hunt is written from C++ straight to the file descriptor, so there is no
+    logger to turn down: the descriptor itself is caught and everything that is
+    not the hunt is written back out afterwards, since a reader that cannot find
+    its weights says so the same way. Held only for as long as one reader takes
+    to load, that being the whole process's stderr.
+    """
+    caught = tempfile.TemporaryFile()
+    sys.stderr.flush()
+    kept = os.dup(2)
+    try:
+        os.dup2(caught.fileno(), 2)
+        try:
+            yield
+        finally:
+            sys.stderr.flush()
+            os.dup2(kept, 2)
+    finally:
+        os.close(kept)
+        caught.seek(0)
+        said = caught.read().decode("utf-8", "replace")
+        caught.close()
+        for line in said.splitlines(keepends=True):
+            if not all(mark in line for mark in GPU_HUNT):
+                sys.stderr.write(line)
+        sys.stderr.flush()
+
+
 class Ppocr:
     """PP-OCR, for the languages manga-ocr was not trained on.
 
@@ -267,22 +312,35 @@ class Ppocr:
     def load(language: Language):
         """The engine itself. Imported here, so onnxruntime loads on first use.
 
-        Building it fetches whatever of its weights are not already down.
+        Building it fetches whatever of its weights are not already down, which
+        is the one thing here that wants the network at all — the image bakes
+        them in, so a run that reaches for them was built without them. Saying so
+        is worth the lines: what comes back otherwise is a modelscope URL.
         """
-        from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
+        with quieted():
+            from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
 
-        version = PPOCR_OLDER.get(language.recogniser, PPOCR_VERSION)
-        return RapidOCR(
-            params={
-                "Global.model_root_dir": str(ppocr_models()),
-                # It says which weights it is loading, on every engine, at INFO.
-                "Global.log_level": "warning",
-                "Rec.lang_type": LangRec(language.recogniser),
-                "Rec.ocr_version": OCRVersion(version),
-                "Rec.model_type": ModelType.MOBILE,
-                "Rec.engine_type": EngineType.ONNXRUNTIME,
-            }
-        )
+            version = PPOCR_OLDER.get(language.recogniser, PPOCR_VERSION)
+            try:
+                return RapidOCR(
+                    params={
+                        "Global.model_root_dir": str(ppocr_models()),
+                        # It says which weights it is loading, on every engine,
+                        # at INFO.
+                        "Global.log_level": "warning",
+                        "Rec.lang_type": LangRec(language.recogniser),
+                        "Rec.ocr_version": OCRVersion(version),
+                        "Rec.model_type": ModelType.MOBILE,
+                        "Rec.engine_type": EngineType.ONNXRUNTIME,
+                    }
+                )
+            except Exception as exc:
+                raise Unfetched(
+                    f"the {language.name} reader could not be stood up: {exc}. "
+                    f"Its weights ({language.recogniser}, {version}) are looked "
+                    f"for in {ppocr_models()} and fetched on first use if they "
+                    "are not there."
+                ) from exc
 
     def line(self, image: Image.Image) -> str:
         """What one line says.

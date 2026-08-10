@@ -62,10 +62,11 @@ RUN if [ "$PREFETCH_MODEL" = "true" ]; then \
 COPY mangatrans /app/mangatrans
 
 # Translation asks a model on the machine running the container, not one inside
-# it: from in here, that machine is host.containers.internal.
+# it. What that machine is called from in here is Docker's or Podman's to say and
+# they do not agree, so mangatrans.ollama tries each name rather than one being
+# baked in; MANGA_TRANS_OLLAMA still overrides it.
 ENV MANGA_TRANS_HOST=0.0.0.0 \
-    MANGA_TRANS_PORT=8000 \
-    MANGA_TRANS_OLLAMA=http://host.containers.internal:11434
+    MANGA_TRANS_PORT=8000
 
 WORKDIR /app
 EXPOSE 8000
