@@ -110,11 +110,14 @@ through `lib/`.
 - `components/Board.tsx` draws the page and switches tools by `mode`; the
   overlays over it are `RegionsLayer`, `DrawRegion`, `MaskCanvas`,
   `TranslationLayer` and `ViewBar`, one per thing that can be done to a page.
+- `components/Sidebar.tsx` is the rail: it owns which folder is open, and holds
+  `Gallery` (folder cards, then pages), the folder's own bar and
+  `BatchProgress`.
 - `components/icons.tsx` holds every line icon; `components/ui.tsx` every
   control.
-- Hooks own one concern each: `useImageLibrary`, `useMasks`, `useLetterMasks`,
-  `useObjectUrls`, `useOllama`, `usePrompt`, `useBoardView`, `useBoardKeys`,
-  `useBoxDrag`, `useFileDrop`, `useLetteringFont`.
+- Hooks own one concern each: `useImageLibrary`, `useBatch`, `useMasks`,
+  `useLetterMasks`, `useObjectUrls`, `useOllama`, `usePrompt`, `useBoardView`,
+  `useBoardKeys`, `useBoxDrag`, `useFileDrop`, `useLetteringFont`.
 
 ## Invariants worth knowing before editing
 
@@ -162,6 +165,33 @@ exports white-on-black for exactly this reason.
 `/api/render`. `inpaint.fill` grows the hole by `EDGE` for *sampling* only, and
 still paints just what was marked — the soft rim around lettering must not
 become the material the fill is made of.
+
+**A folder run goes one page at a time, and the page in hand is the page named.**
+`useBatch` sends one page through `App.pipeline` and waits. Sending five at once
+buys nothing — `Detector` and `Reader` hold a lock each, so they queue at the API
+regardless — and coming back in no particular order leaves the progress bar with
+nothing true to say. Which is also why board actions are shut while a run is going
+(`Board`'s `runningFolder`): a second page in the air would have the bar naming
+whatever was asked for last.
+
+`pipeline` therefore takes the page rather than reading the active one, and moves
+the step tabs and clears the selection **only** for the page on the board — a run
+must not drag the view about under someone reading another page. It hands back why
+it gave up rather than only leaving it in the banner (`App.lastFailure`, set by
+`during`), because a run has to say which page that was. Not every empty answer is
+a refusal: `translatePage` also comes back false for a page whose every block was
+left alone, so the reason is what decides, not the boolean.
+
+**A tracing is dropped as soon as its clean lands, unless its page is on the
+board.** It is a page-sized `ImageBitmap` worked out from the page and so can be
+had again; fifty pages run through would otherwise hold fifty of them alongside
+fifty masks and fifty cleaned pages. The page being brushed keeps its own, that
+being the one that will want it again.
+
+**A folder is named after its archive, and dedupe is scoped to the folder.**
+Re-dropping an archive fills the same folder rather than making a second one, which
+is what makes `fingerprint(file, folder)` right both ways round: the same zip twice
+is the same five pages, but two chapters each holding a `001.png` hold two pages.
 
 **Traced masks are cached per `(pageId, spread)`** (`useLetterMasks`), and the
 `ImageBitmap`s are explicitly `close()`d on removal — a different `grow`/`spread`

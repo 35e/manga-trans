@@ -1,3 +1,14 @@
+/**
+ * An archive that was dropped in, as a folder of its pages. Named after the
+ * archive so re-dropping one fills the same folder in again rather than putting a
+ * second one beside it.
+ */
+export type GalleryFolder = {
+  id: string
+  name: string
+  addedAt: number
+}
+
 export type GalleryImage = {
   id: string
   file: File
@@ -8,11 +19,17 @@ export type GalleryImage = {
   addedAt: number
   width: number
   height: number
+  /** The folder this page came out of, or nothing for one dropped loose. */
+  folder?: string
 }
 
-/** Same name, size and mtime: the same file dropped twice. */
-export function fingerprint(file: File) {
-  return `${file.name}:${file.size}:${file.lastModified}`
+/**
+ * Same name, size and mtime, in the same folder: the same file dropped twice.
+ * Scoped by folder because two chapters both hold a `001.png`, and those are two
+ * pages rather than one.
+ */
+export function fingerprint(file: File, folder = '') {
+  return `${folder}:${file.name}:${file.size}:${file.lastModified}`
 }
 
 /** A file name without its extension, to build a saved page's name from. */
@@ -28,7 +45,7 @@ export function isImage(file: File) {
  * A file wrapped in a gallery entry, once the browser has decoded it far enough
  * to know its size. One it cannot decode resolves to null, its URL released.
  */
-export function loadImage(file: File): Promise<GalleryImage | null> {
+export function loadImage(file: File, folder?: string): Promise<GalleryImage | null> {
   const url = URL.createObjectURL(file)
 
   return new Promise((resolve) => {
@@ -44,6 +61,7 @@ export function loadImage(file: File): Promise<GalleryImage | null> {
         addedAt: Date.now(),
         width: probe.naturalWidth,
         height: probe.naturalHeight,
+        folder,
       })
 
     probe.onerror = () => {

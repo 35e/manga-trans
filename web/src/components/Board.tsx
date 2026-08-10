@@ -69,6 +69,12 @@ type Props = {
   onSelect: (index: number | null) => void
   mode: BoardMode
   onMode: (mode: BoardMode) => void
+  /**
+   * A folder is being run through. The page it is on is not necessarily this one,
+   * but everything here goes to the same API, and a second page in the air would
+   * leave the run's progress saying whatever was asked for last.
+   */
+  runningFolder: boolean
   /** Whether the board is showing the cleaned page or the one that came in. */
   showCleaned: boolean
   onShowCleaned: (showing: boolean) => void
@@ -101,6 +107,7 @@ export function Board({
   onSelect,
   mode,
   onMode,
+  runningFolder,
   showCleaned,
   onShowCleaned,
   onRunAll,
@@ -120,7 +127,8 @@ export function Board({
   const [, setEdits] = useState(0)
   const edited = () => setEdits((count) => count + 1)
 
-  const busy = stage !== null
+  const busy = stage !== null || runningFolder
+  const waiting = runningFolder ? 'wait for the folder being run to finish' : undefined
   const brushing = mode === 'mask' && !showCleaned
   const marked = Boolean(mask && !mask.empty)
 
@@ -211,13 +219,13 @@ export function Board({
                 onClick={onRunAll}
                 disabled={busy}
                 size="md"
-                title="Detect the text, hide it, and letter the page"
+                title={waiting ?? 'Detect the text, hide it, and letter the page'}
               >
                 Do all three
               </Button>
 
               {mode === 'inspect' && (
-                <Action onClick={onDetect} disabled={busy} stage={stage}>
+                <Action onClick={onDetect} disabled={busy} stage={stage} title={waiting}>
                   {analysis ? 'Read again' : 'Detect text'}
                 </Action>
               )}
@@ -229,7 +237,7 @@ export function Board({
                   }}
                   disabled={busy || !marked}
                   stage={stage}
-                  title={marked ? undefined : 'Mark something to hide first'}
+                  title={waiting ?? (marked ? undefined : 'Mark something to hide first')}
                 >
                   {cleaned ? 'Clean again' : 'Clean page'}
                 </Action>
@@ -245,7 +253,8 @@ export function Board({
                   }
                   stage={stage}
                   title={
-                    lettered ? 'Set the lettering into the page and save it' : undefined
+                    waiting ??
+                    (lettered ? 'Set the lettering into the page and save it' : undefined)
                   }
                 >
                   {translating.applying

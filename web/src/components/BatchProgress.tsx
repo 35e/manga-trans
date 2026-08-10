@@ -1,0 +1,132 @@
+import { useEffect, useState } from 'react'
+import type { BatchRun } from '../hooks/useBatch'
+import type { Stage } from '../lib/api'
+import { plural } from '../lib/images'
+import { CloseIcon } from './icons'
+import { IconButton, Spinner } from './ui'
+
+/** What the page in hand is having done to it, said the way the board says it. */
+const LABELS: Record<Stage, string> = {
+  detecting: 'Detecting',
+  reading: 'Reading',
+  tracing: 'Tracing',
+  cleaning: 'Cleaning',
+  translating: 'Translating',
+  fitting: 'Finding the balloons',
+}
+
+type Props = {
+  run: BatchRun
+  /** What the API is doing for the page in hand, if it is doing anything. */
+  stage: Stage | null
+  onOpen: (id: string) => void
+  onStop: () => void
+  onDismiss: () => void
+}
+
+/**
+ * How far a folder run has got. It is not shown inside the folder it belongs to:
+ * a run takes minutes a page, and the folder it is working through is not
+ * where its reader will be sitting.
+ */
+export function BatchProgress({ run, stage, onOpen, onStop, onDismiss }: Props) {
+  const share = run.total === 0 ? 0 : run.done / run.total
+  const failed = run.failed.length
+
+  // The last thing the API was asked for, kept while it is between two of them:
+  // a page's steps do not run into each other, and a word blinking out for the
+  // few milliseconds in the gap reads as something having gone wrong.
+  // Cleared before it is filled in, so a page that arrives already being worked
+  // on keeps its stage rather than being reset to nothing after it.
+  const [held, setHeld] = useState<Stage | null>(stage)
+  useEffect(() => setHeld(null), [run.page?.id])
+  useEffect(() => {
+    if (stage) setHeld(stage)
+  }, [stage])
+  const doing = stage ?? held
+
+  return (
+    <section className="mx-3 mb-3 shrink-0 rounded-lg border border-line bg-raised px-2.5 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate text-[11px] font-medium text-ink">
+          {run.label}
+        </p>
+        {run.finished ? (
+          <IconButton label="Dismiss" onClick={onDismiss} className="-my-1 size-5">
+            <CloseIcon className="size-3" />
+          </IconButton>
+        ) : (
+          <button
+            type="button"
+            onClick={onStop}
+            disabled={run.stopping}
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-faint transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-faint"
+            title="Stop once the page in hand is finished"
+          >
+            {run.stopping ? 'Stopping…' : 'Stop'}
+          </button>
+        )}
+      </div>
+
+      <div
+        role="progressbar"
+        aria-label={`${run.label} progress`}
+        aria-valuemin={0}
+        aria-valuemax={run.total}
+        aria-valuenow={run.done}
+        aria-valuetext={`${run.done} of ${plural(run.total, 'page')}`}
+        className="mt-1.5 h-1 overflow-hidden rounded-full bg-canvas"
+      >
+        <div
+          className={`h-full rounded-full transition-[width] duration-300 ${
+            failed > 0 ? 'bg-warn' : 'bg-accent'
+          }`}
+          style={{ width: `${Math.round(share * 100)}%` }}
+        />
+      </div>
+
+      <div className="mt-1.5 flex items-baseline justify-between gap-2 text-[11px]">
+        <p className="min-w-0 truncate text-faint">
+          {run.page ? (
+            <>
+              {!run.finished && <Spinner className="mr-1 inline size-2.5 align-[-1px]" />}
+              {doing ? `${LABELS[doing]} ` : ''}
+              <button
+                type="button"
+                onClick={() => onOpen(run.page?.id ?? '')}
+                className="underline decoration-dotted underline-offset-2 hover:text-ink"
+                title="Put this page on the board"
+              >
+                {run.page.name}
+              </button>
+            </>
+          ) : run.finished ? (
+            <>
+              {run.stopping ? 'Stopped' : 'Done'}
+              {failed > 0 && ` · ${plural(failed, 'page')} fell over`}
+            </>
+          ) : (
+            'Starting…'
+          )}
+        </p>
+        <p className="shrink-0 text-faint tabular-nums">
+          {run.done} / {run.total}
+        </p>
+      </div>
+
+      {run.finished && failed > 0 && (
+        <ul className="mt-1.5 space-y-0.5 border-t border-line pt-1.5 text-[11px] leading-snug text-warn">
+          {run.failed.map((page, at) => (
+            <li
+              key={`${page.name}:${at}`}
+              className="truncate"
+              title={`${page.name}: ${page.why}`}
+            >
+              <span className="font-medium">{page.name}</span> — {page.why}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}

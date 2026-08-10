@@ -6,6 +6,7 @@ import { Sidebar } from './components/Sidebar'
 import { TranslationsPanel } from './components/TranslationsPanel'
 import { GearIcon } from './components/icons'
 import { IconButton } from './components/ui'
+import { useBatch } from './hooks/useBatch'
 import { useFileDrop } from './hooks/useFileDrop'
 import { useImageLibrary } from './hooks/useImageLibrary'
 import { useLetterMasks } from './hooks/useLetterMasks'
@@ -22,20 +23,18 @@ import {
   detect,
   letterMask,
   read,
+  said,
   translate,
 } from './lib/api'
 import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, ready } from './lib/fit'
-import type { GalleryImage } from './lib/images'
+import type { GalleryFolder, GalleryImage } from './lib/images'
 import { stem } from './lib/images'
 import type { Lines } from './lib/lettering'
 import * as lines from './lib/lettering'
 import { mark } from './lib/mask'
 import { halves, insertionFor, movedIndex } from './lib/order'
 import * as blocks from './lib/regions'
-
-const said = (cause: unknown) =>
-  cause instanceof Error ? cause.message : String(cause)
 
 /** The same record without one key. */
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
@@ -50,7 +49,8 @@ const newRegion = (box: Box, from?: Region): Region => ({
 })
 
 function App() {
-  const { images, add, remove, clear, busy, notice, dismissNotice } = useImageLibrary()
+  const { images, folders, add, remove, dropFolder, clear, busy, notice, dismissNotice } =
+    useImageLibrary()
   const dragging = useFileDrop(add)
   const { forPage, drop: dropMask, clear: clearMasks } = useMasks()
   const traced = useLetterMasks()
@@ -86,6 +86,11 @@ function App() {
 
   const analysis = active ? (analyses[active.id] ?? null) : null
   const pageLettering = active ? (lettering[active.id] ?? []) : []
+  // Which pages have been lettered, so a folder run can ask before doing them
+  // over: a line moved or rewritten by hand cannot be got back.
+  const lettered = Object.entries(lettering)
+    .filter(([, set]) => set.some(Boolean))
+    .map(([id]) => id)
   const cleanedPage = active ? (cleanedPages[active.id] ?? null) : null
   const stage = working?.id === active?.id ? (working?.stage ?? null) : null
 
@@ -114,6 +119,19 @@ function App() {
   const cleanedNow = useRef(cleanedPages)
   cleanedNow.current = cleanedPages
 
+  // Which page is on the board, for the steps that run against a page that may
+  // not be it: a folder run must not clear the selection or move the step tabs
+  // out from under whoever is looking at another page while it works.
+  const activeNow = useRef(activeId)
+  activeNow.current = activeId
+  const onBoard = useCallback((id: string) => id === activeNow.current, [])
+
+  // And whether a page is still here at all: a run works through the list it
+  // picked up, and a page can be deleted out from under it.
+  const imagesNow = useRef(images)
+  imagesNow.current = images
+  const held = useCallback((id: string) => imagesNow.current.some((it) => it.id === id), [])
+
   useEffect(() => {
     if (!activeId) return
     const found = analysesNow.current[activeId]
@@ -133,27 +151,32 @@ function App() {
     if (mode === 'translate' && cleanedPage) setShowCleaned(true)
   }, [mode, cleanedPage])
 
-  const removeImage = useCallback(
+  /** Everything held about one page that is not the page itself. */
+  const forget = useCallback(
     (id: string) => {
-      remove(id)
       dropMask(id)
       dropCleaned(id)
       traced.drop(id)
       setLettering((current) => without(current, id))
       setAnalyses((current) => without(current, id))
     },
-    [remove, dropMask, dropCleaned, traced],
+    [dropMask, dropCleaned, traced],
   )
 
-  const clearAll = useCallback(() => {
-    clear()
-    clearMasks()
-    clearCleaned()
-    traced.clear()
-    setLettering({})
-    setAnalyses({})
-    setActiveId(null)
-  }, [clear, clearMasks, clearCleaned, traced])
+  const removeImage = useCallback(
+    (id: string) => {
+      remove(id)
+      forget(id)
+    },
+    [remove, forget],
+  )
+
+  /**
+   * Why a step gave up, for a caller that has to say so somewhere other than the
+   * banner — a folder run names the page it happened to. Set by {@link during},
+   * and read straight after the step it belongs to.
+   */
+  const lastFailure = useRef<string | null>(null)
 
   /** Run one step against one page, keeping the banner and the error in step. */
   const during = useCallback(
@@ -163,7 +186,9 @@ function App() {
       try {
         return await step()
       } catch (cause) {
-        setError(said(cause))
+        const why = said(cause)
+        lastFailure.current = why
+        setError(why)
         return null
       } finally {
         setWorking(null)
@@ -222,7 +247,10 @@ function App() {
   const detectAndRead = useCallback(
     async (page: GalleryImage): Promise<Analysis | null> => {
       const { id, file } = page
-      setSelected(null)
+      // These blocks are about to be replaced, so a place in the old list means
+      // nothing. Only for the page being looked at: a folder run works its way
+      // through the others without touching what is picked out on this one.
+      if (onBoard(id)) setSelected(null)
 
       return during(id, 'detecting', async () => {
         const detection = await detect(file)
@@ -256,7 +284,7 @@ function App() {
         return found
       })
     },
-    [during],
+    [during, onBoard],
   )
 
   /**
@@ -552,23 +580,101 @@ function App() {
     if (active && found) await translatePage(active, found)
   }, [active, analyses, translatePage])
 
-  /** The usual way through, in one go. Each step feeds the next. */
-  const runAll = useCallback(async () => {
-    if (!active) return
-    const page = active
+  /**
+   * The usual way through one page, in one go: find the words, hide them, letter
+   * it. Each step feeds the next.
+   *
+   * It takes the page rather than reading the active one because a folder run puts
+   * every page in a folder through this same way, and hands back why it gave up
+   * rather than only leaving it in the banner, because a run has to say which page
+   * that was.
+   */
+  const pipeline = useCallback(
+    async (page: GalleryImage): Promise<string | null> => {
+      // Deleted since the run picked up its list. Nothing to do and nothing wrong.
+      if (!held(page.id)) return null
 
-    const found = await detectAndRead(page)
-    if (!found) return
+      const found = await detectAndRead(page)
+      if (!found) return lastFailure.current ?? 'the text could not be found'
+      if (onBoard(page.id)) setMode('mask')
 
-    setMode('mask')
-    const marks = await marksFor(page, found)
-    if (marks && !(await cleanPage(page, marks))) return
+      const marks = await marksFor(page, found)
+      if (marks) {
+        lastFailure.current = null
+        if (!(await cleanPage(page, marks))) {
+          return lastFailure.current ?? 'the page could not be cleaned'
+        }
+      }
 
-    setMode('translate')
-    if (ollama.model && found.texts?.some((text) => text.trim())) {
-      await translatePage(page, found)
-    }
-  }, [active, detectAndRead, marksFor, cleanPage, translatePage, ollama.model])
+      // The tracing is worked out from the page and can be had again; a folder of
+      // fifty would otherwise hold fifty page-sized bitmaps for the sake of one.
+      // The page on the board keeps its own, since that is the one being brushed.
+      if (!onBoard(page.id)) traced.drop(page.id)
+      else setMode('translate')
+
+      if (ollama.model && found.texts?.some((text) => text.trim())) {
+        lastFailure.current = null
+        await translatePage(page, found)
+        // Not every empty answer is a refusal: a page whose every block was left
+        // alone has nothing to translate and nothing went wrong with it.
+        if (lastFailure.current) return lastFailure.current
+      }
+      return null
+    },
+    [
+      detectAndRead,
+      marksFor,
+      cleanPage,
+      translatePage,
+      traced,
+      onBoard,
+      held,
+      ollama.model,
+    ],
+  )
+
+  /** "Do all three": that, for the page on the board. */
+  const runAll = useCallback(() => {
+    if (active) void pipeline(active)
+  }, [active, pipeline])
+
+  const {
+    run: batch,
+    start: startBatch,
+    stop: stopBatch,
+    dismiss: dismissBatch,
+  } = useBatch(pipeline)
+
+  /** Every page in a folder, in the order the archive put them. */
+  const runFolder = useCallback(
+    (folder: GalleryFolder) => {
+      void startBatch(
+        folder,
+        images.filter((image) => image.folder === folder.id),
+      )
+    },
+    [startBatch, images],
+  )
+
+  const removeFolder = useCallback(
+    (id: string) => {
+      if (batch?.folder === id) stopBatch()
+      for (const image of images) if (image.folder === id) forget(image.id)
+      dropFolder(id)
+    },
+    [batch?.folder, stopBatch, images, forget, dropFolder],
+  )
+
+  const clearAll = useCallback(() => {
+    stopBatch()
+    clear()
+    clearMasks()
+    clearCleaned()
+    traced.clear()
+    setLettering({})
+    setAnalyses({})
+    setActiveId(null)
+  }, [stopBatch, clear, clearMasks, clearCleaned, traced])
 
   const changeLettering = useCallback(
     (index: number, patch: Partial<Lettering>) => {
@@ -715,15 +821,26 @@ function App() {
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <Sidebar
           images={images}
+          folders={folders}
           activeId={active?.id ?? null}
           onOpen={setActiveId}
           onRemove={removeImage}
+          onRemoveFolder={removeFolder}
           onFiles={add}
           dragging={dragging}
           busy={busy}
           notice={notice}
           onDismissNotice={dismissNotice}
           onClearAll={clearAll}
+          batch={batch}
+          // The bar names the page it is working on, so it wants that page's
+          // stage rather than the board's — which is only ever the active page's.
+          batchStage={working && working.id === batch?.page?.id ? working.stage : null}
+          onRunFolder={runFolder}
+          onStopBatch={stopBatch}
+          onDismissBatch={dismissBatch}
+          canTranslate={Boolean(ollama.model)}
+          lettered={lettered}
         />
 
         <Board
@@ -737,6 +854,7 @@ function App() {
           onSelect={setSelected}
           mode={mode}
           onMode={setMode}
+          runningFolder={batch !== null && !batch.finished}
           showCleaned={showCleaned}
           onShowCleaned={setShowCleaned}
           onRunAll={runAll}
