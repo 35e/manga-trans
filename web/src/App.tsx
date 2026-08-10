@@ -9,6 +9,7 @@ import { IconButton } from './components/ui'
 import { useBatch } from './hooks/useBatch'
 import { useFileDrop } from './hooks/useFileDrop'
 import { useImageLibrary } from './hooks/useImageLibrary'
+import { useLanguage } from './hooks/useLanguage'
 import { useLetterMasks } from './hooks/useLetterMasks'
 import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
@@ -61,6 +62,7 @@ function App() {
     clear: clearCleaned,
   } = useObjectUrls()
   const ollama = useOllama()
+  const source = useLanguage()
   const { prompt, setPrompt, builtIn: builtInPrompt } = usePrompt()
 
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -214,7 +216,7 @@ function App() {
 
       const answered = await during(page.id, 'reading', () =>
         Promise.all([
-          read(page.file, boxes),
+          read(page.file, boxes, source.code),
           bubbles(
             page.file,
             every.map((region) => region.box),
@@ -235,7 +237,7 @@ function App() {
         return next === now ? current : { ...current, [page.id]: next }
       })
     },
-    [during],
+    [during, source.code],
   )
 
   /**
@@ -253,7 +255,7 @@ function App() {
       if (onBoard(id)) setSelected(null)
 
       return during(id, 'detecting', async () => {
-        const detection = await detect(file)
+        const detection = await detect(file, source.code)
         let found: Analysis = {
           detection,
           texts: detection.regions.length === 0 ? [] : null,
@@ -273,6 +275,7 @@ function App() {
           const texts = await read(
             file,
             detection.regions.map((region) => region.box),
+            source.code,
           )
           found = { ...found, texts }
           // Only if the page is still in the library: it may have been deleted
@@ -284,7 +287,7 @@ function App() {
         return found
       })
     },
-    [during, onBoard],
+    [during, onBoard, source.code],
   )
 
   /**
@@ -372,6 +375,7 @@ function App() {
       const at = insertionFor(
         held.detection.regions.map((region) => region.box),
         box,
+        source.rtl,
       )
       const added = newRegion(box)
       setAnalyses((current) => ({
@@ -389,7 +393,7 @@ function App() {
       await markLetters(active, [box])
       await reread(active, [box], [added.id])
     },
-    [active, analyses, markLetters, reread],
+    [active, analyses, markLetters, reread, source.rtl],
   )
 
   /**
@@ -472,7 +476,11 @@ function App() {
       // Neither half may be empty: that is a cursor at one end, not a cut.
       if (!before || !rest) return
 
-      const [firstBox, secondBox] = halves(region.box, at / line.text.length)
+      const [firstBox, secondBox] = halves(
+        region.box,
+        at / line.text.length,
+        source.rtl,
+      )
       const added = newRegion(secondBox, region)
 
       setAnalyses((current) => {
@@ -501,7 +509,7 @@ function App() {
 
       await reread(active, [firstBox, secondBox], [region.id, added.id])
     },
-    [active, analyses, lettering, reread],
+    [active, analyses, lettering, reread, source.rtl],
   )
 
   /**
@@ -559,6 +567,7 @@ function App() {
             ollama.model,
             ollama.target,
             prompt,
+            source.language?.name,
           ),
           // Sizes are about to be worked out by measuring: the face has to be in.
           ready(),
@@ -575,7 +584,7 @@ function App() {
       setLettering((current) => ({ ...current, [page.id]: set }))
       return true
     },
-    [during, ollama.model, ollama.target, prompt],
+    [during, ollama.model, ollama.target, prompt, source.language?.name],
   )
 
   // The three steps as the buttons on the board call them, each moving on to the
@@ -876,6 +885,9 @@ function App() {
           onRunAll={runAll}
           onDetect={runDetect}
           inspecting={{
+            languages: source.offered,
+            language: source.code,
+            onLanguage: source.setCode,
             onAddRegion: addRegion,
             onRegionBox: setRegionBox,
             onRegionSettled: rereadRegion,

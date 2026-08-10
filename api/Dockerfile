@@ -12,6 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     MANGA_TRANS_MODEL=/opt/models/comictextdetector.pt.onnx \
+    MANGA_TRANS_OCR_MODELS=/opt/models/ppocr \
     HF_HOME=/opt/models/hf
 
 # manga-ocr wants torch. On x86_64 the wheel on PyPI drags the whole CUDA stack
@@ -22,7 +23,14 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
         "torch>=2.2"
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# RapidOCR asks for opencv-python, which is the same cv2 as the headless build
+# but linked against a libGL this image has no use for — and installed second, it
+# is the one that wins. Dropping it and laying the headless build back down
+# leaves one cv2 that imports without a display, which is what everything here
+# was using already.
+RUN pip install --no-cache-dir -r /app/requirements.txt \
+    && pip uninstall -y opencv-python \
+    && pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless
 
 # uid 10001, group 0 so the image also runs under `--user $(id -u):$(id -g)`.
 # The models are fetched below as this user, into a directory it already owns:
@@ -35,19 +43,20 @@ RUN useradd --uid 10001 --gid 0 --create-home --home-dir /home/appuser appuser \
 
 USER 10001
 
-# Bake both models into the image so a run needs no network: the detector
-# (~95 MB) and the reader (~450 MB).
+# Bake every model into the image so a run needs no network: the detector
+# (~95 MB), manga-ocr (~450 MB) and PP-OCR's recognisers (a few MB per language).
 # Build with --build-arg PREFETCH_MODEL=false to fetch them on first use instead.
 ARG PREFETCH_MODEL=true
 
-# Only the four modules the fetchers themselves need. Copying the whole package
-# here instead would send every later build back for half a gigabyte of weights
-# over an edit to the server.
-COPY mangatrans/__init__.py mangatrans/geometry.py \
+# Only the modules the fetchers themselves need. Copying the whole package here
+# instead would send every later build back for half a gigabyte of weights over
+# an edit to the server. Adding a language to `languages.py` costs that too,
+# which is honest: a new language is new weights.
+COPY mangatrans/__init__.py mangatrans/geometry.py mangatrans/languages.py \
      mangatrans/detect.py mangatrans/read.py /app/mangatrans/
 RUN if [ "$PREFETCH_MODEL" = "true" ]; then \
         python -c "from mangatrans.detect import ensure_model; ensure_model()" \
-        && python -c "from mangatrans.read import ensure_model; ensure_model()"; \
+        && python -c "from mangatrans.read import ensure_readers; ensure_readers()"; \
     fi
 
 COPY mangatrans /app/mangatrans

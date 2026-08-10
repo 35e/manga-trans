@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useBlockKeys, useZoomKeys } from '../hooks/useBoardKeys'
 import { useBoardView } from '../hooks/useBoardView'
-import type { Analysis, BoardMode, Box, Fill, Stage } from '../lib/api'
+import type { Analysis, BoardMode, Box, Fill, Language, Stage } from '../lib/api'
 import type { GalleryImage } from '../lib/images'
 import type { Lines } from '../lib/lettering'
 import type { Brush, Mask } from '../lib/mask'
 import { mark } from '../lib/mask'
 import { toClean } from '../lib/regions'
 import { DrawRegion } from './DrawRegion'
+import { InspectTools } from './InspectTools'
 import { MaskCanvas } from './MaskCanvas'
 import { MaskTools } from './MaskTools'
 import { RegionsLayer } from './RegionsLayer'
@@ -16,10 +17,14 @@ import { TranslateTools } from './TranslateTools'
 import { TranslationLayer } from './TranslationLayer'
 import { ViewBar } from './ViewBar'
 import { PageIcon } from './icons'
-import { Button, Divider, Hint, Spinner, Toggle, Toolbar } from './ui'
+import { Button, Spinner } from './ui'
 
 /** Correcting what the detector found, before anything is done with it. */
 export type Inspecting = {
+  /** What the page is lettered in: who reads it, and which way round. */
+  languages: Language[]
+  language: string
+  onLanguage: (code: string) => void
   onAddRegion: (box: Box) => void
   onRegionBox: (index: number, box: Box) => void
   onRegionSettled: (index: number, was: Box) => void
@@ -269,25 +274,17 @@ export function Board({
         )}
       </header>
 
-      {mode === 'inspect' && analysis && (
-        <Toolbar>
-          <Toggle
-            on={showBoxes}
-            onChange={setShowBoxes}
-            title="Show the blocks the detector found"
-          >
-            Boxes
-          </Toggle>
-          <Toggle on={adding} onChange={setAdding} title="Draw a block the detector missed">
-            {adding ? 'Drawing a block…' : 'Add a block'}
-          </Toggle>
-          <Divider />
-          <Hint>
-            {adding
-              ? 'Drag across the bubble it missed. It is read and put in reading order.'
-              : 'Click a block to pick it out, drag to move, pull an edge to resize; delete drops it from the clean.'}
-          </Hint>
-        </Toolbar>
+      {mode === 'inspect' && image && (
+        <InspectTools
+          offered={inspecting.languages}
+          language={inspecting.language}
+          onLanguage={inspecting.onLanguage}
+          found={analysis !== null}
+          showBoxes={showBoxes}
+          onShowBoxes={setShowBoxes}
+          adding={adding}
+          onAdding={setAdding}
+        />
       )}
 
       {brushing && (

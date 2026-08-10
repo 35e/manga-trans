@@ -5,6 +5,18 @@ export const API_BASE: string =
 /** A box is [x0, y0, x1, y1] in image pixels. */
 export type Box = [number, number, number, number]
 
+/**
+ * One language a page can be lettered in. The list comes from the API rather
+ * than being held here: which reader exists for what is its business.
+ *
+ * `rtl` is which way the page is read across itself, which is the order the
+ * blocks come back in and so the order the page is translated in.
+ */
+export type Language = { code: string; name: string; rtl: boolean }
+
+/** What the API reads a page as when it is told nothing. */
+export const LANGUAGE_DEFAULT = 'ja'
+
 export type Region = {
   /**
    * This block, for as long as it exists. Blocks are resized, reordered and
@@ -125,9 +137,15 @@ async function send(
   return reach(path, { method: 'POST', body })
 }
 
-/** Every block of lettering the detector finds on one page. */
-export async function detect(file: File): Promise<Detection> {
-  const response = await send('/api/detect', file)
+/**
+ * Every block of lettering the detector finds on one page.
+ *
+ * Finding it needs no model of the language, but the order the blocks come back
+ * in does: Japanese is read right to left across the page and Korean left to
+ * right.
+ */
+export async function detect(file: File, language: string): Promise<Detection> {
+  const response = await send('/api/detect', file, { language })
   const found = (await response.json()) as {
     width: number
     height: number
@@ -153,12 +171,26 @@ export async function bubbles(file: File, boxes: Box[]): Promise<(Box | null)[]>
   return answer.regions.map((region) => region.bubble)
 }
 
-/** What each box says, read by manga-ocr, in the order the boxes were given. */
-export async function read(file: File, boxes: Box[]): Promise<string[]> {
+/**
+ * What each box says, in the order the boxes were given. `language` is what the
+ * page is lettered in, and decides which reader the API stands up.
+ */
+export async function read(
+  file: File,
+  boxes: Box[],
+  language: string,
+): Promise<string[]> {
   if (boxes.length === 0) return []
-  const response = await send('/api/read', file, { boxes })
+  const response = await send('/api/read', file, { boxes, language })
   const { texts } = (await response.json()) as { texts: string[] }
   return texts
+}
+
+/** Every language the API can read a page in. */
+export async function languages(): Promise<Language[]> {
+  const response = await reach('/api/languages')
+  const answer = (await response.json()) as { languages: Language[] }
+  return answer.languages
 }
 
 /** Every model the API's Ollama has to translate with. */
@@ -183,13 +215,17 @@ export async function defaultPrompt(): Promise<string> {
  * One translation per text, in order. The whole page goes over at once: a line
  * of manga read on its own often cannot be translated at all.
  *
- * `system` is what the model is told; leave it out for the API's own.
+ * `system` is what the model is told; leave it out for the API's own. `source`
+ * is the language the page was lettered in, as a word rather than a code —
+ * worth saying, since the same characters are Japanese or Chinese depending on
+ * nothing a model can see from one line of dialogue.
  */
 export async function translate(
   texts: string[],
   model: string,
   target: string,
   system?: string | null,
+  source?: string | null,
 ): Promise<string[]> {
   if (texts.length === 0) return []
 
@@ -198,6 +234,7 @@ export async function translate(
   body.append('model', model)
   body.append('target', target)
   if (system) body.append('system', system)
+  if (source) body.append('source', source)
 
   const response = await reach('/api/translate', { method: 'POST', body })
   const answer = (await response.json()) as { texts: string[] }

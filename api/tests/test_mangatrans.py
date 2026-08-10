@@ -12,7 +12,17 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-from mangatrans import bubble, detect, inpaint, ollama, read, render, server, split
+from mangatrans import (
+    bubble,
+    detect,
+    inpaint,
+    languages,
+    ollama,
+    read,
+    render,
+    server,
+    split,
+)
 from mangatrans.detect import Block
 from mangatrans.geometry import Box
 
@@ -99,7 +109,7 @@ class StubDetector:
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def __call__(self, image):
+    def __call__(self, image, rtl: bool = True):
         assert image.ndim == 3 and image.shape[2] == 3, "expects an RGB array"
         return [self.found]
 
@@ -111,13 +121,18 @@ class StubDetector:
 
 
 class StubReader:
-    """The size of whatever it was handed, so the crop can be checked."""
+    """The size of whatever it was handed, so the crop can be checked.
+
+    The language is named alongside it, since which reader a request stands up is
+    the point of sending one.
+    """
 
     def __init__(self, *args, **kwargs) -> None:
         pass
 
-    def __call__(self, image, boxes):
-        return [f"{box.w}×{box.h}" for box in boxes]
+    def __call__(self, image, boxes, language=None):
+        code = (language or languages.DEFAULT).code
+        return [f"{code} {box.w}×{box.h}" for box in boxes]
 
 
 def client():
@@ -858,6 +873,21 @@ class TestDetectorBlocks(unittest.TestCase):
         self.assertEqual(len(found), 2)
         self.assertLess(found[0].box.y0, found[1].box.y0)
 
+    def test_blocks_level_with_each_other_are_read_right_to_left(self):
+        left = lettering(20, 20, 2, 2, EM)
+        right = lettering(130, 20, 2, 2, EM)
+        found = self.detector(left + right, [around(left, right)])(self.page())
+        self.assertEqual(len(found), 2)
+        self.assertGreater(found[0].box.x0, found[1].box.x0)
+
+    def test_a_language_read_the_other_way_puts_them_the_other_way_round(self):
+        left = lettering(20, 20, 2, 2, EM)
+        right = lettering(130, 20, 2, 2, EM)
+        made = self.detector(left + right, [around(left, right)])
+        found = made(self.page(), rtl=False)
+        self.assertEqual(len(found), 2)
+        self.assertLess(found[0].box.x0, found[1].box.x0)
+
 
 class TestStaggered(unittest.TestCase):
     """Whether the two sides of a cut were set as one block or two."""
@@ -1332,6 +1362,22 @@ class TestOllama(unittest.TestCase):
     def test_the_briefing_says_what_to_translate_into(self):
         self.assertIn("Dutch", ollama.briefing("Dutch"))
 
+    def test_the_briefing_says_what_the_page_was_written_in(self):
+        # Left to guess, a model reads a Chinese page as though it were Japanese.
+        self.assertIn("Korean", ollama.briefing("Dutch", source="Korean"))
+        self.assertIn("Japanese", ollama.briefing("Dutch"))
+
+    def test_the_source_reaches_the_request(self):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][0]["content"])
+            return reply(translations("Goedemorgen"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(["안녕"], "m", "Dutch", source="Korean")
+        self.assertIn("Korean", asked[0])
+
     def test_a_briefing_of_your_own_is_used_instead(self):
         said = ollama.briefing("Dutch", "Turn this into {target}, in pirate.")
         self.assertEqual(said, "Turn this into Dutch, in pirate.")
@@ -1370,6 +1416,166 @@ class TestOllama(unittest.TestCase):
         self.assertEqual(ollama.base("http://elsewhere:11434/"), "http://elsewhere:11434")
 
 
+class TestLanguages(unittest.TestCase):
+    """The table both ends look a language up in."""
+
+    def test_a_language_is_found_by_its_code(self):
+        self.assertEqual(languages.of("ko").name, "Korean")
+
+    def test_the_case_of_a_code_does_not_matter(self):
+        self.assertEqual(languages.of("ZH-HANT"), languages.of("zh-Hant"))
+
+    def test_nothing_asked_for_means_the_one_this_was_written_for(self):
+        self.assertEqual(languages.of(None), languages.DEFAULT)
+        self.assertEqual(languages.of("  ").code, "ja")
+
+    def test_a_language_nothing_here_reads_is_not_answered_with_one(self):
+        with self.assertRaises(KeyError):
+            languages.of("klingon")
+
+    def test_japanese_is_the_only_one_manga_ocr_is_asked_about(self):
+        # Everything else goes to PP-OCR, and a PP-OCR language has to say which
+        # of its weights to fetch.
+        for language in languages.LANGUAGES:
+            if language.reader == languages.PPOCR:
+                self.assertTrue(language.recogniser, language.code)
+            else:
+                self.assertEqual(language.code, "ja")
+
+
+def crop_of(*groups: list[Box], size, ground=(255, 255, 255), ink=DARK) -> Image.Image:
+    """A crop with those glyphs drawn in it, the way a reader is handed one."""
+    image = Image.new("RGB", size, ground)
+    draw = ImageDraw.Draw(image)
+    for group in groups:
+        for glyph in group:
+            draw.rectangle((glyph.x0, glyph.y0, glyph.x1 - 1, glyph.y1 - 1), fill=ink)
+    return image
+
+
+def column(rows: int, at: int = 0) -> list[Box]:
+    return lettering(2 + at * EM, 2, 1, rows, EM)
+
+
+class TestLines(unittest.TestCase):
+    """Taking a balloon apart for a reader that only knows lines across a page."""
+
+    def test_the_ink_is_the_dark_of_a_light_balloon(self):
+        found = read.inked(crop_of(column(4), size=(24, 84)))
+        self.assertTrue(found[10, 10], "the glyph was not read as ink")
+        self.assertFalse(found[0, 0], "the ground was read as ink")
+
+    def test_white_lettering_on_a_dark_balloon_is_the_ink_the_other_way_round(self):
+        light = crop_of(column(4), size=(24, 84), ground=DARK, ink=(255, 255, 255))
+        found = read.inked(light)
+        self.assertTrue(found[10, 10], "the glyph was not read as ink")
+        self.assertFalse(found[0, 0], "the ground was read as ink")
+
+    def test_a_run_is_where_the_ink_starts_and_stops(self):
+        self.assertEqual(
+            read.runs(np.array([False] * 4 + [True] * 5 + [False] * 3)), [(4, 9)]
+        )
+
+    def test_a_speck_is_not_a_run(self):
+        self.assertEqual(read.runs(np.array([True, False, False, False])), [])
+
+    def test_a_column_of_characters_is_read_as_running_down_the_page(self):
+        self.assertTrue(read.upright(read.inked(crop_of(column(5), size=(24, 104)))))
+
+    def test_a_line_of_characters_is_not(self):
+        across = lettering(2, 2, 5, 1, EM)
+        self.assertFalse(read.upright(read.inked(crop_of(across, size=(104, 24)))))
+
+    def test_a_column_is_set_out_as_a_line_of_the_same_characters(self):
+        crop = crop_of(column(5), size=(24, 104))
+        line = read.unstacked(crop, read.inked(crop))
+        self.assertGreater(line.width, line.height, "it is still a column")
+        self.assertGreater(line.width, 4 * crop.width, "the characters ran together")
+
+    def test_a_column_of_one_character_is_left_as_it_is(self):
+        crop = crop_of(column(1), size=(24, 24))
+        self.assertIs(read.unstacked(crop, read.inked(crop)), crop)
+
+    def test_a_column_set_too_solid_to_cut_is_cut_on_its_own_width(self):
+        solid = Image.new("RGB", (20, 100), (255, 255, 255))
+        ImageDraw.Draw(solid).rectangle((2, 2, 17, 97), fill=DARK)
+        self.assertEqual(len(read.cells(read.inked(solid))), 5)
+
+    def test_columns_are_handed_over_right_to_left(self):
+        # Two columns, the right-hand one shorter, so they can be told apart.
+        crop = crop_of(column(5), column(2, at=2), size=(64, 104))
+        cut = read.pieces(crop, languages.of("zh"))
+        self.assertEqual(len(cut), 2)
+        self.assertLess(cut[0].width, cut[1].width, "the left column was read first")
+
+    def test_lines_are_handed_over_top_to_bottom(self):
+        # Two lines, the top one shorter.
+        short = lettering(2, 2, 2, 1, EM)
+        long = lettering(2, 2 + 2 * EM, 5, 1, EM)
+        crop = crop_of(short, long, size=(104, 64))
+        cut = read.pieces(crop, languages.of("ko"))
+        self.assertEqual(len(cut), 2)
+        self.assertLess(cut[0].height, crop.height, "the block was not cut at all")
+
+    def test_a_script_that_does_not_stack_keeps_a_tall_block_whole(self):
+        # A turned line of English, not a column of one letter per line: PP-OCR
+        # turns that back itself, and cutting it up would be nonsense.
+        crop = crop_of(column(5), size=(24, 104))
+        self.assertEqual(len(read.pieces(crop, languages.of("en"))), 1)
+
+    def test_a_crop_with_nothing_in_it_is_still_handed_over(self):
+        blank = Image.new("RGB", (40, 40), (255, 255, 255))
+        self.assertEqual(read.pieces(blank, languages.of("zh")), [blank])
+
+
+class TestPpocr(unittest.TestCase):
+    """Reading a block a line at a time, and joining what comes back.
+
+    The engine is replaced by what it would answer, so this needs no weights and
+    no onnxruntime.
+    """
+
+    class Answer:
+        def __init__(self, said: str) -> None:
+            self.txts = (said,)
+
+    def reader(self, code: str, answers: list[str]) -> read.Ppocr:
+        made = read.Ppocr.__new__(read.Ppocr)
+        made.language = languages.of(code)
+        self.shown: list[np.ndarray] = []
+        said = iter(answers)
+
+        def engine(pixels, **kwargs):
+            self.shown.append(pixels)
+            return self.Answer(next(said))
+
+        made.engine = engine
+        return made
+
+    def test_the_columns_of_one_block_are_read_one_at_a_time(self):
+        crop = crop_of(column(5), column(4, at=2), size=(64, 104))
+        self.assertEqual(self.reader("zh", ["你好", "再见"])(crop), "你好再见")
+        self.assertEqual(len(self.shown), 2, "the block went over in one piece")
+
+    def test_a_spaced_language_has_its_lines_joined_with_a_space(self):
+        short = lettering(2, 2, 2, 1, EM)
+        long = lettering(2, 2 + 2 * EM, 5, 1, EM)
+        crop = crop_of(short, long, size=(104, 64))
+        self.assertEqual(self.reader("ko", ["안녕", "하세요"])(crop), "안녕 하세요")
+
+    def test_a_line_nothing_was_made_of_is_left_out_rather_than_joined_in(self):
+        short = lettering(2, 2, 2, 1, EM)
+        long = lettering(2, 2 + 2 * EM, 5, 1, EM)
+        crop = crop_of(short, long, size=(104, 64))
+        self.assertEqual(self.reader("ko", ["", "hello"])(crop), "hello")
+
+    def test_the_engine_is_handed_the_pixels_the_way_round_it_wants_them(self):
+        # An array is taken as BGR, which is what the models were trained on.
+        made = self.reader("zh", ["你"])
+        made.line(Image.new("RGB", (40, 20), (200, 210, 220)))
+        self.assertEqual(tuple(self.shown[0][0, 0]), (220, 210, 200))
+
+
 class TestRead(unittest.TestCase):
     """The cropping and the loop. The model itself is never stood up here."""
 
@@ -1405,6 +1611,45 @@ class TestRead(unittest.TestCase):
         texts = reader(page(), [Box(0, 0, 60, 40), Box(0, 0, 20, 20), Box(0, 0, 40, 40)])
         self.assertEqual(len(texts), 3)
         self.assertGreater(int(texts[0]), int(texts[1]))
+
+    def counting(self, stood: list) -> read.Reader:
+        """A reader that notes which model it stands up rather than loading one."""
+
+        class Counting(read.Reader):
+            def load(self, model=None):
+                stood.append("manga-ocr")
+                return lambda image: ""
+
+        return Counting()
+
+    def reading(self, stood: list):
+        def ppocr(language):
+            stood.append(language.code)
+            return lambda image: ""
+
+        return mock.patch.object(read, "Ppocr", ppocr)
+
+    def test_a_reader_is_stood_up_once_per_language_and_kept(self):
+        stood: list[str] = []
+        reader = self.counting(stood)
+        with self.reading(stood):
+            for code in ("ja", "ja", "ko", "ko", "zh"):
+                reader(page(), [Box(10, 10, 60, 40)], languages.of(code))
+        self.assertEqual(stood, ["manga-ocr", "ko", "zh"])
+
+    def test_a_request_that_names_no_language_reads_it_as_japanese(self):
+        stood: list[str] = []
+        reader = self.counting(stood)
+        with self.reading(stood):
+            reader(page(), [Box(10, 10, 60, 40)])
+        self.assertEqual(stood, ["manga-ocr"])
+
+    def test_reading_korean_never_stands_manga_ocr_up(self):
+        stood: list[str] = []
+        reader = self.counting(stood)
+        with self.reading(stood):
+            reader(page(), [Box(10, 10, 60, 40)], languages.of("ko"))
+        self.assertEqual(stood, ["ko"], "torch was loaded to read a Korean page")
 
 
 class TestApi(unittest.TestCase):
@@ -1536,7 +1781,33 @@ class TestApi(unittest.TestCase):
                 data=payload(page(), boxes=[[10, 10, 60, 40], [70, 10, 90, 30]]),
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json, {"texts": ["50×30", "20×20"]})
+        self.assertEqual(response.json, {"texts": ["ja 50×30", "ja 20×20"]})
+
+    def test_read_is_read_in_the_language_it_was_sent(self):
+        with mock.patch.object(server, "Reader", StubReader):
+            response = client().post(
+                "/api/read",
+                data=payload(page(), boxes=[[10, 10, 60, 40]], language="ko"),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"texts": ["ko 50×30"]})
+
+    def test_a_language_nothing_here_reads_is_refused(self):
+        with mock.patch.object(server, "Reader", StubReader):
+            response = client().post(
+                "/api/read", data=payload(page(), boxes=[], language="klingon")
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("language", response.json["error"])
+
+    def test_the_languages_that_can_be_read_are_handed_out(self):
+        response = client().get("/api/languages")
+        self.assertEqual(response.status_code, 200)
+        offered = response.json["languages"]
+        self.assertIn({"code": "ja", "name": "Japanese", "rtl": True}, offered)
+        self.assertEqual(
+            [language["code"] for language in offered], list(languages.CODES)
+        )
 
     def test_read_needs_boxes(self):
         with mock.patch.object(server, "Reader", StubReader):

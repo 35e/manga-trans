@@ -29,17 +29,69 @@ pip install -r requirements.txt
 python -m mangatrans          # http://127.0.0.1:8000/api
 ```
 
-Two models, both baked into the container at build time:
+The models are all baked into the container at build time:
 
 - `comictextdetector.pt.onnx` (~95 MB) finds the lettering. It is published as a
   GitHub release asset that no package manager knows how to get, so it is
   downloaded on first use into `~/.cache/manga-trans`. It runs on OpenCV's ONNX
   backend, which needs neither torch nor onnxruntime.
-- `kha-white/manga-ocr-base` (~450 MB) reads it. It is a model trained on manga,
-  which is why it copes with vertical lines and stylised fonts that general OCR
-  does not, and it comes from Hugging Face on first use. It needs torch, and
-  torch is why the image is around 2 GB rather than 500 MB. Nothing but
-  `/api/read` loads it, so an API only ever asked to detect never pays for it.
+- `kha-white/manga-ocr-base` (~450 MB) reads Japanese. It is a model trained on
+  manga, which is why it copes with vertical lines and stylised fonts that
+  general OCR does not, and it comes from Hugging Face on first use. It needs
+  torch, and torch is why the image is around 2 GB rather than 500 MB.
+- PP-OCR's recognisers, a file of some 10–20 MB per language, read everything
+  else — Chinese, Korean, English. They run under
+  [RapidOCR](https://github.com/RapidAI/RapidOCR) on onnxruntime and come from
+  ModelScope on first use.
+
+Only the reader a page actually needs is ever loaded, so an API only ever asked
+to detect stands none of them up, and one only ever asked for Korean never
+imports torch.
+
+## Languages
+
+The detector knows nothing about scripts — it was trained on comics rather than
+on Japanese — so finding the text, tracing it and hiding it are the same work
+whatever the page is in. Everything after that is not, and `language` says which:
+
+| code | | reader |
+| --- | --- | --- |
+| `ja` | Japanese | manga-ocr |
+| `zh` | Chinese (simplified) | PP-OCR |
+| `zh-Hant` | Chinese (traditional) | PP-OCR |
+| `ko` | Korean | PP-OCR |
+| `en` | English | PP-OCR |
+
+`GET /api/languages` hands the list out, so a front end need not hold its own
+copy. Send the code to `/api/detect` and `/api/read`; anything that says nothing
+is read as Japanese, which is what this was written for and what every request
+that predates the field meant.
+
+It decides three things. **Which reader**, as above. **Which way the page is
+read** — right to left for Japanese and for the Chinese set in columns, left to
+right for Korean and for a webcomic — which is the order `/api/detect` answers
+in, and so the order the page reaches the translator as one conversation. And
+**what the translator is told the page is in**, which is `source` on
+`/api/translate`: the same characters are Japanese or Chinese depending on
+nothing a model can see from one line of dialogue, and left to guess it will
+translate a Chinese page as though it were Japanese.
+
+Traditional Chinese is the entry for a page set in columns and read right to
+left, and simplified for the rows and left-to-right of a webcomic, because that
+is how the comics printed in each are usually set. A page that is drawn the other
+way round still reads correctly — the blocks come back in the wrong order, and
+the dashboard drags them into the right one.
+
+**PP-OCR reads across a page and nothing else**, so a balloon is taken apart
+before it goes over: cut into its lines, and — where those lines are columns —
+each column cut at the gaps between its characters and set out left to right, so
+the model is handed the line that column would be rather than one it has to read
+sideways. Which way the lettering runs is measured off the ink of each block
+rather than taken from the language, since a page of Korean carries a sound
+effect written down the side of it just as a page of Japanese does. A column set
+so solid that no gap can be found in it is cut on its own width instead: CJK is
+set on a square em, so that is where the characters are whether or not the ink
+says so.
 
 ## The API
 
@@ -54,6 +106,7 @@ port can call it.
 | `POST` | `/api/letters` | `image` → the lettering itself, pixel by pixel |
 | `POST` | `/api/bubbles` | `image`, `boxes` → the balloon each one is written in |
 | `POST` | `/api/read` | `image`, `boxes` → what each box says |
+| `GET` | `/api/languages` | → the languages a page can be read in |
 | `GET` | `/api/models` | → the models Ollama has to translate with |
 | `GET` | `/api/prompt` | → what the model is told, unless told otherwise |
 | `POST` | `/api/translate` | `texts`, `model` → the same lines in another language |
@@ -77,6 +130,10 @@ curl -sX POST localhost:8000/api/read -F image=@001.png \
      -F 'boxes=[[812,96,949,324]]'
 # {"texts": ["おはようございます"]}
 
+curl -sX POST localhost:8000/api/read -F image=@001.png -F language=ko \
+     -F 'boxes=[[812,96,949,324]]'
+# {"texts": ["안녕하세요"]}
+
 curl -X POST localhost:8000/api/clean -F image=@001.png \
      -F 'boxes=[[812,96,949,324]]' -o clean.png
 
@@ -94,7 +151,8 @@ curl -X POST localhost:8000/api/render -F image=@001.png \
 0.8 is worth a second look — the dashboard leaves those blocks alone until one
 has been. It says where the text is, not what it says. `bubble` comes along with
 it, as below, because it is worked out from the page and the boxes and both are
-already in hand.
+already in hand. `language` changes nothing about what is found, only the order
+it comes back in.
 
 Two balloons that overlap are often boxed as one, and that is worse than it
 looks: the block would be read as one string, so two speakers reach the
@@ -239,12 +297,16 @@ a separate call because the boxes are worth correcting first — a box that clip
 half a bubble reads half a sentence. A box too small to hold lettering comes
 back as `""`, and the box is given a few pixels of air before it goes to the
 model. It translates nothing: what the text should say instead is still for the
-caller to decide.
+caller to decide. `language` is which reader stands up — see above — and only
+the one asked for ever does.
 
 **`/api/translate`** is the one thing here that works on words alone — no image
 goes with it. `texts` is a JSON list, `model` is one of the names `/api/models`
-gives back, and `target` is the language to translate into (English unless
-said). The whole page goes over in one request rather than one line at a time:
+gives back, `target` is the language to translate into (English unless said) and
+`source` the one the page was lettered in (Japanese unless said). Both are words
+rather than codes: they are only ever words in a prompt, and a caller may well be
+translating something this API has no reader for. The whole page goes over in one
+request rather than one line at a time:
 that is both far quicker and better translation, since a line of manga read on
 its own often cannot be translated at all, having no idea who is speaking or
 about what. The model is held to a JSON schema so the answers come back
@@ -252,9 +314,9 @@ countable, and if it loses count anyway the lines are asked about one at a time,
 where it cannot. One translation comes back per text, in order; a text that was
 empty stays empty.
 
-What the model is told is the caller's too: send `system`, with `{target}`
-wherever the language should go, and `GET /api/prompt` hands back the default to
-start from. Nothing is kept — every request carries its own — so a front end
+What the model is told is the caller's too: send `system`, with `{target}` and
+`{source}` wherever the languages should go, and `GET /api/prompt` hands back the
+default to start from. Nothing is kept — every request carries its own — so a front end
 that wants its own prompt remembers it and sends it each time, which is what the
 dashboard's settings do.
 
@@ -320,7 +382,8 @@ Everything is set by environment variable:
 | `MANGA_TRANS_PORT` | `8000` |
 | `MANGA_TRANS_ORIGIN` | `*` — who may call the API from a browser |
 | `MANGA_TRANS_MODEL` | `~/.cache/manga-trans/comictextdetector.pt.onnx` |
-| `MANGA_TRANS_OCR_MODEL` | `kha-white/manga-ocr-base` |
+| `MANGA_TRANS_OCR_MODEL` | `kha-white/manga-ocr-base` — the Japanese reader |
+| `MANGA_TRANS_OCR_MODELS` | `~/.cache/manga-trans/ppocr` — where every other reader's weights go |
 | `MANGA_TRANS_OLLAMA` | `http://localhost:11434`, or `http://host.containers.internal:11434` in the container |
 | `HF_HOME` | where the reader's weights are cached; `/opt/models/hf` in the container |
 | `MANGA_TRANS_FONT` | DejaVu Sans Bold, or Pillow's default |
@@ -336,7 +399,9 @@ api/
                   block each, by the blank between them
     bubble.py     the balloon a block was written in, which is where a
                   translation goes — the block is only where the words are
-    read.py       manga-ocr, and the cropping that feeds it
+    languages.py  what a page can be written in, and what that means for
+                  reading it: which reader, which way round, how it joins
+    read.py       manga-ocr and PP-OCR, and the cropping that feeds them
     ollama.py     translating a page by a model on this machine
     inpaint.py    making what was hidden out of the page around it
     render.py     hiding the old lettering, fitting and setting the new
@@ -371,7 +436,12 @@ lettered already asks once before doing it over, since a line moved or rewritten
 by hand cannot be got back.
 
 The dashboard puts a page on a board and works it in three tabs. **Inspect**
-boxes the lettering and reads it; a block the detector is less than 80% sure of
+boxes the lettering and reads it. **Page is in**, beside the blocks, is the
+language it is lettered in: it picks the reader, it puts the blocks in the order
+that language is read in, and it is what the translator is told the page is in.
+It sits on this tab rather than in the settings because this is the step it bears
+on, and it is remembered for next time, a chapter being all one language. A block
+the detector is less than 80% sure of
 is read and listed like any other but starts left alone, since a box over half a
 bubble or over a piece of artwork does more harm hidden than a real one does
 missed. Putting one back is one click, as is dropping one it was too sure of.

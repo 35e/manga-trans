@@ -71,7 +71,12 @@ export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }:
               <code className="rounded bg-raised px-1 py-0.5 text-muted">
                 {'{target}'}
               </code>{' '}
-              is replaced by the language you are translating into.
+              is replaced by the language you are translating into, and{' '}
+              <code className="rounded bg-raised px-1 py-0.5 text-muted">
+                {'{source}'}
+              </code>{' '}
+              by the one the page is in. Leave the second out and the model
+              guesses — which for a page of Chinese usually means Japanese.
             </p>
 
             <textarea

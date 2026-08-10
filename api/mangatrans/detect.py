@@ -231,8 +231,14 @@ class Detector:
         _, seg, pad_w, pad_h = self.run(image)
         return page_mask(seg, width, height, pad_w, pad_h, grow)
 
-    def __call__(self, image) -> list[Block]:
+    def __call__(self, image, rtl: bool = True) -> list[Block]:
         """Every block of lettering on one RGB page array, in reading order.
+
+        ``rtl`` is which way that order runs across the page — right to left for
+        Japanese and for the Chinese set in columns, left to right for Korean and
+        for a webcomic. It is the caller's rather than measured because it is a
+        property of what is being read rather than of the page: the same layout
+        of balloons is read both ways round by different languages.
 
         A block holding two balloons the detector ran together is cut back into
         one block each — see :mod:`mangatrans.split`. It is done here rather than
@@ -295,7 +301,9 @@ class Detector:
             for block in suppressed(pieces)
         ]
 
-        # Down the page, then right to left. `lib/order.ts` sorts by the same key.
-        # After splitting, so the halves of a cut block land where they are read.
-        blocks.sort(key=lambda block: (block.box.y0, -block.box.x1))
+        # Down the page, then across it the way the language is read.
+        # `lib/order.ts` sorts by the same key. After splitting, so the halves of
+        # a cut block land where they are read.
+        across = (lambda box: -box.x1) if rtl else (lambda box: box.x0)
+        blocks.sort(key=lambda block: (block.box.y0, across(block.box)))
         return blocks

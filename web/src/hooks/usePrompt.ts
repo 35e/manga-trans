@@ -1,25 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { defaultPrompt } from '../lib/api'
+import { held, keep } from '../lib/dom'
 
 const PROMPT_KEY = 'manga-trans:prompt'
-
-function held(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key)
-  } catch {
-    // A browser that will not remember anything is still a browser to work in.
-    return null
-  }
-}
-
-function keep(key: string, value: string | null) {
-  try {
-    if (value === null) window.localStorage.removeItem(key)
-    else window.localStorage.setItem(key, value)
-  } catch {
-    /* nothing to be done, and nothing worth stopping for */
-  }
-}
 
 /**
  * What the model is told, remembered in this browser because the API keeps no
