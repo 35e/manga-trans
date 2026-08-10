@@ -60,10 +60,10 @@ GRID = 128
 # short of it.
 MOSTLY = 200
 
-# How much two answers have to cover each other to be one balloon found twice
-# rather than two balloons. Generous, because the same balloon flooded from two
-# different blocks comes back a few pixels different each time.
-SAME = 0.7
+# How much of a block a balloon has to hold before a block no balloon of its own
+# could be made out for takes a share of it. Well inside, or this is not the room
+# it was written in but a neighbour's reaching over it.
+HELD = 0.85
 
 
 def window(box: Box, width: int, height: int, spread: float) -> Box:
@@ -267,18 +267,45 @@ def around(grey: np.ndarray, box: Box) -> Box | None:
     return None
 
 
-def sharing(found: list[Box | None]) -> list[list[int]]:
-    """Which blocks came back with the same balloon, gathered by its index."""
+def within(room: Box, block: Box) -> float:
+    """How much of ``block`` lies inside ``room``, 0 to 1.
+
+    Not :meth:`Box.covers`, which divides by whichever of the two is smaller:
+    the question here is only ever about the block.
+    """
+    wide = min(room.x1, block.x1) - max(room.x0, block.x0)
+    tall = min(room.y1, block.y1) - max(room.y0, block.y0)
+    if wide <= 0 or tall <= 0 or block.w <= 0 or block.h <= 0:
+        return 0.0
+    return wide * tall / (block.w * block.h)
+
+
+def sharing(rooms: list[Box]) -> list[list[int]]:
+    """Which blocks would be lettered one on top of the other, gathered together.
+
+    Whether two answers *collide*, not whether they agree. Agreement cannot be
+    asked for: an oval holds a wide short rectangle and a tall narrow one of
+    nearly the same area, and a pixel of the flood decides which of them wins, so
+    one balloon measured from two of the blocks in it comes back half a balloon
+    apart — under any threshold for "the same balloon twice", and lettered one
+    over the other.
+
+    ``rooms`` is where each block goes if nothing is done, so a block no balloon
+    could be made out for is in here as its own box: a balloon reaching over a
+    neighbour it cannot see is the same bug from the other side.
+
+    Transitively, because A over B and B over C is one balloon holding three
+    blocks however little A and C themselves touch.
+    """
     groups: list[list[int]] = []
-    for at, room in enumerate(found):
-        if room is None:
-            continue
+    for at, room in enumerate(rooms):
+        joined, apart = [at], []
         for group in groups:
-            if room.covers(found[group[0]]) >= SAME:
-                group.append(at)
-                break
-        else:
-            groups.append([at])
+            if any(room.covers(rooms[other]) > 0 for other in group):
+                joined.extend(group)
+            else:
+                apart.append(group)
+        groups = [*apart, sorted(joined)]
     return groups
 
 
@@ -356,22 +383,43 @@ def bubbles(image: np.ndarray, boxes: list[Box]) -> list[Box | None]:
 
     Where several blocks turn out to be written in the same balloon — which is
     what a block cut in two by :mod:`mangatrans.split` looks like from here — it
-    is shared out between them rather than handed to each of them whole.
+    is shared out between them rather than handed to each of them whole. No two
+    answers may overlap when this is done: two that do are two translations set
+    one on top of the other, and that is what the sharing out is for.
     """
     grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     found = [around(grey, box) for box in boxes]
+    # Where a block would be lettered as things stand: its balloon, or its own
+    # box where none was made out. Two of these overlapping is the whole bug.
+    rooms = [box if room is None else room for room, box in zip(found, boxes)]
 
-    for group in sharing(found):
+    for group in sharing(rooms):
         if len(group) < 2:
             continue
-        # The same balloon measured from several seeds, so take the roomiest.
-        room = max((found[at] for at in group), key=lambda box: box.w * box.h)
-        shares = divided(room, [boxes[at] for at in group])
-        for at, share in zip(group, shares):
-            # A piece no bigger than the block leaves nothing to be won by moving
-            # the lettering into it, which is the same answer `around` gives.
+        held = [boxes[at] for at in group]
+        answers = [found[at] for at in group if found[at] is not None]
+        if not answers:
+            continue
+        # The balloon is whichever answer accounts for the most of the lettering
+        # gathered here, not simply the largest of them: where the answers
+        # disagree it is usually the largest that is the odd one out, holding
+        # only the block it happened to be flooded from.
+        room = max(
+            answers,
+            key=lambda box: (sum(within(box, block) for block in held), box.w * box.h),
+        )
+        for at, share in zip(group, divided(room, held)):
             block = boxes[at]
-            found[at] = (
-                share if share.w * share.h >= block.w * block.h else None
-            )
+            # A block that came in with no balloon of its own is in this one only
+            # if the balloon holds it: it may as well be lettering alongside that
+            # the balloon merely reached over, and refusing leaves it exactly
+            # where it already was. A block that *did* come in with a balloon is
+            # never refused — refusing drops it back on its box, which is where
+            # the Japanese is and so squarely under the neighbour it was
+            # crowding, which is the thing being fixed.
+            beside = found[at] is None and within(room, block) < HELD
+            # And a piece no bigger than the block leaves nothing to be won by
+            # moving the lettering into it, which is what `around` says with None.
+            cramped = share.w * share.h < block.w * block.h
+            found[at] = None if beside or cramped else share
     return found
