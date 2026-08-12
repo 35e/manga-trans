@@ -1,14 +1,28 @@
-"""Text detection with comic-text-detector, on OpenCV's ONNX backend.
+"""Finding the lettering on a page, and the balloons it was written in.
 
-No torch and no onnxruntime: OpenCV reads the ONNX file itself. The weights are
-not on PyPI, so :func:`ensure_model` fetches them once.
+Two models, because they answer two different questions.
+
+:class:`Regions` is comic-text-and-bubble-detector, an RT-DETRv2 trained on manga,
+webtoons, manhua and western comics. One pass gives both the balloons and the
+lettering, told apart by class — which is what lets a translation be lettered into
+the room it belongs in rather than into a rectangle guessed from the page. It runs
+on onnxruntime.
+
+:class:`Letters` is comic-text-detector, kept for its segmentation head alone: the
+per-pixel map of where the ink is, which is what lets a clean hide the words and
+leave the art they were drawn over. Its own block head is not used — boxing by
+region beats boxing by lettering, and a region detector does not run two balloons
+together the way a lettering detector does. It runs on OpenCV's ONNX backend, so
+it needs neither torch nor onnxruntime.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +31,8 @@ import cv2
 import numpy as np
 
 from .geometry import Box
+
+# --- comic-text-detector, for the ink mask ----------------------------------
 
 MODEL_NAME = "comictextdetector.pt.onnx"
 MODEL_URL = (
@@ -27,8 +43,6 @@ MODEL_ENV = "MANGA_TRANS_MODEL"
 MODEL_DIRS = ("/opt/models", "~/.cache/manga-trans")
 
 INPUT_SIZE = 1024
-CONF_THRESHOLD = 0.4
-NMS_THRESHOLD = 0.35
 
 # The segmentation head answers per pixel, between 0 and 1.
 SEG_THRESHOLD = 0.5
@@ -40,20 +54,40 @@ SEG_THRESHOLD = 0.5
 GROW = 4
 GROW_MAX = 64
 
-# A margin left around every block, as a share of one character. The block head
-# boxes lettering tightly and sometimes inside it, clipping the edge of a glyph:
-# a box a fraction of a character wider holds the whole of what it found, gives
-# the reader the stroke it was cutting through, and covers the whole letter when
-# the block is cleaned by its box rather than by the traced ink.
-#
-# Measured in characters rather than pixels or a share of the box, so it comes
-# out the same on a page scanned at any size and on a block of any shape.
-PAD = 0.25
-PAD_MIN = 2
+# --- comic-text-and-bubble-detector, for the boxes --------------------------
 
-# Two blocks covering this much of the smaller of them are the same lettering
-# found twice. See :func:`suppressed` for why NMS does not already catch it.
-DUPLICATE = 0.6
+REGIONS_REPO = "ogkalu/comic-text-and-bubble-detector"
+REGIONS_FILE = "detector_int8.onnx"
+REGIONS_ENV = "MANGA_TRANS_REGIONS"
+
+# What the model was trained at, and how it is fed: a plain resize to a square,
+# rescaled to 0..1, with no normalisation — straight from the model's own
+# preprocessor_config.json. The graph itself takes any size, but a page put
+# through at its own resolution is both slower and worse than one put through at
+# the size the weights were fitted to. A plain resize rather than a letterbox
+# because the graph is told the page's shape separately and puts it back itself.
+REGIONS_SIZE = 640
+
+# The classes it answers with.
+BUBBLE, TEXT_BUBBLE, TEXT_FREE = 0, 1, 2
+
+# Below this a box is not worth showing. The dashboard leaves anything under
+# UNSURE (0.8) unselected for review, so this is the floor of what it is offered
+# rather than the line between sure and unsure.
+REGIONS_CONF = 0.35
+
+# Two boxes covering this much of the smaller of them are the same thing found
+# twice. RT-DETR matches one query to one object and needs no NMS, but a balloon
+# and the text filling it are different classes and are deduped separately.
+DUPLICATE = 0.75
+
+# A margin left around every block, as a share of its shorter side. The head
+# boxes lettering tightly and sometimes inside it, clipping the edge of a glyph:
+# a slightly wider box holds the whole of what it found, gives the reader the
+# stroke it was cutting through, and covers the whole letter when the block is
+# cleaned by its box rather than by the traced ink.
+PAD = 0.04
+PAD_MIN = 2
 
 
 @dataclass(frozen=True)
@@ -65,7 +99,7 @@ class Block:
 
 
 def model_path(explicit: str | None = None) -> Path:
-    """The weights file: where it already is, else where it should be put."""
+    """The ink model's weights: where it already is, else where it should be put."""
     chosen = explicit or os.environ.get(MODEL_ENV)
     if chosen:
         return Path(chosen).expanduser()
@@ -73,18 +107,72 @@ def model_path(explicit: str | None = None) -> Path:
     return next((path for path in candidates if path.is_file()), candidates[-1])
 
 
+# A hundred megabytes in one response is enough for a container network that
+# carries small files fine — a VM on a Mac, most proxies — to drop it part way
+# through, and urlretrieve does not retry. The weights are the same every time,
+# so starting over is always safe; it is only ever the transfer that failed.
+#
+# Waiting between tries is the half that matters. Whatever drops one of these
+# drops the next few as well, so attempts in a row all land in the same bad few
+# seconds and the retry buys nothing. Long enough, by the last try, to outlast
+# the minute-scale throttle a release asset gets when it is fetched repeatedly.
+TRIES = 6
+BACKOFF = 8
+
+# urlretrieve cannot set headers, and the default `Python-urllib/3.x` is turned
+# away by enough of the internet — GitHub's release assets among them, which
+# close the connection before answering rather than saying so — that it is worth
+# not using it. Nothing here depends on being taken for a browser; it only has to
+# not be the one string that is refused out of hand.
+AGENT = "Mozilla/5.0 (compatible; manga-trans)"
+
+
 def ensure_model(explicit: str | None = None) -> Path:
-    """Download the weights (~95 MB) unless they are already there."""
+    """Download the ink model's weights (~95 MB) unless they are already there."""
     path = model_path(explicit)
     if path.is_file():
         return path
-    print(f"mangatrans: downloading {MODEL_URL}")
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
-    urllib.request.urlretrieve(MODEL_URL, partial)
+
+    asked = urllib.request.Request(MODEL_URL, headers={"User-Agent": AGENT})
+    for attempt in range(1, TRIES + 1):
+        print(f"mangatrans: downloading {MODEL_URL} ({attempt}/{TRIES})")
+        try:
+            with urllib.request.urlopen(asked) as answer, partial.open("wb") as file:
+                shutil.copyfileobj(answer, file)
+            break
+        except Exception as exc:  # noqa: BLE001 — every failure here is the transfer
+            partial.unlink(missing_ok=True)
+            if attempt == TRIES:
+                raise
+            wait = BACKOFF * attempt
+            print(f"mangatrans: {type(exc).__name__}: {exc}; again in {wait}s")
+            time.sleep(wait)
+
     partial.replace(path)
     print(f"mangatrans: saved {path} ({path.stat().st_size / 1e6:.0f} MB)")
     return path
+
+
+def ensure_regions(explicit: str | None = None) -> str:
+    """Fetch the region detector (~44 MB) into the Hugging Face cache."""
+    chosen = explicit or os.environ.get(REGIONS_ENV)
+    if chosen:
+        return chosen
+
+    from huggingface_hub import hf_hub_download
+
+    # Straight from the cache when it is already there, which is what the image
+    # bakes in; only otherwise is anything fetched. Said this way round because
+    # announcing a download that did not happen is how a log stops being read.
+    try:
+        return hf_hub_download(REGIONS_REPO, REGIONS_FILE, local_files_only=True)
+    except Exception:  # noqa: BLE001 — not cached, so go and get it
+        print(f"mangatrans: downloading {REGIONS_REPO}/{REGIONS_FILE}")
+        path = hf_hub_download(REGIONS_REPO, REGIONS_FILE)
+        print(f"mangatrans: saved {path}")
+        return path
 
 
 def letterbox(image, size: int = INPUT_SIZE):
@@ -99,36 +187,6 @@ def letterbox(image, size: int = INPUT_SIZE):
         image, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=(0, 0, 0)
     )
     return canvas, pad_w, pad_h
-
-
-def decode_blocks(raw, conf_threshold: float, nms_threshold: float):
-    """YOLO head rows to (boxes xyxy, confidences) in canvas pixels."""
-    empty = (np.zeros((0, 4), np.float32), np.zeros(0, np.float32))
-    if raw.size == 0:
-        return empty
-
-    scores = raw[:, 5:]
-    confidence = raw[:, 4] * scores.max(1)
-    keep = confidence > conf_threshold
-    raw, confidence = raw[keep], confidence[keep]
-    if not len(raw):
-        return empty
-
-    cx, cy, w, h = raw[:, 0], raw[:, 1], raw[:, 2], raw[:, 3]
-    xywh = np.stack([cx - w / 2, cy - h / 2, w, h], axis=1)
-    kept = cv2.dnn.NMSBoxes(
-        xywh.tolist(), confidence.tolist(), conf_threshold, nms_threshold
-    )
-    if len(kept) == 0:
-        return empty
-
-    kept = np.asarray(kept).flatten()
-    xywh, confidence = xywh[kept], confidence[kept]
-    xyxy = np.stack(
-        [xywh[:, 0], xywh[:, 1], xywh[:, 0] + xywh[:, 2], xywh[:, 1] + xywh[:, 3]],
-        axis=1,
-    )
-    return xyxy, confidence
 
 
 def page_mask(
@@ -153,18 +211,14 @@ def page_mask(
     return mask
 
 
+def padded(box: Box, width: int, height: int) -> Box:
+    """One block with its margin, still on the page."""
+    by = max(PAD_MIN, round(PAD * min(box.w, box.h)))
+    return box.grown(by).clipped(width, height)
+
+
 def suppressed(blocks: list[Block]) -> list[Block]:
-    """The same lettering found twice, thinned down to the surest of them.
-
-    The head sometimes draws a box around two balloons *and* a box around one of
-    them, overlapping too little for NMS to throw either away. Splitting the
-    first then turns that pair into an exact duplicate — and a duplicated block
-    is read twice, translated twice, and lettered twice into the same place.
-
-    NMS cannot do this itself: it runs on what the head said, before anything has
-    been cut, so it never sees the pieces. Run on the tight boxes, before they
-    are padded, or a margin could make two neighbours look like one.
-    """
+    """The same thing found twice, thinned down to the surest of them."""
     kept: list[Block] = []
     for block in sorted(blocks, key=lambda block: -block.confidence):
         if not any(block.box.covers(other.box) >= DUPLICATE for other in kept):
@@ -172,8 +226,137 @@ def suppressed(blocks: list[Block]) -> list[Block]:
     return kept
 
 
-class Detector:
-    """The loaded network. One page at a time: an OpenCV net is not reentrant."""
+def decode(
+    labels: np.ndarray,
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    width: int,
+    height: int,
+):
+    """The model's rows to (class, box, score), in the page's own pixels.
+
+    This export carries RT-DETR's own postprocessing inside the graph, so what
+    comes out is already a class, a corner-to-corner box and a score rather than
+    logits to be talked down from. The boxes are in the pixels of whatever was
+    passed as ``orig_target_sizes`` and can fall slightly outside them, which is
+    what the clip is for. The model answers with a fixed 300 queries whether or
+    not it found that many things, so the score is what says which are real.
+    """
+    found = []
+    for at in np.flatnonzero(scores >= REGIONS_CONF):
+        x0, y0, x1, y1 = boxes[at]
+        box = Box(
+            int(round(float(x0))),
+            int(round(float(y0))),
+            int(round(float(x1))),
+            int(round(float(y1))),
+        ).clipped(width, height)
+        if box.w > 1 and box.h > 1:
+            found.append((int(labels[at]), box, float(scores[at])))
+    return found
+
+
+class Regions:
+    """The region detector: where the balloons are, and the lettering in them.
+
+    One page at a time — an onnxruntime session is not reentrant — and the last
+    page's pass is kept, because the same page goes through more than once as a
+    matter of course.
+    """
+
+    def __init__(self, weights: str | Path | None = None) -> None:
+        import onnxruntime as ort
+
+        from .read import quieted
+
+        path = ensure_regions(str(weights) if weights else None)
+        with quieted():
+            self.session = ort.InferenceSession(
+                str(path), providers=["CPUExecutionProvider"]
+            )
+        self.answers = [tensor.name for tensor in self.session.get_outputs()]
+        self._lock = threading.Lock()
+        self._last: tuple[bytes, tuple] | None = None
+
+    def run(self, image) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """One pass: the classes, the boxes and the scores, in the page's pixels.
+
+        The graph takes the page at whatever size it is handed and is told
+        separately what to scale its answer back to, so the page goes over at the
+        size the model was trained on and the boxes come back on the page. That
+        second input is (width, height) — measured, not assumed: the other way
+        round returns the same balloons transposed.
+        """
+        page = np.ascontiguousarray(image)
+        key = hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest()
+
+        with self._lock:
+            if self._last is not None and self._last[0] == key:
+                return self._last[1]
+
+            height, width = page.shape[:2]
+            square = cv2.resize(
+                page, (REGIONS_SIZE, REGIONS_SIZE), interpolation=cv2.INTER_LINEAR
+            )
+            blob = (square.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
+            outputs = self.session.run(
+                None,
+                {
+                    "images": blob,
+                    "orig_target_sizes": np.array([[width, height]], dtype=np.int64),
+                },
+            )
+            got = dict(zip(self.answers, outputs))
+            answer = (got["labels"][0], got["boxes"][0], got["scores"][0])
+            self._last = (key, answer)
+            return answer
+
+    def __call__(self, image, rtl: bool = True) -> tuple[list[Block], list[Box]]:
+        """Every block of lettering on one RGB page array, and every balloon.
+
+        ``rtl`` is which way reading order runs across the page — right to left
+        for Japanese and for the Chinese set in columns, left to right for Korean
+        and for a webcomic. It is the caller's rather than measured because it is
+        a property of what is being read rather than of the page: the same layout
+        of balloons is read both ways round by different languages.
+        """
+        height, width = image.shape[:2]
+        labels, boxes, scores = self.run(image)
+        found = decode(labels, boxes, scores, width, height)
+
+        # Per class. A balloon and the text filling it cover each other almost
+        # entirely and are not two findings of one thing.
+        balloons = suppressed(
+            [Block(box, score) for kind, box, score in found if kind == BUBBLE]
+        )
+        # Thinned on the tight boxes and padded after, never the other way round:
+        # a margin put on first can make two neighbours look like one finding.
+        blocks = [
+            Block(padded(block.box, width, height), block.confidence)
+            for block in suppressed(
+                [
+                    Block(box, score)
+                    for kind, box, score in found
+                    if kind in (TEXT_BUBBLE, TEXT_FREE)
+                ]
+            )
+        ]
+
+        # Down the page, then across it the way the language is read.
+        # `lib/order.ts` sorts by the same key.
+        across = (lambda box: -box.x1) if rtl else (lambda box: box.x0)
+        blocks.sort(key=lambda block: (block.box.y0, across(block.box)))
+        return blocks, [balloon.box for balloon in balloons]
+
+
+class Letters:
+    """comic-text-detector's segmentation head: where the ink is, pixel by pixel.
+
+    One page at a time: an OpenCV net is not reentrant. The last page's pass is
+    kept, because a dashboard asks for the mask again every time the spread is
+    changed, and the pass is seconds where everything downstream of it is a
+    millisecond.
+    """
 
     def __init__(self, weights: str | Path | None = None) -> None:
         path = ensure_model(str(weights) if weights else None)
@@ -182,20 +365,13 @@ class Detector:
         self._last: tuple[bytes, tuple] | None = None
 
     def run(self, image):
-        """One pass: the block rows, the per-pixel text map, and the padding.
+        """One pass: the per-pixel text map and the padding put on to get it.
 
         Some OpenCV builds return the outputs in a different order than they were
-        asked for, so they are told apart by shape: the blocks are the only
-        3-dimensional one, and the lettering is the one-channel map — the
-        two-channel one is where the lines of text run, which nothing here wants.
-
-        The last page's answer is kept, because the same page is put through
-        twice as a matter of course: a dashboard asks /api/detect where the
-        lettering is and then /api/letters what it looks like, and asks the
-        second again every time the spread is changed. The pass is seconds and
-        everything downstream of it is a millisecond, so the one worth not
-        repeating is this one. Only the last is kept — pages are worked on one at
-        a time — and it is held behind the same lock as the net.
+        asked for, so they are told apart by shape: the lettering is the
+        one-channel map — the two-channel one is where the lines of text run,
+        which nothing here wants, and the three-dimensional one is the block head,
+        which :class:`Regions` answers better.
         """
         page = np.ascontiguousarray(image)
         key = hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest()
@@ -211,99 +387,17 @@ class Detector:
             self.net.setInput(blob)
             outputs = self.net.forward(("blk", "seg", "det"))
 
-            blocks = next(output for output in outputs if output.ndim == 3)
             seg = next(
                 output
                 for output in outputs
                 if output.ndim == 4 and output.shape[1] == 1
             )
-            answer = (blocks, seg[0, 0], pad_w, pad_h)
+            answer = (seg[0, 0], pad_w, pad_h)
             self._last = (key, answer)
             return answer
 
-    def letters(self, image, grow: int = GROW) -> np.ndarray:
-        """A mask of the lettering itself, pixel by pixel, the page's size.
-
-        The boxes say which bubble; this says which ink, so a clean can hide the
-        words and leave the art they were drawn over.
-        """
+    def __call__(self, image, grow: int = GROW) -> np.ndarray:
+        """A mask of the lettering itself, pixel by pixel, the page's size."""
         height, width = image.shape[:2]
-        _, seg, pad_w, pad_h = self.run(image)
+        seg, pad_w, pad_h = self.run(image)
         return page_mask(seg, width, height, pad_w, pad_h, grow)
-
-    def __call__(self, image, rtl: bool = True) -> list[Block]:
-        """Every block of lettering on one RGB page array, in reading order.
-
-        ``rtl`` is which way that order runs across the page — right to left for
-        Japanese and for the Chinese set in columns, left to right for Korean and
-        for a webcomic. It is the caller's rather than measured because it is a
-        property of what is being read rather than of the page: the same layout
-        of balloons is read both ways round by different languages.
-
-        A block holding two balloons the detector ran together is cut back into
-        one block each — see :mod:`mangatrans.split`. It is done here rather than
-        left to the caller because the segmentation this needs is already in hand
-        from the same pass, and because a merged block is wrong for everything
-        downstream: it is read as one string and translated as one line.
-        """
-        # Imported here, not at the top: the Dockerfile copies this module in
-        # before the model prefetch and `split` after it, so that editing a
-        # threshold there does not send the next build back for 550 MB of
-        # weights. At the top, the prefetch step would not find it.
-        from . import split
-
-        height, width = image.shape[:2]
-        raw_blocks, seg, pad_w, pad_h = self.run(image)
-
-        scale_x = width / (INPUT_SIZE - pad_w)
-        scale_y = height / (INPUT_SIZE - pad_h)
-        boxes, confidences = decode_blocks(raw_blocks[0], CONF_THRESHOLD, NMS_THRESHOLD)
-
-        found = []
-        for xyxy, confidence in zip(boxes, confidences):
-            box = Box(
-                int(round(xyxy[0] * scale_x)),
-                int(round(xyxy[1] * scale_y)),
-                int(round(xyxy[2] * scale_x)),
-                int(round(xyxy[3] * scale_y)),
-            ).clipped(width, height)
-            if box.w > 1 and box.h > 1:
-                found.append(Block(box=box, confidence=float(confidence)))
-
-        # Ungrown: growing the mask to cover the halo around a letter also closes
-        # the gaps the split is measuring.
-        text = page_mask(seg, width, height, pad_w, pad_h, 0) > 0
-
-        # Split first, then pad. A margin put on before would close the very gaps
-        # the split is looking for, and would push two neighbours together.
-        #
-        # The margin is measured once on the whole block rather than on each
-        # piece: more lettering to read the character size off, and every piece
-        # of one block then comes back held off its words by the same amount.
-        pieces: list[Block] = []
-        margins: dict[Box, int] = {}
-        for block in found:
-            crop = text[block.box.y0 : block.box.y1, block.box.x0 : block.box.x1]
-            by = (
-                max(PAD_MIN, round(PAD * split.character(crop)))
-                if crop.any()
-                else PAD_MIN
-            )
-            for piece in split.pieces(text, block.box):
-                pieces.append(Block(box=piece, confidence=block.confidence))
-                margins[piece] = by
-
-        blocks = [
-            Block(
-                box=block.box.grown(margins[block.box]).clipped(width, height),
-                confidence=block.confidence,
-            )
-            for block in suppressed(pieces)
-        ]
-
-        # Down the page, then across it the way the language is read.
-        # `lib/order.ts` sorts by the same key. After splitting, so the halves of
-        # a cut block land where they are read.
-        across = (lambda box: -box.x1) if rtl else (lambda box: box.x0)
-        blocks.sort(key=lambda block: (block.box.y0, across(block.box)))
-        return blocks

@@ -14,12 +14,18 @@ back in the response.
 
 ## Run
 
+The whole thing — the API and the dashboard beside it on one origin:
+
+```bash
+podman compose up --build       # http://localhost:8080
+```
+
+`docker compose` takes the same command. The API alone, on its own port:
+
 ```bash
 podman build -t manga-trans api
 podman run --rm --init -p 8000:8000 manga-trans     # http://localhost:8000/api
 ```
-
-`docker` takes the same two commands.
 
 Without a container, needs Python 3.10+:
 
@@ -31,10 +37,19 @@ python -m mangatrans          # http://127.0.0.1:8000/api
 
 The models are all baked into the container at build time:
 
-- `comictextdetector.pt.onnx` (~95 MB) finds the lettering. It is published as a
-  GitHub release asset that no package manager knows how to get, so it is
-  downloaded on first use into `~/.cache/manga-trans`. It runs on OpenCV's ONNX
-  backend, which needs neither torch nor onnxruntime.
+- `ogkalu/comic-text-and-bubble-detector` (~44 MB) finds the balloons and the
+  lettering in one pass. It is an RT-DETRv2 trained on some 11k manga, webtoon,
+  manhua and western comic pages, and it answers with three kinds of thing:
+  a balloon, text inside one, and text that is in none. It runs on onnxruntime.
+- `comictextdetector.pt.onnx` (~95 MB) is kept for one job the box detector
+  cannot do: saying which *pixels* are ink, so a clean can take the words off the
+  art rather than painting a rectangle over it. Only its segmentation head is
+  used. It is a GitHub release asset that no package manager knows how to get,
+  and it runs on OpenCV's ONNX backend, which needs neither torch nor onnxruntime.
+- `ogkalu/lama-manga-onnx-dynamic` (~206 MB) fills in what was hidden. It is
+  big-LaMa fine-tuned on 300k manga and anime pages, so it continues a line and
+  a screentone through a hole rather than smearing colour inwards across it.
+  On onnxruntime, and it takes any size that is a multiple of eight.
 - `kha-white/manga-ocr-base` (~450 MB) reads Japanese. It is a model trained on
   manga, which is why it copes with vertical lines and stylised fonts that
   general OCR does not, and it comes from Hugging Face on first use. It needs
@@ -44,9 +59,9 @@ The models are all baked into the container at build time:
   [RapidOCR](https://github.com/RapidAI/RapidOCR) on onnxruntime and come from
   ModelScope on first use.
 
-Only the reader a page actually needs is ever loaded, so an API only ever asked
-to detect stands none of them up, and one only ever asked for Korean never
-imports torch.
+Every one of them is stood up on first use and only if it is wanted, so an API
+only ever asked to detect never loads the reader or the fill, and one only ever
+asked for Korean never imports torch.
 
 onnxruntime goes looking for a GPU as it loads and, in a container that has been
 shown a card it cannot read the make of, complains that it cannot — which is
@@ -160,54 +175,22 @@ it, as below, because it is worked out from the page and the boxes and both are
 already in hand. `language` changes nothing about what is found, only the order
 it comes back in.
 
-Two balloons that overlap are often boxed as one, and that is worse than it
-looks: the block would be read as one string, so two speakers reach the
-translator as a single line and the lettering that comes back is set into one
-balloon. So a block is cut apart before it is answered with, wherever a run of
-blank inside it is wide enough to be a wall rather than the gap between two
-lines. The cuts are axis-aligned, since a block is a rectangle. Each piece keeps
-the confidence of the block it came from and gets its own `bubble`, and the
-pieces are put in reading order along with everything else.
+Two balloons that overlap used to be boxed as one, and that is worse than it
+looks: the block is read as one string, so two speakers reach the translator as a
+single line and the lettering that comes back is set into one balloon. The model
+boxes by *region* rather than by lettering — it is asked where the balloons are
+at the same time as where the words are — so two balloons are two answers, and
+the gap-measuring that used to cut a merged block back apart is gone with the
+problem it was for.
 
-How much blank that takes depends on what the cut stands through, and everything
-is measured in characters rather than pixels so it holds at any size the page is
-lettered at. A cut crossing several lines at once needs only **0.8 of a
-character**: every line it crosses has to fall blank in the same place at the
-same time, which lettering inside one balloon does not do. A cut running the
-length of a single line has no other line to agree with it — the gap between two
-characters is then a candidate, and small kana and punctuation leave most of
-their cell empty — so that one needs **1.5**.
+The detector still sometimes draws two boxes over the same lettering. A second
+pass drops any block covering the same words as a surer one, since a duplicate is
+read twice, translated twice and lettered twice into one place.
 
-Under about 0.8 the line spacing of a generously set balloon starts being read
-as a wall, so that is the floor rather than a preference.
-
-A narrower blank than that is still cut on when the lettering either side of it
-is **staggered** — shifted the same way at both ends, by half a character or
-more. Lines of one block share an edge: vertical Japanese starts every column at
-the same height and simply stops early on the last one. Two blocks set beside
-each other share nothing. Both ends have to agree before it counts, and that is
-what tells a second block from a column that ended early or from two columns
-centred against one another — measured, a balloon of two centred columns is out
-by 3.0 characters at the start and back 3.0 at the end, where two balloons a
-character apart are out by 1.0 at both. Text set at plainly different heights was
-never one block, however close together it sits.
-
-Beyond that this is deliberately shy: a balloon left merged can be split by hand
-in the dashboard, where a line of dialogue wrongly cut into four cannot be put
-back so easily. A block that does not come apart is answered with exactly as the
-detector drew it.
-
-Splitting is also why two blocks can come back covering the same lettering: the
-head sometimes draws a box around two balloons *and* a box around one of them,
-overlapping too little for the detector's own non-maximum suppression to throw
-either away, and cutting the first turns that pair into a duplicate. A second
-pass drops any block that covers the same lettering as a surer one, since a
-duplicate is read twice, translated twice and lettered twice into one place.
-
-Every block also comes back with a margin around it — a quarter of a character,
-so it holds at any size — because the block head boxes lettering tightly and
-sometimes clips the edge of a glyph. The margin goes on after the split, or it
-would close the very gaps the split is measuring.
+Every block comes back with a small margin around it, because the head boxes
+lettering tightly and sometimes clips the edge of a glyph — enough to hold the
+whole of what it found and to cover the letter when a block is cleaned by its box
+rather than by its traced ink.
 
 **`/api/bubbles`** answers with the room each block was written in rather than
 the room its words take up: the largest rectangle that fits inside the balloon
@@ -217,53 +200,42 @@ English set in a column that shape wraps to about a letter a line — which is w
 a translated line used to have to be dragged out to its balloon before it could
 be read at all.
 
+The balloon is *detected*, not guessed at. That is the difference this turns on.
+It used to be flooded outwards from the words — a balloon is a light shape closed
+by a dark outline, so the light pixels reachable from the lettering are the
+balloon — and that works until the outline has a tail to escape down, or a scan
+has broken it into the panel beside it, at which point the answer is a rectangle
+somewhere else on the page. Now the model says which shape is the balloon, and
+the measuring only ever happens inside it.
+
+Inside it, the balloon's own box is still not the answer: a balloon is an oval,
+and a line set to the corners of its bounding box runs outside the outline. So
+the inside is thresholded within that box and the largest rectangle in it that
+still holds the block is what comes back. The block is painted in first, because
+a line of Japanese down the middle of a balloon cuts its ground into a left half
+and a right half and a measurement started in one of them describes the gap
+beside the words rather than the room around them. Dark balloons with white
+lettering are found the same way round the other way.
+
 Around the block, not simply the largest rectangle in the balloon: an answer
 always holds every pixel of the box it was asked about, and only ever says how
-much wider or taller the room around the words runs. The largest rectangle
-anywhere is in the wrong part of the balloon as often as the right one — a
-balloon with a tail, one drawn around two lines with the words in one of them,
-one whose outline a scan has broken into the panel beside it — and a translation
-set there is one the reader has to go looking for, half a page from the Japanese
-it is for.
+much wider or taller the room around the words runs. A translation set anywhere
+else is one the reader has to go looking for.
 
-Nothing is drawn to say where a balloon is, but it is not hard to see: it is a
-light shape closed by a dark outline, so the light pixels reachable from the
-lettering without crossing that outline are the balloon. The block is painted in
-before the flood starts, because a line of Japanese down the middle of a balloon
-cuts its ground into a left half and a right half, and a flood started in one of
-them measures the gap beside the words rather than the room around them. Dark
-balloons with white lettering are found the same way round the other way.
-
-Where several of the boxes turn out to be written in the *same* balloon — which
-is what a block cut in two looks like from here, and what a balloon holding two
-separate lines of dialogue is — their answers overlap, and each is cut back to
-its own side rather than left running across the others. They were told apart by
-the blank between them in the first place, so the page is cut the same way: at
-the widest blank between them, on whichever axis that blank is widest, and then
-each side again until every block has a cell to itself, and every answer is
-cropped to the cell of the block it was measured around. Without that, two of
-them would be lettered one on top of another.
+Where several blocks turn out to be in the *same* balloon — a balloon holding two
+separate lines of dialogue — their answers overlap, and each is cut back to its
+own side rather than left running across the others. The page is cut at the
+widest blank between them, on whichever axis that blank is widest, and then each
+side again until every block has a cell to itself; every answer is then cropped
+to the cell of the block it was measured around. Without that, two of them would
+be lettered one on top of another. Cutting once along one axis is not enough,
+which is why this recurses: four blocks set two across and two down are not in a
+row, and one line of cuts hands the two on the right a left half and a right half
+of a balloon they are stacked inside.
 
 Each block keeps its own answer through this, cropped — never a share of a
 neighbour's. Handing a whole group one balloon and cutting *that* up is what
-sends a translation to the far side of the page: the odd one out of the group is
-in a different balloon, and its piece of this one is nowhere near its words. A
-block with no answer of its own is the exception, and it borrows only from an
-answer that holds it.
-
-Cutting once along one axis is not enough, which is why this recurses: four
-blocks set two across and two down are not in a row, and one line of cuts hands
-the two on the right a left half and a right half of a balloon they are stacked
-inside.
-
-What counts as "the same balloon" is that two answers *overlap*, not that they
-match. One balloon does not come back as the same rectangle twice: an irregular
-one holds a wide short rectangle and a tall narrow one of nearly the same area,
-and which of them a block is answered with depends on where in the balloon that
-block sits, so two blocks in one balloon can come back barely half agreeing. A
-block no balloon could be made out for is gathered in too, by the box it will be
-lettered in — otherwise its neighbour keeps the whole balloon and sets its
-translation straight over the top of it.
+sends a translation to the far side of the page.
 
 This is why the endpoint takes a list rather than one box at a time: the answer
 for a block depends on which other blocks share its balloon. Ask about a box on
@@ -271,12 +243,14 @@ its own and its answer is left uncropped, since nothing else is known to be in
 the balloon with it — so send every box on the page whenever the answer is going
 to be used for lettering.
 
-`bubble` is null where none could be made out, and then the box is all there is
-to go on: a sound effect over artwork is in no balloon, a balloon whose outline
-a scan has broken cannot be followed, and a balloon drawn no wider than the words
-already are has nothing to offer. It is a guess, and saying so beats answering
-with a rectangle somewhere in the artwork. No model is involved — this is the one
-call on an image that never stands the detector up.
+`bubble` is null where the block is in no balloon, and then the box is all there
+is to go on: a sound effect over artwork is in none, and a balloon drawn no wider
+than the words already are has nothing to offer. Saying so beats answering with a
+rectangle somewhere in the artwork.
+
+This call used to stand no model up, and now it stands the region detector up:
+where a balloon is is something a model answers, and the boxes sent in are only
+asked which of those balloons hold them.
 
 Detection keeps the last page's pass through the network, since the same page
 goes through twice as a matter of course: `/api/detect` for the boxes and
@@ -360,13 +334,27 @@ flat instead, which is the old behaviour and still the right one where the
 ground was white to begin with — the inside of a bubble, or a box about to have
 new lettering set in it.
 
-Filling is OpenCV's Telea inpainting: the marked pixels are made out of the ones
-just outside them, working inwards. It costs nothing that is not already
-installed — no model, no network — and around a fifth of a second on a page. It
-carries flat tone and it carries a line; what it cannot do is put a screentone's
-dots back, so a wide sound effect over a dense tone comes back as the flat
-average of it rather than the pattern. That is still a good deal better than a
-white hole in the middle of the art, and it is what redrawing by hand is for.
+Filling is LaMa, fine-tuned on 300k manga and anime pages. It has seen line art,
+so it continues a hatched edge and a screentone through the hole rather than
+averaging what surrounds it — which is the difference between a clean and a
+smudge on anything that was drawn rather than flat.
+
+`fill=telea` is OpenCV's inpainting, which is what this used to do: the marked
+pixels are made out of the ones just outside them, working inwards, with no
+notion of structure. It costs nothing that is not already installed and runs in
+about a tenth of a second against LaMa's few seconds, and on flat tone the two
+are hard to tell apart. Over anything hatched it leaves a legible ghost of the
+lettering and breaks every line it crosses. It is kept for comparison, and
+because an image built with `--build-arg PREFETCH_MODEL=false` may not have
+LaMa's weights — `fill=art` quietly falls back to it rather than failing when
+they cannot be loaded.
+
+LaMa is not run over the whole page. A page is mostly art that is staying, so the
+mask is cut into the pieces that actually have marks in them, each taken with
+enough of the art around it to be made out of, and each is put through on its
+own. Marks close together go through as one piece: two letters of a word are not
+worth two passes, and the art around one of them would otherwise hold the other
+as material to copy it from.
 
 Two pixels around every mark are kept out of what the fill is made of but are
 not themselves painted over. Lettering is printed with soft edges, and a mask
@@ -392,8 +380,10 @@ Everything is set by environment variable:
 | --- | --- |
 | `MANGA_TRANS_HOST` | `127.0.0.1` |
 | `MANGA_TRANS_PORT` | `8000` |
-| `MANGA_TRANS_ORIGIN` | `*` — who may call the API from a browser |
-| `MANGA_TRANS_MODEL` | `~/.cache/manga-trans/comictextdetector.pt.onnx` |
+| `MANGA_TRANS_ORIGIN` | `*` — who may call the API from a browser. Nothing needs it under `compose`, where the dashboard is on the same origin |
+| `MANGA_TRANS_REGIONS` | unset — `ogkalu/comic-text-and-bubble-detector`, from the Hugging Face cache |
+| `MANGA_TRANS_LAMA` | unset — `ogkalu/lama-manga-onnx-dynamic`, from the same cache |
+| `MANGA_TRANS_MODEL` | `~/.cache/manga-trans/comictextdetector.pt.onnx` — the ink mask |
 | `MANGA_TRANS_OCR_MODEL` | `kha-white/manga-ocr-base` — the Japanese reader |
 | `MANGA_TRANS_OCR_MODELS` | `~/.cache/manga-trans/ppocr` — where every other reader's weights go |
 | `MANGA_TRANS_OLLAMA` | unset — `localhost`, `host.docker.internal` and `host.containers.internal` on port 11434 are tried in that order |
@@ -405,23 +395,26 @@ Everything is set by environment variable:
 ```
 api/
   mangatrans/
-    detect.py     comic-text-detector on OpenCV's ONNX backend: blocks, and
-                  the per-pixel mask of the lettering inside them
-    split.py      cutting a block that holds two balloons back into one
-                  block each, by the blank between them
-    bubble.py     the balloon a block was written in, which is where a
-                  translation goes — the block is only where the words are
+    detect.py     the balloons and the lettering (RT-DETRv2, onnxruntime),
+                  and the per-pixel mask of the ink (comic-text-detector's
+                  segmentation head, on OpenCV's ONNX backend)
+    bubble.py     the room inside a balloon a block was written in, which is
+                  where a translation goes — the block is only where the
+                  words are
     languages.py  what a page can be written in, and what that means for
                   reading it: which reader, which way round, how it joins
     read.py       manga-ocr and PP-OCR, and the cropping that feeds them
     ollama.py     translating a page by a model on this machine
-    inpaint.py    making what was hidden out of the page around it
+    inpaint.py    making what was hidden out of the page around it: LaMa,
+                  and Telea where there are no weights for it
     render.py     hiding the old lettering, fitting and setting the new
     server.py     the API itself
     geometry.py   Box
   tests/
 web/
   src/            the dashboard: drop pages in, detect, read, mask, clean
+  Dockerfile      built once, then served by nginx with /api proxied through
+docker-compose.yml  both halves, on one origin
 ```
 
 Pages go in by dropping them, pasting them, or picking them — and a chapter can
@@ -461,7 +454,10 @@ missed. Putting one back is one click, as is dropping one it was too sure of.
 hiding — not the boxes around it — and that mask can be brushed by hand, drawn
 wider or erased back, with blocks worth keeping dropped from it one at a time.
 **Hide under** beside the brush is what a clean puts back where the marks were:
-the art around them, filled in, or flat white.
+**The art**, filled in by a model that has seen line art, so a screentone and a
+hatched edge carry on through; **No model**, which is the same idea done by
+OpenCV and much faster, and fine over flat tone but a smear over anything drawn;
+or **White**, flat.
 **Translate** sets each translated line in the balloon its original was written
 in — not in the box the original came out of, which for a vertical line of
 Japanese is a column too narrow to set one word of English across. It is set in
@@ -521,10 +517,11 @@ Or in the container, with the working copy mounted in so a change needs no
 rebuild:
 
 ```bash
-podman run --rm --entrypoint python -w /app \
+podman run --rm --network none --entrypoint python -w /app \
     -v "$PWD/api/mangatrans:/app/mangatrans:ro" -v "$PWD/api/tests:/app/tests:ro" \
     manga-trans -m unittest discover -s tests -t .
 ```
 
-They stub the detector and the reader, so they need no model, no network and no
-torch.
+They stub every model — the two detectors, the reader and the fill — so they need
+no weights, no network and no torch, which is what `--network none` above is
+there to keep true.

@@ -103,24 +103,74 @@ def patch(pixels, box: Box) -> np.ndarray:
     return np.array(pixels)[box.y0 : box.y1, box.x0 : box.x1]
 
 
-class StubDetector:
-    """One block, and some ink inside it, whatever the page."""
+class StubRegions:
+    """One block, in one balloon, whatever the page."""
 
     found = Block(Box(10, 10, 60, 40), 0.912)
-    ink = Box(20, 15, 50, 35)
+    balloon = Box(2, 2, 97, 67)
 
     def __init__(self, *args, **kwargs) -> None:
         pass
 
     def __call__(self, image, rtl: bool = True):
         assert image.ndim == 3 and image.shape[2] == 3, "expects an RGB array"
-        return [self.found]
+        return [self.found], [self.balloon]
 
-    def letters(self, image, grow=2):
+
+class StubLetters:
+    """Some ink inside that block, whatever the page."""
+
+    ink = Box(20, 15, 50, 35)
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def __call__(self, image, grow=2):
         assert image.ndim == 3 and image.shape[2] == 3, "expects an RGB array"
         mask = np.zeros(image.shape[:2], np.uint8)
         mask[self.ink.y0 : self.ink.y1, self.ink.x0 : self.ink.x1] = 255
         return mask
+
+
+class StubLama:
+    """A painter that does what LaMa does, crudely: fill from what is around.
+
+    The middle of everything outside the hole, laid over everything inside it. It
+    is not inpainting, but it stands in the same relation to the page as the real
+    thing — what comes out is made of what surrounds the mark rather than being
+    flat white — so the tests that care about *that* need no weights.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def __call__(self, page, hole):
+        assert page.shape[:2] == hole.shape[:2], "the hole is not the page's size"
+        around = page[hole == 0]
+        out = page.copy()
+        out[hole > 0] = (
+            np.median(around, axis=0) if len(around) else np.uint8(255)
+        )
+        return out
+
+
+# No test stands the real LaMa up: its weights are 206 MB and the point of the
+# doubles is that the suite needs no model and no network. Held for the whole
+# module because `server.create_app` reaches for it per request rather than up
+# front, so a patch around building the client would already have lifted.
+_stub_lama = mock.patch.object(inpaint, "Lama", StubLama)
+
+# Kept from before that patch goes on, so the cropping and padding around the
+# session can still be tested on the real class.
+Lama = inpaint.Lama
+
+
+def setUpModule():
+    _stub_lama.start()
+
+
+def tearDownModule():
+    _stub_lama.stop()
 
 
 class StubReader:
@@ -248,6 +298,87 @@ class TestFill(unittest.TestCase):
         original = toned()
         inpaint.fill(original, stencil(Box(0, 0, 200, 140)))
         self.assertEqual(tuple(np.array(original)[0, 0]), TONE)
+
+
+class TestPainter(unittest.TestCase):
+    """The fill a model makes, and the seam it is laid back through.
+
+    The session is stubbed throughout: what is under test is the cropping, the
+    padding and the compositing around it, none of which needs weights.
+    """
+
+    def marker(self):
+        """A painter that signs its work, so its pixels can be told from Telea's."""
+        seen = []
+
+        def paint(page, hole):
+            seen.append((page.shape, int(np.count_nonzero(hole))))
+            out = page.copy()
+            out[hole > 0] = (7, 200, 13)
+            return out
+
+        return paint, seen
+
+    def test_the_painter_is_what_makes_the_fill(self):
+        paint, seen = self.marker()
+        out = np.array(inpaint.fill(toned(), stencil(INK), paint))
+        self.assertEqual(tuple(out[int(INK.cy), int(INK.cx)]), (7, 200, 13))
+        self.assertEqual(len(seen), 1, "the painter was not asked")
+
+    def test_nothing_outside_the_mark_is_painted_over(self):
+        # The hole is grown before the fill is *sampled*, and only the ungrown
+        # mark is laid back through. A painter that covers the grown hole must
+        # still not show up outside the mark.
+        paint, _ = self.marker()
+        out = np.array(inpaint.fill(toned(), stencil(INK), paint))
+        self.assertEqual(tuple(out[INK.y0 - 1, INK.x0]), TONE)
+        self.assertEqual(tuple(out[INK.y1 + 1, INK.x0]), TONE)
+
+    def test_a_page_marked_all_over_never_reaches_the_painter(self):
+        # There is nothing left to make the fill out of, and a model handed a
+        # page that is entirely hole does not say so, it invents one.
+        paint, seen = self.marker()
+        out = inpaint.fill(toned(), stencil(Box(0, 0, 200, 140)), paint)
+        self.assertTrue((np.array(out) == 255).all())
+        self.assertEqual(seen, [], "the painter was asked to make a page up")
+
+    def test_a_crop_is_padded_out_to_whole_blocks(self):
+        # The graph halves its input three times over, so a size that is not a
+        # multiple of eight fails inside it rather than being padded for us.
+        made = Lama.__new__(Lama)
+        made._lock = threading.Lock()
+
+        class Session:
+            def run(self, wanted, feed):
+                image = feed["image"]
+                assert image.shape[2] % inpaint.BLOCK == 0, image.shape
+                assert image.shape[3] % inpaint.BLOCK == 0, image.shape
+                return [np.zeros_like(image)]
+
+        made.session = Session()
+        crop = np.full((50, 30, 3), 200, np.uint8)  # neither side a multiple of 8
+        hole = np.zeros((50, 30), np.uint8)
+        hole[10:20, 10:20] = 255
+        self.assertEqual(made.patch(crop, hole).shape, crop.shape)
+
+    def test_only_the_marked_pieces_of_a_page_go_through(self):
+        # A page is mostly art that is staying. Sending the whole of one through
+        # to take out two balloons is minutes rather than seconds.
+        hole = np.zeros((400, 400), np.uint8)
+        hole[20:40, 20:40] = 255
+        hole[300:320, 300:320] = 255
+        found = inpaint.patches(hole, 400, 400)
+        self.assertEqual(len(found), 2)
+        for x0, y0, x1, y1 in found:
+            self.assertLess((x1 - x0) * (y1 - y0), 400 * 400)
+
+    def test_marks_close_together_go_through_as_one(self):
+        # Two letters of a word are not worth two passes, and the context around
+        # one would hold the other as art to copy it from.
+        hole = np.zeros((400, 400), np.uint8)
+        hole[100:120, 100:120] = 255
+        hole[100:120, 125:145] = 255
+        self.assertEqual(len(inpaint.patches(hole, 400, 400)), 1)
 
 
 class TestPageMask(unittest.TestCase):
@@ -425,7 +556,7 @@ def run_together(
 
 
 def stub_balloon(size=(300, 200)) -> Image.Image:
-    """A page with a balloon drawn around the block :class:`StubDetector` finds.
+    """A page with a balloon drawn around the block :class:`StubRegions` finds.
 
     Rounded rather than oval, because that block is nearly square and nearly
     fills it: the largest rectangle inside an oval drawn round a square is
@@ -437,7 +568,7 @@ def stub_balloon(size=(300, 200)) -> Image.Image:
     draw.rounded_rectangle(
         (2, 2, 96, 66), radius=12, fill=(255, 255, 255), outline=(0, 0, 0), width=3
     )
-    ink = StubDetector.ink
+    ink = StubLetters.ink
     draw.rectangle((ink.x0, ink.y0, ink.x1 - 1, ink.y1 - 1), fill=(0, 0, 0))
     return image
 
@@ -498,12 +629,21 @@ class TestSolid(unittest.TestCase):
         self.assertTrue((bubble.solid(region)[:, 20:] == 0).all())
 
 
-class TestAround(unittest.TestCase):
+class TestInside(unittest.TestCase):
+    """The room inside a balloon the detector has already found.
+
+    The balloon is handed in rather than guessed at, which is the whole of the
+    difference: the question is no longer "where does the light stop" but "how
+    much of this shape can the words be opened out into".
+    """
+
     balloon = Box(120, 60, 480, 300)
     column = Box(285, 100, 315, 260)
 
-    def found(self, image: Image.Image, box: Box | None = None) -> Box | None:
-        return bubble.around(grey(image), box or self.column)
+    def found(
+        self, image: Image.Image, box: Box | None = None, room: Box | None = None
+    ) -> Box | None:
+        return bubble.inside(grey(image), room or self.balloon, box or self.column)
 
     def test_a_column_of_writing_answers_with_the_balloon_around_it(self):
         found = self.found(ballooned())
@@ -524,18 +664,19 @@ class TestAround(unittest.TestCase):
         assert found is not None
         self.assertEqual(bubble.within(found, self.column), 1.0)
 
-    def test_a_balloon_run_into_the_next_one_is_measured_where_the_words_are(self):
-        # The largest rectangle in what the flood comes back with is in the other
-        # balloon, and lettering it there is lettering it nowhere near the words.
+    def test_the_next_balloon_along_is_no_longer_reachable(self):
+        # Two balloons whose outlines run together. Measured by flooding out from
+        # the words this answered with a rectangle in the other one; told which
+        # balloon it is in, it cannot leave it however broken the outline is.
         column = Box(150, 110, 180, 210)
-        found = self.found(run_together(), column)
+        found = self.found(run_together(), column, Box(120, 60, 300, 260))
         assert found is not None
         self.assertEqual(bubble.within(found, column), 1.0)
-        self.assertLess(found.y1, 260, "the room ran on into the other balloon")
+        self.assertLess(found.y1, 261, "the room ran on into the other balloon")
 
     def test_the_column_is_not_measured_as_the_gap_beside_it(self):
-        # Without the block painted in, the flood starts in one half of a
-        # balloon a line of Japanese has cut in two, and answers with that half.
+        # Without the block painted in, the ground of a balloon a line of
+        # Japanese has cut in two is two pieces, and this answers with one.
         found = self.found(ballooned())
         assert found is not None
         self.assertGreater(found.x1 - found.x0, self.balloon.w / 2)
@@ -546,26 +687,21 @@ class TestAround(unittest.TestCase):
         assert found is not None
         self.assertGreater(found.w, self.column.w * 3)
 
-    def test_lettering_with_no_balloon_around_it_has_no_answer(self):
-        # A page of flat white with writing on it: the flood has the whole page
-        # to spread over, which is not a balloon however it is measured.
-        image = Image.new("RGB", (600, 800), (255, 255, 255))
-        draw = ImageDraw.Draw(image)
-        for y in range(self.column.y0, self.column.y1, 30):
-            draw.rectangle(
-                (self.column.x0, y, self.column.x1 - 1, y + 20), fill=(0, 0, 0)
-            )
-        self.assertIsNone(self.found(image))
-
     def test_a_balloon_no_wider_than_the_words_is_left_alone(self):
         # There is nothing to be won by moving a line into a balloon that is
         # already drawn tight around it.
         wide = Box(40, 170, 560, 230)
-        image = ballooned(balloon=wide, column=Box(60, 180, 540, 220))
-        self.assertIsNone(self.found(image, Box(60, 180, 540, 220)))
+        words = Box(60, 180, 540, 220)
+        image = ballooned(balloon=wide, column=words)
+        self.assertIsNone(self.found(image, words, wide))
 
     def test_a_box_too_small_to_hold_lettering_has_no_answer(self):
         self.assertIsNone(self.found(ballooned(), Box(300, 180, 302, 182)))
+
+    def test_a_balloon_that_does_not_hold_its_block_has_no_answer(self):
+        # Which is a block matched to the wrong balloon; the block's own box is
+        # the honest answer and the caller keeps it.
+        self.assertIsNone(self.found(ballooned(), Box(500, 400, 560, 460)))
 
     def test_a_box_off_the_page_has_no_answer(self):
         self.assertIsNone(self.found(ballooned(), Box(900, 900, 1000, 1000)))
@@ -789,105 +925,114 @@ class TestCharacter(unittest.TestCase):
         self.assertLessEqual(found, EM * 1.5)
 
 
-class TestDetectorBlocks(unittest.TestCase):
-    """The wiring in Detector.__call__: split, then pad, then reading order.
+class TestRegionBlocks(unittest.TestCase):
+    """The wiring in Regions.__call__: decode, pad, tell the classes apart, sort.
 
-    The network itself is replaced by its outputs, so this needs no weights: what
-    is under test is what the detector does with them.
+    The session is replaced by its outputs, so this needs no weights. The export
+    carries RT-DETR's own postprocessing, so what it hands back is already a
+    class, a corner-to-corner box in the page's pixels, and a score.
     """
 
     size = (200, 140)
 
-    def seg_for(self, glyphs: list[Box]) -> np.ndarray:
-        """The per-pixel text map the segmentation head would answer with."""
-        width, height = self.size
-        page = np.zeros((height, width), np.float32)
-        for glyph in glyphs:
-            page[glyph.y0 : glyph.y1, glyph.x0 : glyph.x1] = 1.0
-        _, pad_w, pad_h = detect.letterbox(np.zeros((height, width, 3), np.uint8))
-        kept = cv2.resize(
-            page,
-            (detect.INPUT_SIZE - pad_w, detect.INPUT_SIZE - pad_h),
-            interpolation=cv2.INTER_NEAREST,
-        )
-        seg = np.zeros((detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
-        seg[: detect.INPUT_SIZE - pad_h, : detect.INPUT_SIZE - pad_w] = kept
-        return seg
-
-    def head_for(self, boxes: list[Box]) -> np.ndarray:
-        """The block head's rows for those boxes, in the letterboxed canvas."""
-        width, height = self.size
-        _, pad_w, pad_h = detect.letterbox(np.zeros((height, width, 3), np.uint8))
-        scale_x = (detect.INPUT_SIZE - pad_w) / width
-        scale_y = (detect.INPUT_SIZE - pad_h) / height
-        rows = np.zeros((1, len(boxes), 6), np.float32)
-        for i, box in enumerate(boxes):
-            rows[0, i] = [
-                box.cx * scale_x,
-                box.cy * scale_y,
-                box.w * scale_x,
-                box.h * scale_y,
-                0.99,
-                0.99,
-            ]
-        return rows
-
-    def detector(self, glyphs: list[Box], boxes: list[Box]) -> detect.Detector:
-        made = detect.Detector.__new__(detect.Detector)
-        _, pad_w, pad_h = detect.letterbox(np.zeros((*self.size[::-1], 3), np.uint8))
-        head, seg = self.head_for(boxes), self.seg_for(glyphs)
-        made.run = lambda image: (head, seg, pad_w, pad_h)
+    def regions(self, found: list[tuple[int, Box, float]]) -> detect.Regions:
+        made = detect.Regions.__new__(detect.Regions)
+        labels = np.array([kind for kind, _, _ in found], np.int64)
+        boxes = np.array([box.as_list() for _, box, _ in found], np.float32)
+        scores = np.array([score for _, _, score in found], np.float32)
+        made.run = lambda image: (labels, boxes, scores)
         return made
 
     def page(self) -> np.ndarray:
         return np.zeros((self.size[1], self.size[0], 3), np.uint8)
 
-    def test_one_box_over_two_balloons_is_answered_with_two_blocks(self):
-        one = lettering(20, 20, 2, 3, EM)
-        other = lettering(120, 25, 2, 3, EM)
-        found = self.detector(one + other, [around(one, other)])(self.page())
-        self.assertEqual(len(found), 2)
+    def test_a_balloon_and_the_text_in_it_are_told_apart(self):
+        blocks, balloons = self.regions(
+            [
+                (detect.BUBBLE, Box(10, 10, 120, 100), 0.98),
+                (detect.TEXT_BUBBLE, Box(30, 30, 90, 80), 0.95),
+            ]
+        )(self.page())
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(len(balloons), 1)
+        self.assertEqual(balloons[0], Box(10, 10, 120, 100))
 
-    def test_each_piece_keeps_the_confidence_of_the_block_it_came_from(self):
-        one = lettering(20, 20, 2, 3, EM)
-        other = lettering(120, 25, 2, 3, EM)
-        found = self.detector(one + other, [around(one, other)])(self.page())
-        self.assertTrue(all(round(b.confidence, 2) == 0.98 for b in found))
+    def test_text_in_no_balloon_is_still_a_block(self):
+        blocks, balloons = self.regions(
+            [(detect.TEXT_FREE, Box(30, 30, 90, 80), 0.9)]
+        )(self.page())
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(balloons, [])
+
+    def test_a_row_the_model_is_unsure_of_is_dropped(self):
+        blocks, _ = self.regions(
+            [
+                (detect.TEXT_BUBBLE, Box(30, 30, 90, 80), 0.95),
+                (detect.TEXT_BUBBLE, Box(10, 100, 40, 130), detect.REGIONS_CONF / 2),
+            ]
+        )(self.page())
+        self.assertEqual(len(blocks), 1)
 
     def test_a_block_comes_back_with_a_margin_around_its_lettering(self):
-        glyphs = lettering(40, 40, 2, 3, EM)
-        tight = around(glyphs)
-        [found] = self.detector(glyphs, [tight])(self.page())
+        tight = Box(40, 40, 90, 100)
+        [found] = self.regions([(detect.TEXT_BUBBLE, tight, 0.9)])(self.page())[0]
         self.assertLess(found.box.x0, tight.x0, "no margin on the left")
         self.assertLess(found.box.y0, tight.y0, "no margin on the top")
         self.assertGreater(found.box.x1, tight.x1, "no margin on the right")
         self.assertGreater(found.box.y1, tight.y1, "no margin on the bottom")
 
     def test_the_margin_never_runs_off_the_page(self):
-        glyphs = lettering(0, 0, 2, 2, EM)
-        [found] = self.detector(glyphs, [around(glyphs)])(self.page())
+        [found] = self.regions([(detect.TEXT_BUBBLE, Box(0, 0, 40, 40), 0.9)])(
+            self.page()
+        )[0]
         self.assertEqual(found.box, found.box.clipped(*self.size))
 
-    def test_the_pieces_come_back_in_reading_order(self):
+    def test_a_box_running_past_the_page_is_brought_back_onto_it(self):
+        # The head answers in the page's pixels but is not held to them.
+        [found] = self.regions(
+            [(detect.TEXT_BUBBLE, Box(-20, -10, 260, 190), 0.9)]
+        )(self.page())[0]
+        self.assertEqual(found.box, Box(0, 0, *self.size))
+
+    def test_the_same_lettering_found_twice_comes_back_once(self):
+        blocks, _ = self.regions(
+            [
+                (detect.TEXT_BUBBLE, Box(40, 40, 90, 100), 0.91),
+                (detect.TEXT_BUBBLE, Box(42, 43, 89, 99), 0.62),
+            ]
+        )(self.page())
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(round(blocks[0].confidence, 2), 0.91, "the surer one went")
+
+    def test_the_blocks_come_back_in_reading_order(self):
         # Down the page, then right to left: the left one is read second.
-        left = lettering(20, 60, 2, 2, EM)
-        right = lettering(130, 20, 2, 2, EM)
-        found = self.detector(left + right, [around(left, right)])(self.page())
+        found = self.regions(
+            [
+                (detect.TEXT_BUBBLE, Box(20, 60, 60, 100), 0.9),
+                (detect.TEXT_BUBBLE, Box(130, 20, 170, 60), 0.9),
+            ]
+        )(self.page())[0]
         self.assertEqual(len(found), 2)
         self.assertLess(found[0].box.y0, found[1].box.y0)
 
     def test_blocks_level_with_each_other_are_read_right_to_left(self):
-        left = lettering(20, 20, 2, 2, EM)
-        right = lettering(130, 20, 2, 2, EM)
-        found = self.detector(left + right, [around(left, right)])(self.page())
+        found = self.regions(
+            [
+                (detect.TEXT_BUBBLE, Box(20, 20, 60, 60), 0.9),
+                (detect.TEXT_BUBBLE, Box(130, 20, 170, 60), 0.9),
+            ]
+        )(self.page())[0]
         self.assertEqual(len(found), 2)
         self.assertGreater(found[0].box.x0, found[1].box.x0)
 
     def test_a_language_read_the_other_way_puts_them_the_other_way_round(self):
-        left = lettering(20, 20, 2, 2, EM)
-        right = lettering(130, 20, 2, 2, EM)
-        made = self.detector(left + right, [around(left, right)])
-        found = made(self.page(), rtl=False)
+        made = self.regions(
+            [
+                (detect.TEXT_BUBBLE, Box(20, 20, 60, 60), 0.9),
+                (detect.TEXT_BUBBLE, Box(130, 20, 170, 60), 0.9),
+            ]
+        )
+        found = made(self.page(), rtl=False)[0]
         self.assertEqual(len(found), 2)
         self.assertLess(found[0].box.x0, found[1].box.x0)
 
@@ -949,12 +1094,12 @@ class TestKeptPass(unittest.TestCase):
     """
 
     def detector(self):
-        made = detect.Detector.__new__(detect.Detector)
+        """:class:`Letters`, counting how often its net is actually run."""
+        made = detect.Letters.__new__(detect.Letters)
         made._lock = threading.Lock()
         made._last = None
         made.passes = 0
 
-        blocks = np.zeros((1, 1, 6), np.float32)
         seg = np.zeros((1, 1, detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
 
         class Net:
@@ -963,9 +1108,29 @@ class TestKeptPass(unittest.TestCase):
 
             def forward(self, names):
                 made.passes += 1
-                return [blocks, seg]
+                return [seg]
 
         made.net = Net()
+        return made
+
+    def finder(self):
+        """:class:`Regions`, counting the same thing."""
+        made = detect.Regions.__new__(detect.Regions)
+        made._lock = threading.Lock()
+        made._last = None
+        made.passes = 0
+        made.answers = ["labels", "boxes", "scores"]
+
+        class Session:
+            def run(self, wanted, feed):
+                made.passes += 1
+                return [
+                    np.zeros((1, 1), np.int64),
+                    np.zeros((1, 1, 4), np.float32),
+                    np.zeros((1, 1), np.float32),
+                ]
+
+        made.session = Session()
         return made
 
     def page(self, fill: int = 0) -> np.ndarray:
@@ -995,14 +1160,27 @@ class TestKeptPass(unittest.TestCase):
         first = made.run(self.page())
         again = made.run(self.page())
         self.assertIs(first[0], again[0])
-        self.assertIs(first[1], again[1])
-        self.assertEqual(first[2:], again[2:])
+        self.assertEqual(first[1:], again[1:])
 
-    def test_blocks_and_letters_off_one_page_share_the_pass(self):
+    def test_two_masks_off_one_page_share_the_pass(self):
+        # Which is what a change of spread asks for: the same page again at a
+        # different grow, and the pass is the slow half.
         made = self.detector()
-        made(self.page())
-        made.letters(self.page())
+        made(self.page(), grow=2)
+        made(self.page(), grow=8)
         self.assertEqual(made.passes, 1)
+
+    def test_the_region_pass_is_kept_the_same_way(self):
+        made = self.finder()
+        made.run(self.page())
+        made.run(self.page())
+        self.assertEqual(made.passes, 1)
+
+    def test_a_different_page_is_a_new_region_pass(self):
+        made = self.finder()
+        made.run(self.page(0))
+        made.run(self.page(7))
+        self.assertEqual(made.passes, 2)
 
 
 class TestWidestBlank(unittest.TestCase):
@@ -1141,33 +1319,43 @@ class TestDivided(unittest.TestCase):
         self.assertEqual(max(s.x1 for s in shares), self.room.x1)
 
 
-class TestSharing(unittest.TestCase):
-    """Which blocks would be lettered one on top of the other."""
+class TestAssigned(unittest.TestCase):
+    """Which balloon each block was written in.
 
-    def test_the_same_balloon_found_twice_is_one_group(self):
-        rooms = [Box(0, 0, 100, 100), Box(2, 3, 98, 99)]
-        self.assertEqual(bubble.sharing(rooms), [[0, 1]])
+    Replaces the old grouping-by-collision. That existed because a balloon was
+    guessed at from the words outwards and two blocks in one balloon came back
+    with different guesses; the detector now says which balloon is which, so the
+    question is only whether a balloon holds a block.
+    """
 
-    def test_two_real_balloons_are_two_groups(self):
-        rooms = [Box(0, 0, 100, 100), Box(200, 0, 300, 100)]
-        self.assertEqual(bubble.sharing(rooms), [[0], [1]])
+    def test_a_block_inside_a_balloon_is_given_it(self):
+        blocks = [Box(30, 30, 70, 70)]
+        self.assertEqual(bubble.assigned(blocks, [Box(0, 0, 100, 100)]), [0])
 
-    def test_two_answers_that_merely_collide_are_still_one_group(self):
-        # One balloon can come back as a wide rectangle from one of the blocks
-        # in it and a tall one from another, agreeing nowhere near enough to be
-        # called the same balloon and overlapping quite enough to show.
-        rooms = [Box(0, 40, 200, 100), Box(120, 0, 200, 300)]
-        self.assertLess(rooms[0].covers(rooms[1]), 0.5, "these two answers agree")
-        self.assertEqual(bubble.sharing(rooms), [[0, 1]])
+    def test_lettering_in_no_balloon_is_given_none(self):
+        blocks = [Box(300, 300, 340, 340)]
+        self.assertEqual(bubble.assigned(blocks, [Box(0, 0, 100, 100)]), [None])
 
-    def test_a_block_with_no_balloon_is_grouped_by_its_own_box(self):
-        # It is lettered in its box, so that is what a neighbour collides with.
-        rooms = [Box(0, 0, 100, 100), Box(80, 80, 120, 200)]
-        self.assertEqual(bubble.sharing(rooms), [[0, 1]])
+    def test_two_blocks_in_one_balloon_are_both_given_it(self):
+        blocks = [Box(10, 10, 40, 40), Box(50, 50, 90, 90)]
+        self.assertEqual(bubble.assigned(blocks, [Box(0, 0, 100, 100)]), [0, 0])
 
-    def test_blocks_joined_through_a_third_come_back_together(self):
-        rooms = [Box(0, 0, 100, 50), Box(60, 0, 160, 50), Box(120, 0, 220, 50)]
-        self.assertEqual(bubble.sharing(rooms), [[0, 1, 2]])
+    def test_each_block_is_given_the_balloon_it_is_in(self):
+        blocks = [Box(210, 10, 240, 40), Box(10, 10, 40, 40)]
+        balloons = [Box(0, 0, 100, 100), Box(200, 0, 300, 100)]
+        self.assertEqual(bubble.assigned(blocks, balloons), [1, 0])
+
+    def test_the_smaller_of_two_balloons_around_a_block_wins(self):
+        # A shout drawn inside a thought: the words belong to the inner one.
+        blocks = [Box(40, 40, 60, 60)]
+        balloons = [Box(0, 0, 200, 200), Box(30, 30, 70, 70)]
+        self.assertEqual(bubble.assigned(blocks, balloons), [1])
+
+    def test_a_balloon_merely_reaching_over_a_block_does_not_hold_it(self):
+        # A sound effect beside a balloon is in none, and moving it into one
+        # would take the words off the art they belong to.
+        blocks = [Box(80, 80, 160, 160)]
+        self.assertEqual(bubble.assigned(blocks, [Box(0, 0, 100, 100)]), [None])
 
 
 class TestCropped(unittest.TestCase):
@@ -1200,87 +1388,55 @@ class TestWithin(unittest.TestCase):
         self.assertEqual(bubble.within(Box(0, 0, 10, 10), Box(50, 50, 60, 60)), 0.0)
 
 
-class TestBubbles(unittest.TestCase):
+class TestRooms(unittest.TestCase):
     """Sharing one balloon out, which is what keeps two translations apart.
 
-    The flood is stubbed: what is under test is what :func:`bubble.bubbles` does
-    with the answers, and the answers worth testing are the awkward ones.
+    The measuring inside a balloon is stubbed: what is under test is what
+    :func:`bubble.rooms` does with the answers once it has them.
     """
 
     page = np.full((600, 600), 255, np.uint8)
 
-    def bubbles(self, boxes: list[Box], answers: list[Box | None]) -> list[Box | None]:
-        with mock.patch.object(bubble, "around", side_effect=lambda _, box: answers[
-            boxes.index(box)
-        ]):
-            return bubble.bubbles(self.page, boxes)
+    def rooms(
+        self, boxes: list[Box], balloons: list[Box], answers: list[Box | None]
+    ) -> list[Box | None]:
+        def inside(_grey, _balloon, block):
+            return answers[boxes.index(block)]
 
-    def rooms(self, boxes: list[Box], found: list[Box | None]) -> list[Box]:
+        with mock.patch.object(bubble, "inside", side_effect=inside):
+            return bubble.rooms(self.page, boxes, balloons)
+
+    def lettered(self, boxes: list[Box], found: list[Box | None]) -> list[Box]:
         """Where each block is really lettered: its balloon, or its own box."""
         return [box if room is None else room for box, room in zip(boxes, found)]
 
-    def test_one_balloon_answered_two_ways_is_still_shared_out(self):
-        # The answers for one balloon need not agree: it holds a wide short
-        # rectangle and a tall narrow one of nearly the same area, and a pixel
-        # of the flood decides which of them a block comes back with. Asking
-        # whether they agree misses this; asking whether they collide does not.
-        boxes = [Box(150, 200, 190, 400), Box(300, 380, 340, 520)]
-        answers = [Box(100, 180, 500, 420), Box(260, 160, 400, 560)]
-        self.assertLess(answers[0].covers(answers[1]), 0.7, "these two agree")
-
-        found = self.bubbles(boxes, answers)
-        first, second = self.rooms(boxes, found)
-        self.assertEqual(first.covers(second), 0.0, "the two translations overlap")
-
-    def test_a_balloon_holding_a_block_it_has_no_answer_for_is_shared_with_it(self):
-        # `around` fails on plenty of lettering that is in a balloon all the
-        # same. Its neighbour's answer says where it is, and being handed whole
-        # would set that neighbour's translation straight over it.
-        boxes = [Box(200, 200, 240, 300), Box(200, 400, 240, 500)]
-        answers = [None, Box(150, 150, 450, 550)]
-
-        found = self.bubbles(boxes, answers)
-        rooms = self.rooms(boxes, found)
-        self.assertEqual(rooms[0].covers(rooms[1]), 0.0, "the two overlap")
-        self.assertGreaterEqual(
-            bubble.within(rooms[0], boxes[0]), 0.99, "its lettering was left out"
-        )
-
-    def test_a_balloon_is_cut_clear_of_lettering_it_only_reaches_over(self):
-        # A block mostly outside the balloon is not in it — a sound effect
-        # alongside, say. It stays where it is and the balloon gives way.
-        boxes = [Box(300, 100, 340, 280), Box(200, 350, 240, 450)]
-        answers = [None, Box(150, 260, 450, 550)]
-
-        found = self.bubbles(boxes, answers)
-        self.assertIsNone(found[0], "a block was pulled into a balloon it is beside")
-        self.assertEqual(
-            found[1].covers(boxes[0]), 0.0, "the balloon still reaches over it"
-        )
+    def test_a_block_in_no_balloon_keeps_its_own_box(self):
+        boxes = [Box(200, 200, 240, 300)]
+        self.assertEqual(self.rooms(boxes, [], [None]), [None])
 
     def test_two_balloons_that_do_not_touch_are_left_alone(self):
         boxes = [Box(60, 200, 100, 300), Box(400, 200, 440, 300)]
+        balloons = [Box(20, 150, 220, 350), Box(360, 150, 560, 350)]
         answers = [Box(20, 150, 220, 350), Box(360, 150, 560, 350)]
-        self.assertEqual(self.bubbles(boxes, answers), answers)
+        self.assertEqual(self.rooms(boxes, balloons, answers), answers)
 
-    def test_three_blocks_in_one_balloon_get_a_piece_each(self):
+    def test_two_blocks_in_one_balloon_are_cut_a_side_each(self):
+        # Handed the balloon whole they would be lettered one over the other.
+        boxes = [Box(150, 200, 190, 400), Box(300, 200, 340, 400)]
+        balloons = [Box(100, 180, 400, 420)]
+        answers = [Box(100, 180, 400, 420)] * 2
+
+        found = self.rooms(boxes, balloons, answers)
+        first, second = self.lettered(boxes, found)
+        self.assertEqual(first.covers(second), 0.0, "the two translations overlap")
+
+    def test_every_block_keeps_its_own_words_inside_its_share(self):
         boxes = [Box(120, 200, 160, 400), Box(260, 200, 300, 400), Box(400, 200, 440, 400)]
+        balloons = [Box(100, 180, 460, 420)]
         answers = [Box(100, 180, 460, 420)] * 3
 
-        rooms = self.rooms(boxes, self.bubbles(boxes, answers))
-        for one in range(len(rooms)):
-            for other in range(one + 1, len(rooms)):
-                self.assertEqual(rooms[one].covers(rooms[other]), 0.0)
-
-    def test_no_block_is_handed_a_piece_of_a_balloon_it_is_not_in(self):
-        # Two balloons whose answers touch: two blocks in one and a third, on
-        # its own, in the other. Cutting a single balloon up between all three
-        # hands that third one a piece of a balloon its words are nowhere near —
-        # a translation set the width of the page from the Japanese it is for.
-        boxes = [Box(120, 300, 160, 400), Box(200, 300, 240, 400), Box(430, 150, 470, 250)]
-        answers = [Box(100, 280, 420, 420), Box(100, 280, 420, 420), Box(400, 120, 560, 300)]
-
-        rooms = self.rooms(boxes, self.bubbles(boxes, answers))
+        found = self.rooms(boxes, balloons, answers)
+        rooms = self.lettered(boxes, found)
         for at, room in enumerate(rooms):
             self.assertGreaterEqual(
                 bubble.within(room, boxes[at]), 0.99, f"block {at} is not in its room"
@@ -1288,6 +1444,37 @@ class TestBubbles(unittest.TestCase):
         for one in range(len(rooms)):
             for other in range(one + 1, len(rooms)):
                 self.assertEqual(rooms[one].covers(rooms[other]), 0.0)
+
+    def test_a_block_in_another_balloon_is_not_cut_against_this_one(self):
+        # Two balloons: two blocks in the first and one on its own in the
+        # second. Cutting one balloon up between all three hands that third one
+        # a piece of a balloon its words are nowhere near.
+        boxes = [Box(120, 300, 160, 400), Box(200, 300, 240, 400), Box(430, 150, 470, 250)]
+        balloons = [Box(100, 280, 420, 420), Box(400, 120, 560, 300)]
+        answers = [Box(100, 280, 420, 420), Box(100, 280, 420, 420), Box(400, 120, 560, 300)]
+
+        found = self.rooms(boxes, balloons, answers)
+        # The odd one out keeps the whole of its own balloon. Cutting the first
+        # balloon up between all three would hand it a piece of a balloon its
+        # words are nowhere near.
+        self.assertEqual(found[2], answers[2], "a balloon of its own was cut up")
+        # The two that do share one are still parted from each other.
+        first, second = self.lettered(boxes, found)[:2]
+        self.assertEqual(first.covers(second), 0.0)
+        for at, room in enumerate(self.lettered(boxes, found)):
+            self.assertGreaterEqual(bubble.within(room, boxes[at]), 0.99)
+
+    def test_a_share_that_no_longer_holds_its_block_is_refused(self):
+        # Which only happens where the blocks themselves overlap, and there the
+        # box the block came in with is the honest answer.
+        boxes = [Box(150, 200, 400, 400), Box(160, 210, 410, 410)]
+        balloons = [Box(100, 180, 460, 440)]
+        answers = [Box(100, 180, 460, 440)] * 2
+
+        found = self.rooms(boxes, balloons, answers)
+        for at, room in enumerate(found):
+            if room is not None:
+                self.assertGreaterEqual(bubble.within(room, boxes[at]), 0.85)
 
 
 def reply(content: str = "", thinking: str = "") -> dict:
@@ -1800,54 +1987,79 @@ class TestRead(unittest.TestCase):
         self.assertEqual(stood, ["ko"], "torch was loaded to read a Korean page")
 
 
+def finding(blocks: list[Block], balloons: list[Box]):
+    """A region detector that always answers with these."""
+
+    class Stub:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __call__(self, image, rtl: bool = True):
+            return list(blocks), list(balloons)
+
+    return Stub
+
+
 class TestApi(unittest.TestCase):
     def test_detect_answers_with_the_boxes(self):
-        with mock.patch.object(server, "Detector", StubDetector):
-            response = client().post("/api/detect", data=payload(page()))
+        with mock.patch.object(server, "Regions", StubRegions):
+            response = client().post("/api/detect", data=payload(stub_balloon()))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json,
-            {
-                "width": 200,
-                "height": 140,
-                "regions": [
-                    # Flat tone from edge to edge: there is no balloon to find,
-                    # and saying so is the answer that leaves the box alone.
-                    {"box": [10, 10, 60, 40], "confidence": 0.912, "bubble": None}
-                ],
-            },
-        )
+        self.assertEqual(response.json["width"], 300)
+        [region] = response.json["regions"]
+        self.assertEqual(region["box"], [10, 10, 60, 40])
+        self.assertEqual(region["confidence"], 0.912)
 
     def test_detect_answers_with_the_balloon_a_block_is_written_in(self):
-        with mock.patch.object(server, "Detector", StubDetector):
+        with mock.patch.object(server, "Regions", StubRegions):
             response = client().post("/api/detect", data=payload(stub_balloon()))
         [region] = response.json["regions"]
         self.assertIsNotNone(region["bubble"], "the balloon was not found")
+        self.assertGreater(
+            region["bubble"][2] - region["bubble"][0],
+            60 - 10,
+            "the room is no wider than the words",
+        )
+
+    def test_detect_leaves_lettering_in_no_balloon_in_its_own_box(self):
+        # A sound effect over artwork: the detector found the words and no
+        # balloon around them, and there is nothing to open the line out into.
+        alone = finding([StubRegions.found], [])
+        with mock.patch.object(server, "Regions", alone):
+            response = client().post("/api/detect", data=payload(stub_balloon()))
+        [region] = response.json["regions"]
+        self.assertIsNone(region["bubble"])
 
     def test_bubbles_answers_with_one_balloon_per_box_in_order(self):
         boxes = [[285, 100, 315, 260], [0, 0, 30, 30]]
-        response = client().post(
-            "/api/bubbles", data=payload(ballooned(), boxes=boxes)
-        )
+        drawn = finding([], [Box(120, 60, 480, 300)])
+        with mock.patch.object(server, "Regions", drawn):
+            response = client().post(
+                "/api/bubbles", data=payload(ballooned(), boxes=boxes)
+            )
         self.assertEqual(response.status_code, 200)
         first, second = response.json["regions"]
         self.assertEqual(first["box"], boxes[0])
         self.assertGreater(first["bubble"][2] - first["bubble"][0], 100)
         self.assertIsNone(second["bubble"], "the corner of the page is no balloon")
 
-    def test_bubbles_stands_no_model_up(self):
-        # Nothing here needs the detector, and a caller that only wants balloons
-        # should not pay ~95 MB to find that out.
-        with mock.patch.object(server, "Detector", side_effect=AssertionError):
+    def test_bubbles_finds_the_balloons_itself(self):
+        # It did not always: a balloon used to be flooded out from the box, so
+        # this was the one call on an image that stood no model up. A balloon is
+        # now something a model finds, and the boxes sent in are only asked
+        # which of them they hold.
+        with mock.patch.object(server, "Regions", side_effect=AssertionError):
             response = client().post(
                 "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 315, 260]])
             )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 500)
 
     def test_bubbles_clips_a_box_that_runs_off_the_page(self):
-        response = client().post(
-            "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 900, 900]])
-        )
+        drawn = finding([], [Box(120, 60, 480, 300)])
+        with mock.patch.object(server, "Regions", drawn):
+            response = client().post(
+                "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 900, 900]])
+            )
         self.assertEqual(response.json["regions"][0]["box"], [285, 100, 600, 800])
 
     def test_bubbles_needs_boxes(self):
@@ -1856,19 +2068,19 @@ class TestApi(unittest.TestCase):
         self.assertIn("boxes", response.json["error"])
 
     def test_detect_needs_an_image(self):
-        with mock.patch.object(server, "Detector", StubDetector):
+        with mock.patch.object(server, "Regions", StubRegions):
             response = client().post("/api/detect", data={})
         self.assertEqual(response.status_code, 400)
         self.assertIn("image", response.json["error"])
 
     def test_detect_rejects_something_that_is_not_an_image(self):
         body = {"image": (io.BytesIO(b"not a picture"), "page.png")}
-        with mock.patch.object(server, "Detector", StubDetector):
+        with mock.patch.object(server, "Regions", StubRegions):
             response = client().post("/api/detect", data=body)
         self.assertEqual(response.status_code, 400)
 
     def test_letters_answers_with_a_mask_of_the_ink(self):
-        with mock.patch.object(server, "Detector", StubDetector):
+        with mock.patch.object(server, "Letters", StubLetters):
             response = client().post("/api/letters", data=payload(page()))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "image/png")

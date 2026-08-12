@@ -67,10 +67,13 @@ export type Stage =
 export type BoardMode = 'inspect' | 'mask' | 'translate'
 
 /**
- * What goes where the lettering was. `art` fills it in from the page around it;
+ * What goes where the lettering was. `art` fills it in from the page around it
+ * with a LaMa trained on manga, so a screentone or a hatched edge carries on
+ * through; `telea` is the same idea without a model, which smears anything
+ * drawn and is kept for comparison and for an API built without the weights;
  * `white` paints it flat, which is only right where the ground was white.
  */
-export type Fill = 'art' | 'white'
+export type Fill = 'art' | 'telea' | 'white'
 
 /** One translated line, set where the original was. */
 export type Lettering = {

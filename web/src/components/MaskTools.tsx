@@ -69,7 +69,7 @@ export function MaskTools({
 
       <Field
         label="Hide under"
-        title="What goes where the lettering was: the page around it, filled in, or flat white"
+        title="What goes where the lettering was: the page around it filled in by a model, the same without one, or flat white"
       >
         <Segmented
           label="What to hide the lettering under"
@@ -77,6 +77,7 @@ export function MaskTools({
           onChange={onFill}
           options={[
             { value: 'art', label: 'The art' },
+            { value: 'telea', label: 'No model' },
             { value: 'white', label: 'White' },
           ]}
         />

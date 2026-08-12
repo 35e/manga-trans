@@ -13,7 +13,8 @@ running container ignores edits until it is rebuilt — mount the working copy
 instead when iterating.
 
 ```bash
-podman build -t manga-trans api                       # ~2 GB, bakes both models in
+podman compose up --build                             # both halves, localhost:8080
+podman build -t manga-trans api                       # ~2.5 GB, bakes every model in
 podman run --rm --init -p 8000:8000 manga-trans       # http://localhost:8000/api
 
 # Tests, with the working copy mounted so no rebuild is needed:
@@ -26,10 +27,12 @@ podman run --rm --entrypoint python -w /app \
     manga-trans -m unittest tests.test_mangatrans.TestApi.test_clean_hides_the_boxes
 ```
 
-`docker` takes the same commands. Tests stub the detector and reader
-(`StubDetector`/`StubReader`, patched onto `server.Detector`/`server.Reader`) and
-`mock.patch.object(ollama, "ask", ...)` for translation, so they need no model,
-no network and no torch.
+`docker` takes the same commands. Tests stub every model — `StubRegions`,
+`StubLetters` and `StubReader` patched onto `server.Regions`/`server.Letters`/
+`server.Reader`, `StubLama` patched onto `inpaint.Lama` for the whole module (a
+patch around building the client would lift before the request that reaches for
+it), and `mock.patch.object(ollama, "ask", ...)` for translation — so they need
+no model, no network and no torch.
 
 Front end, from `web/`:
 
@@ -55,35 +58,51 @@ The API deliberately never renders end-to-end. Detection is imperfect, so
 text) are separate calls taking boxes back in, which is what lets the dashboard
 show the detection, have it corrected by hand, and only then act on it.
 
+Under `docker-compose.yml` the two are served on **one origin**: nginx hands out
+the built dashboard and proxies `/api` through to the API container, so
+`VITE_API_URL` builds as `''` and no browser ever makes a cross-origin call.
+`MANGA_TRANS_ORIGIN` and the CORS headers still exist for anything talking to
+port 8000 directly. Keep `lib/api.ts`'s fallback (`?? 'http://localhost:8000'`)
+nullish-coalescing rather than `||`, or the empty base collapses back to the
+absolute one and same-origin stops working. nginx needs `client_max_body_size`
+raised past its 1 MB default, and its proxy timeouts raised past 60 s: a page and
+its mask together run to tens of megabytes, and reading one takes seconds.
+
 ### API (`api/mangatrans/`)
 
 `server.py` is the whole HTTP surface; the rest are libraries it composes.
 Models load lazily behind a lock on first use and are shared thereafter — an API
 only ever asked to detect never stands the OCR reader (and torch) up at all.
-`Detector` and `Reader` each hold their own lock because neither an OpenCV net
-nor torch generation is reentrant.
+`Regions`, `Letters`, `Reader` and `Lama` each hold their own lock because
+neither an OpenCV net, an onnxruntime session nor torch generation is reentrant.
 
-**`Detector.run` keeps the last page's pass** behind that same lock. The forward
-pass is ~2.7 s and everything downstream of it is under a millisecond, so the
-dashboard's ordinary flow — `/api/detect` then `/api/letters`, then `/api/letters`
-again on every change of spread — went from two-plus passes a page to one. Keep
-any new work that needs the segmentation on this path rather than adding a pass.
+**`Regions.run` and `Letters.run` each keep the last page's pass** behind that
+same lock. The ink pass is ~2.5 s and everything downstream of it is under a
+millisecond, so the dashboard's ordinary flow — `/api/detect` then
+`/api/letters`, then `/api/letters` again on every change of spread — is one pass
+of each rather than several. Keep any new work that needs the segmentation on
+this path rather than adding a pass.
 
-- `detect.py` — comic-text-detector on OpenCV's ONNX backend. Two heads off one
-  pass: block boxes, and the per-pixel segmentation mask behind `/api/letters`.
-  Fetches its own weights on first use.
-- `split.py` — a block holding two overlapping balloons, cut back into one block
-  each. Pure numpy/OpenCV on the segmentation mask, which `Detector.__call__`
-  already has from the same pass. Thresholds are in characters, not pixels; see
-  the note on the deferred import below.
-- `bubble.py` — the balloon a block was written in, as the largest rectangle
-  inside it *around that block*. Pure OpenCV on the greyscale page, no model:
-  flood the light ground from the block (painted in first, or vertical Japanese
-  cuts the balloon in two), fill its holes, erode a margin, then search out from
-  the block on a 128-pixel grid (`holding`). Every answer is checked and `None`
-  is a real answer. `bubbles()` then cuts overlapping answers back to a cell each
-  when several blocks turn out to share a balloon. `/api/detect` includes it
-  because it is free there.
+- `detect.py` — two models, for two different questions.
+  `Regions` is comic-text-and-bubble-detector, an RT-DETRv2 on onnxruntime:
+  one pass, three classes (`bubble`, `text_bubble`, `text_free`), ~0.2 s. Its
+  export carries RT-DETR's own postprocessing, so it answers with `labels`,
+  `boxes` and `scores` — already corner-to-corner and already in the page's
+  pixels — rather than logits to threshold. It takes `orig_target_sizes` as
+  **(width, height)**; the other way round returns the same balloons transposed.
+  `Letters` is comic-text-detector, kept for its segmentation head *alone* — the
+  per-pixel ink map behind `/api/letters`, which is what lets a clean take the
+  words off the art. Its block head is not used.
+- `split.py` — **not in the pipeline.** Kept, with its tests, until real chapters
+  confirm the region detector never runs two balloons together; see its docstring.
+- `bubble.py` — the room inside the balloon a block was written in, as the
+  largest rectangle in it *around that block*. Pure OpenCV on the greyscale page,
+  no model of its own: threshold inside the balloon the detector found, paint the
+  block in (or vertical Japanese cuts the ground in two), fill the holes, erode a
+  margin, then search out from the block on a 128-pixel grid (`holding`). `None`
+  is a real answer. `rooms()` then cuts one balloon into a cell per block where
+  several blocks share it. `/api/detect` includes it because it is nearly free
+  there.
 - `languages.py` — the one table of what a page can be written in: which reader
   reads it, which way round it is read, whether its script stacks into columns
   and whether its words are spaced. Both ends look languages up here, the
@@ -225,9 +244,12 @@ at the end of a folder run, otherwise leaves a block put back by hand or one
 drawn where the detector missed one cleaning out the whole square that was drawn.
 
 **`fill` defaults differ by endpoint**: `art` for `/api/clean`, `white` for
-`/api/render`. `inpaint.fill` grows the hole by `EDGE` for *sampling* only, and
-still paints just what was marked — the soft rim around lettering must not
-become the material the fill is made of.
+`/api/render`. `art` is LaMa, `telea` is the same idea without a model, and
+`art` falls back to `telea` when LaMa's weights cannot be loaded — `server.optionally`
+remembers the miss rather than retrying per request, because it is a missing file
+rather than anything that might be there next time. The painter is handed *in* to
+`render.hidden`, the same way the detector and the reader are, so standing it up
+stays the caller's business.
 
 **A folder run goes one page at a time, and the page in hand is the page named.**
 `useBatch` sends one page through `App.pipeline` and waits. Sending five at once
@@ -262,99 +284,93 @@ is a different tracing, not the same one again. That hook writes its ref before
 its state so a tracing can be marked into a mask the moment it arrives.
 
 **Dockerfile layer order is load-bearing.** Only `__init__.py`, `geometry.py`,
-`languages.py`, `detect.py` and `read.py` are copied before the model prefetch
-step; editing any of those five invalidates ~550 MB of baked weights and forces a
-re-download on the next build. Everything else is copied after. `languages.py` is
-in that set because `read.ensure_readers` needs it to know what to fetch, which
-is honest enough — adding a language is adding weights.
+`languages.py`, `detect.py`, `read.py` and `inpaint.py` are copied before the
+model prefetch step; editing any of those six invalidates ~810 MB of baked
+weights and forces a re-download on the next build. Everything else is copied
+after. `languages.py` is in that set because `read.ensure_readers` needs it to
+know what to fetch, and `inpaint.py` because it fetches LaMa's — both honest
+enough, since adding a language or a fill is adding weights.
 
-This is why `detect.py` imports `split` **inside** `Detector.__call__` rather
-than at the top: `split.py` is copied after the prefetch, so a top-level import
-would break the build, and moving `split.py` before the prefetch would make every
-threshold tweak cost 550 MB. Keep that import deferred.
+Keep the heavy imports deferred to first use for the same reason they always
+were: `onnxruntime` inside `Regions.__init__` and `Lama.__init__`, torch inside
+`Reader.load()`, `rapidocr` inside `Ppocr.load()`, `huggingface_hub` inside the
+`ensure_*` functions. A top-level import of any of them puts the cost on every
+request, including the ones that never touch that model.
 
-**A merged block is wrong for everything downstream**, which is why splitting
-happens in `Detector.__call__` and not in the dashboard: the block is read as one
-string, translated as one line, and lettered into one balloon. `split.pieces`
-hands a block back **unchanged** when it does not come apart — it must never
-re-box a block it did not cut, or every block on the page would shift.
+**Debian's package index stalls in a container that carries small files fine** —
+a VM on a Mac, most proxies — because it is ~12 MB in one response, and apt
+reports the stall as a mirror failure. `/etc/apt/apt.conf.d/99robust` in the
+Dockerfile sets retries *and* turns HTTP pipelining off; retries alone do not fix
+it, since the retry hits the same stall. `detect.ensure_model` retries its 95 MB
+GitHub download for the same reason, and waits between tries: five attempts in a
+row all land in the same bad few seconds and buy nothing.
 
-**The split threshold depends on what the cut stands through**, and that is what
-makes a gap this small safe. A cut crossing several lines at once (`GAP`, 0.8
-characters) is a strong signal — every line has to fall blank in the same place
-at once. A cut along a lone line (`GAP_ALONE`, 1.5) has only that line's own
-character gaps to go on, and a column of small kana and punctuation reaches 1.1.
-`LINES` (2.5) is which of the two applies. A single threshold cannot do this: at
-1.6 it misses balloons a character apart, and anything below ~1.1 shatters that
-punctuation column. Tuned by grid search over 21 rendered cases — the binding
-constraint at the low end is a balloon whose own lines are set far apart, which
-breaks below 0.8. Err shy: a merge can be split by hand in the dashboard, but
-there is no way to put a wrongly-cut block back together.
+**A merged block is wrong for everything downstream** — it is read as one string,
+translated as one line, and lettered into one balloon. That is what `split.py`
+was for, and what boxing by *region* rather than by lettering now prevents: the
+model is asked where the balloons are at the same time as where the words are, so
+two balloons are two answers. If real pages show it merging after all, the fix
+belongs in the detector or back in `split.py`, not in the dashboard.
 
-**A narrower gap is still cut on when the two sides are staggered**
-(`split.staggered`, `STAGGER`) — shifted the same way at *both* ends. Requiring
-both is the whole of it: "the tops do not line up" on its own is worse than
-useless, because a balloon of two columns centred against each other is out by
-3.0 characters where two genuinely separate balloons are out by 1.0. Nested
-means one block (a column that stopped early, columns centred); shifted the same
-way at both ends means two. Do not weaken this to a start-only test.
+**Order in `Regions.__call__` is load-bearing**: decode, then split the classes,
+then `suppressed`, then pad (`PAD`), then sort. Padding before `suppressed` could
+make two neighbours look like one; sorting before padding is harmless but sorting
+before the classes are split is not, since balloons and blocks are ordered
+separately and only the blocks are read.
 
-**Order in `Detector.__call__` is load-bearing**: split on tight boxes and the
-ungrown mask, then `suppressed`, then pad (`PAD`, a quarter of a character), then
-sort. Padding before the split would close the gaps it measures; padding before
-`suppressed` could make two neighbours look like one; sorting first would leave
-the halves of a cut block out of reading order.
-
-**Splitting a block has two consequences that must be handled together with it**,
-and both show up as translations lettered on top of each other:
-
-- *Duplicates.* NMS runs on what the head said, before anything is cut, so it
-  never sees the pieces. The head often draws a box round two balloons and
-  another round one of them — under the NMS threshold, so both survive — and
-  cutting the first makes an exact duplicate of the second. `detect.suppressed`
-  drops the less sure of any pair covering the same lettering.
-- *A shared balloon.* Two blocks inside one balloon each ask `bubble.around`
-  what room they are in and are answered with overlapping pieces of that one
-  balloon. `bubble.bubbles` therefore gathers them (`bubble.sharing`) and
-  `bubble.divided` cuts the page into a cell apiece, which each answer is then
-  cropped to. That division **recurses** — cut at the widest blank on whichever
-  axis it is widest, then each side again — because blocks set two across and
-  two down are not in a row, and one line of cuts gives the two on the right a
-  left and a right half of a balloon they are stacked inside.
+**Duplicates still have to be dropped.** RT-DETR matches one query to one object
+and needs no NMS, but it does sometimes put two boxes over the same lettering.
+`detect.suppressed` drops the less sure of any pair covering the same words, and
+runs per class — a balloon and the text filling it cover each other almost
+entirely and are not duplicates of one another.
 
 **A room always holds the block it is for.** `bubble.holding` searches out from
 the block rather than for the largest rectangle in the balloon, so an answer is
-the words plus whatever room is around them and never a rectangle somewhere else
-on the page. Without that, the largest rectangle is in the wrong place as often
-as it is in the right one: a balloon with a tail, one drawn round two lines with
-the words in one of them, one whose outline a scan has broken into the panel
-beside it — measured, that last one answers with a rectangle holding *none* of
-the block it was asked about. Everything downstream leans on this: the sharing
-out below only crops, `lines.roomFor` letters into whatever comes back, and there
-is nothing else on the page saying where the words belong.
+the words plus whatever room is around them and never a rectangle somewhere else.
+Without that, the largest rectangle is in the wrong part of the balloon as often
+as the right one: a balloon with a tail, or one drawn round two lines with the
+words in one of them. Everything downstream leans on this — the sharing out below
+only crops, `lines.roomFor` letters into whatever comes back, and there is
+nothing else on the page saying where the words belong.
 
-**`sharing` gathers blocks whose answers collide, not blocks whose answers
-agree**, and the difference is the whole of it. `around` does not answer with the
-same rectangle twice for one balloon: an irregular balloon holds a wide short
-rectangle and a tall narrow one of nearly the same area, and which one a block
-comes back with depends on where in it that block sits — measured, two blocks in
-one balloon come back agreeing 0.54, where the old test wanted 0.7. Anything
-keyed on agreement leaves those two lettered on top of each other. `sharing` is
-also given the box of any block `around` answered `None` for, because that box is
-where the block is lettered and so is what a neighbour's balloon collides with;
-and it gathers **transitively**, since A over B and B over C is one balloon
-holding three blocks however little A and C touch.
+**The balloon's own box is not the room.** A balloon is an oval and a line set to
+the corners of its bounding box runs outside the outline, so `bubble.inside`
+thresholds the interior *within* the detected box and measures the largest
+rectangle in that. The block is painted in first (`shrunk`), or a column of
+Japanese down the middle cuts the ground in two and the answer is the gap beside
+the words. Light ground first, then inverted, for a shout set white on black.
 
-Every block in such a group keeps *its own* answer, cropped to its own cell —
-never a share of a neighbour's. Handing the group one balloon and cutting that up
-is what puts a translation on the far side of the page from its Japanese: the
-odd one out is in a different balloon, and its piece of this one is nowhere near
-its words. Only a block `around` answered `None` for borrows (`bubble.borrowed`),
-and only from an answer that holds it (`HELD`) — a balloon merely reaching over a
-sound effect beside it is not the room that was written in, and refusing leaves
-the block exactly where it already was. A cropped answer that no longer holds its
-block is refused for the same reason; that only happens where the blocks
-themselves overlap, and there the box is the honest answer.
+**Blocks are grouped by the balloon they are in, not by whether their answers
+collide.** That collision test existed because a balloon was flooded out from the
+words and one balloon came back as a different rectangle from each block in it —
+measured, two blocks in one balloon agreed only 0.54. The detector now says which
+balloon is which, so `bubble.assigned` asks the far simpler question: which
+balloon holds this block (`HELD`), smallest first so a shout drawn inside a
+thought wins over the one around it. A block no balloon holds keeps its own box.
+
+Where several blocks share one balloon, `bubble.divided` cuts a cell apiece and
+each answer is cropped to its own. That division **recurses** — cut at the widest
+blank on whichever axis it is widest, then each side again — because blocks set
+two across and two down are not in a row, and one line of cuts gives the two on
+the right a left and a right half of a balloon they are stacked inside. Every
+block keeps *its own* answer cropped, never a share of a neighbour's: handing the
+group one balloon and cutting that up puts a translation on the far side of the
+page from its Japanese. A cropped answer that no longer holds its block is
+refused; that only happens where the blocks themselves overlap, and there the box
+is the honest answer.
+
+**Cleaning is LaMa, and the seam is not.** `inpaint.fill` grows the hole by `EDGE`
+for *sampling* only and then alpha-composites the result back through the
+caller's ungrown, greyscale mask, so a soft brushed edge blends rather than steps
+and the rim of half-ink just outside a letter is never read as art. That is
+independent of which painter made the pixels, and it stays that way. A page
+marked all over short-circuits to white **before** the painter: there is nothing
+left to make a fill out of, and a model handed a page that is entirely hole does
+not say so, it invents one. LaMa is run on crops around each mark rather than on
+the page (`inpaint.patches`) — a page is mostly art that is staying — and marks
+closer than `APART` go through together, or the context around one letter holds
+the next as material to copy it from. Its input must be a whole multiple of
+`BLOCK`; a size that is not fails inside the graph rather than being padded.
 
 **An answer from `/api/bubbles` depends on which other boxes were asked about**,
 so anything whose answer will be lettered with must send *every* box on the page,

@@ -1,5 +1,13 @@
 """Cutting a block the detector ran together back into one block per bubble.
 
+**Not in the pipeline any more.** The detector boxes by region rather than by
+lettering, so it answers with one block per balloon and there is nothing left to
+cut apart; :meth:`mangatrans.detect.Regions.__call__` does not call this. It is
+kept, with its tests, until enough real chapters have been through the new
+detector to say it never runs two balloons together — the thresholds below were
+tuned by grid search over 21 rendered cases and are not cheap to work out again.
+Delete it once that is settled.
+
 Two balloons that overlap are often boxed as one. That is worse than it looks:
 the block is read as one string, so two speakers arrive at the translator as a
 single line, and the lettering that comes back is set into one balloon.

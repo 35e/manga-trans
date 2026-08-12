@@ -25,10 +25,12 @@ INSET = 0.06  # margin inside the box, of its shorter side
 # What goes where the lettering was. ART fills it in from the page around it, so
 # what the words were drawn over carries on through them; WHITE_OUT paints it
 # flat, which is right when the ground has to be clear for new lettering and
-# wrong almost everywhere else.
+# wrong almost everywhere else. TELEA is ART done without a model — kept because
+# it needs no weights, and because a fill worth comparing against is worth having.
 ART = "art"
+TELEA = "telea"
 WHITE_OUT = "white"
-FILLS = (ART, WHITE_OUT)
+FILLS = (ART, TELEA, WHITE_OUT)
 
 
 @dataclass(frozen=True)
@@ -83,15 +85,22 @@ def cover_mask(image: Image.Image, mask: Image.Image) -> Image.Image:
     return out
 
 
-def hidden(image: Image.Image, marks: Image.Image, fill: str = ART) -> Image.Image:
+def hidden(
+    image: Image.Image, marks: Image.Image, fill: str = ART, painter=None
+) -> Image.Image:
     """A copy of the page with everything ``marks`` marks taken out of it.
 
     ``fill`` is what goes in its place: :data:`ART`, made out of the page around
-    the mark, or :data:`WHITE_OUT`, flat white.
+    the mark by LaMa; :data:`TELEA`, the same idea without a model; or
+    :data:`WHITE_OUT`, flat white.
+
+    ``painter`` is the loaded LaMa, passed in rather than reached for so that
+    standing it up stays the caller's business — the same way the detector and
+    the reader are handed in. Without one, :data:`ART` is Telea.
     """
     if fill == WHITE_OUT:
         return cover_mask(image, marks)
-    return inpaint.fill(image, marks)
+    return inpaint.fill(image, marks, painter if fill == ART else None)
 
 
 # --- Lettering ------------------------------------------------------------
@@ -188,13 +197,15 @@ def overlay(
     regions: list[Region],
     font_path: str | None = None,
     fill: str = WHITE_OUT,
+    painter=None,
 ) -> Image.Image:
     """A copy of the page with every region hidden and its text set in it.
 
     White by default, the other way round from :func:`hidden`: a region here is a
     rectangle with black lettering set in it, and that wants a clear ground.
     """
-    out = hidden(image, marked(image.size, [region.box for region in regions]), fill)
+    marks = marked(image.size, [region.box for region in regions])
+    out = hidden(image, marks, fill, painter)
     draw = ImageDraw.Draw(out)
     for region in regions:
         text = region.text.strip()

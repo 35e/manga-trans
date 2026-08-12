@@ -17,8 +17,8 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
 
-from . import bubble, languages, ollama, render
-from .detect import GROW, GROW_MAX, Detector
+from . import bubble, inpaint, languages, ollama, render
+from .detect import GROW, GROW_MAX, Letters, Regions
 from .geometry import Box
 from .read import Reader
 
@@ -45,6 +45,29 @@ def lazily(make: Callable[[], T]) -> Callable[[], T]:
             return held[0]
 
     return get
+
+
+def optionally(make: Callable[[], T]) -> Callable[[], T | None]:
+    """:func:`lazily`, for something the API can do without.
+
+    LaMa is the best fill there is and it is not the only one, so an image built
+    without its weights cleans with Telea rather than answering 500. Tried once:
+    a miss is remembered, since it is a missing file rather than anything that
+    might be there next time.
+    """
+    held: list[T | None] = []
+    get = lazily(make)
+
+    def maybe() -> T | None:
+        if not held:
+            try:
+                held.append(get())
+            except Exception as exc:  # noqa: BLE001 — any failure means "do without"
+                print(f"mangatrans: cleaning with telea instead of lama: {exc}")
+                held.append(None)
+        return held[0]
+
+    return maybe
 
 
 # --- Reading the request --------------------------------------------------
@@ -162,14 +185,20 @@ def png(image: Image.Image):
 
 
 def create_app(
-    font: str | None = None, model: str | None = None, ocr_model: str | None = None
+    font: str | None = None,
+    model: str | None = None,
+    ocr_model: str | None = None,
+    regions_model: str | None = None,
+    lama_model: str | None = None,
 ) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD
     font = font or os.environ.get("MANGA_TRANS_FONT")
 
-    detector = lazily(lambda: Detector(model))
+    regions_of = lazily(lambda: Regions(regions_model))
+    letters_of = lazily(lambda: Letters(model))
     reader = lazily(lambda: Reader(ocr_model))
+    painter = optionally(lambda: inpaint.Lama(lama_model))
 
     @app.errorhandler(Exception)
     def on_error(exc):
@@ -256,8 +285,8 @@ def create_app(
         """
         image = page()
         pixels = np.array(image)
-        blocks = detector()(pixels, language_in().rtl)
-        balloons = bubble.bubbles(pixels, [block.box for block in blocks])
+        blocks, balloons = regions_of()(pixels, language_in().rtl)
+        rooms = bubble.rooms(pixels, [block.box for block in blocks], balloons)
         return jsonify(
             width=image.width,
             height=image.height,
@@ -265,9 +294,9 @@ def create_app(
                 {
                     "box": block.box.as_list(),
                     "confidence": round(block.confidence, 3),
-                    "bubble": balloon.as_list() if balloon else None,
+                    "bubble": room.as_list() if room else None,
                 }
-                for block, balloon in zip(blocks, balloons)
+                for block, room in zip(blocks, rooms)
             ],
         )
 
@@ -281,17 +310,22 @@ def create_app(
         a balloon is a shape on the page, and finding one reads nothing.
 
         `bubble` is null where no balloon could be made out — lettering over
-        artwork is in none — and the caller should keep the box it has. No model
-        is involved, so this is the one call on an image that never stands the
-        detector up.
+        artwork is in none — and the caller should keep the box it has.
+
+        The answer depends on which *other* boxes were asked about, because two
+        blocks in one balloon are cut a side each rather than both handed the
+        whole of it. So anything whose answer will be lettered with has to send
+        every box on the page, not only the ones that changed.
         """
         image = page()
+        pixels = np.array(image)
         boxes = boxes_in(image)
-        found = bubble.bubbles(np.array(image), boxes)
+        _, balloons = regions_of()(pixels)
+        found = bubble.rooms(pixels, boxes, balloons)
         return jsonify(
             regions=[
-                {"box": box.as_list(), "bubble": balloon.as_list() if balloon else None}
-                for box, balloon in zip(boxes, found)
+                {"box": box.as_list(), "bubble": room.as_list() if room else None}
+                for box, room in zip(boxes, found)
             ]
         )
 
@@ -305,7 +339,7 @@ def create_app(
         """
         image = page()
         grow = number("grow", GROW, 0, GROW_MAX)
-        mask = Image.fromarray(detector().letters(np.array(image), grow), mode="L")
+        mask = Image.fromarray(letters_of()(np.array(image), grow), mode="L")
         out = Image.new("RGBA", mask.size, (255, 255, 255, 0))
         out.putalpha(mask)
         return png(out)
@@ -330,7 +364,8 @@ def create_app(
         corner of it".
 
         What goes in its place is `fill`: by default the art around the mark,
-        carried inwards; send `fill=white` to paint it flat instead.
+        carried inwards by a LaMa trained on manga; `fill=telea` for the same
+        without a model, and `fill=white` to paint it flat instead.
         """
         image = page()
         mask = mask_in(image)
@@ -338,7 +373,8 @@ def create_app(
         if mask is None and not boxes:
             raise BadRequest("nothing to hide: send 'boxes', a 'mask', or both")
 
-        return png(render.hidden(image, render.marked(image.size, boxes, mask), fill_in()))
+        marks = render.marked(image.size, boxes, mask)
+        return png(render.hidden(image, marks, fill_in(), painter()))
 
     @app.post("/api/render")
     def overlay():
@@ -355,6 +391,10 @@ def create_app(
             )
             for region in sent("regions")
         ]
-        return png(render.overlay(image, regions, font, fill_in(render.WHITE_OUT)))
+        return png(
+            render.overlay(
+                image, regions, font, fill_in(render.WHITE_OUT), painter()
+            )
+        )
 
     return app

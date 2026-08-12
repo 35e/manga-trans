@@ -1,6 +1,14 @@
 # CPU-only image for the manga-trans API.
 FROM python:3.12-slim-bookworm
 
+# Debian's package index is ~12 MB in one response, and a container network that
+# carries small files fine — a VM on a Mac, most proxies — drops that one part
+# way through, which apt reports as a mirror failure rather than a stall. Retries
+# alone do not fix it; the pipelining has to go too, or the retry hits the same
+# stall. Cheap insurance on a build that otherwise cannot start.
+RUN printf 'Acquire::Retries "8";\nAcquire::http::Pipeline-Depth "0";\nAcquire::http::No-Cache "true";\n' \
+        > /etc/apt/apt.conf.d/99robust
+
 # Runtime libs for opencv-python-headless, plus a font: the slim image ships
 # none at all, and the overlay needs one to letter with.
 RUN apt-get update \
@@ -43,19 +51,21 @@ RUN useradd --uid 10001 --gid 0 --create-home --home-dir /home/appuser appuser \
 
 USER 10001
 
-# Bake every model into the image so a run needs no network: the detector
-# (~95 MB), manga-ocr (~450 MB) and PP-OCR's recognisers (a few MB per language).
+# Bake every model into the image so a run needs no network: the region detector
+# (~44 MB), the ink mask (~95 MB), LaMa (~206 MB), manga-ocr (~450 MB) and
+# PP-OCR's recognisers (a few MB per language).
 # Build with --build-arg PREFETCH_MODEL=false to fetch them on first use instead.
 ARG PREFETCH_MODEL=true
 
 # Only the modules the fetchers themselves need. Copying the whole package here
-# instead would send every later build back for half a gigabyte of weights over
-# an edit to the server. Adding a language to `languages.py` costs that too,
-# which is honest: a new language is new weights.
+# instead would send every later build back for the better part of a gigabyte of
+# weights over an edit to the server. Adding a language to `languages.py` costs
+# that too, which is honest: a new language is new weights.
 COPY mangatrans/__init__.py mangatrans/geometry.py mangatrans/languages.py \
-     mangatrans/detect.py mangatrans/read.py /app/mangatrans/
+     mangatrans/detect.py mangatrans/read.py mangatrans/inpaint.py /app/mangatrans/
 RUN if [ "$PREFETCH_MODEL" = "true" ]; then \
-        python -c "from mangatrans.detect import ensure_model; ensure_model()" \
+        python -c "from mangatrans.detect import ensure_model, ensure_regions; ensure_model(); ensure_regions()" \
+        && python -c "from mangatrans.inpaint import ensure_model; ensure_model()" \
         && python -c "from mangatrans.read import ensure_readers; ensure_readers()"; \
     fi
 

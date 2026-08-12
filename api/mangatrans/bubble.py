@@ -1,23 +1,20 @@
-"""Finding the balloon a block of lettering sits in.
+"""The room a block of lettering was written in, measured inside its balloon.
 
-The detector boxes the *lettering*, and Japanese runs down the page: a dozen
-characters come back as a column forty pixels across. English set in that shape
-wraps to about a letter a line. What a translation wants is the space the words
-were written in, which is nearly always wider than it is tall.
+The detector says where the balloon is and where the lettering inside it is. The
+balloon's box is not the answer on its own: a balloon is an oval, and a line set
+to the corners of its bounding box runs outside the outline. So the inside of the
+balloon is thresholded within the box it was found in, and the largest rectangle
+in *that* which still holds the block is the room.
 
-Nothing draws that space, but it is not hard to see: a balloon is a light shape
-closed by a dark outline, so the light pixels reachable from the lettering
-without crossing anything dark *are* the balloon, and the largest rectangle
-inside them *around the block* is where the translation goes. Around the block,
-not simply the largest: the words belong where they were written, and all a
-balloon is asked is how much wider or taller the room around them runs. The
-block itself has to be painted in first — Japanese down the middle of a balloon
-cuts its ground in two, and a flood started in one half measures the gap beside
-the words.
+Around the block, not simply the largest rectangle in the shape. The words belong
+where they were written, and all a balloon is asked is how much wider or taller
+the room around them runs; a line set anywhere else is one the reader has to go
+looking for. Everything downstream leans on this — ``lines.roomFor`` letters into
+whatever comes back, and there is nothing else on the page saying where the words
+belong.
 
-It is a guess and it says so. Plenty of lettering is in no balloon at all, and a
-balloon whose outline a scan has broken leaks into the page. Every answer is
-checked, and :func:`around` hands back ``None`` rather than a wrong one.
+``None`` is a real answer, and the right one for a sound effect over artwork: the
+caller keeps the block's own box.
 """
 
 from __future__ import annotations
@@ -27,23 +24,9 @@ import numpy as np
 
 from .geometry import Box
 
-# How far around a block to look, as a share of its longer side. Close first: a
-# window reaching the next balloon only gives the flood somewhere else to go.
-# Each wider one is tried only where the last ran off the edge of its window,
-# which is what a balloon far larger than the words in it does — one holding
-# several separate lines, or two words in the middle of a big one.
-MARGINS = (0.8, 2.2, 5.0)
-
-# The smallest a block is treated as when the window is measured, as a share of
-# the page's shorter side: a balloon around one character is wider than it.
-REACH = 0.05
-
-# A "balloon" covering more of the page than this got out through a broken
-# outline, or was never a balloon.
-LEAK = 0.25
-
-# How much of the block the shape must hold to be believed. Short of this the
-# flood is in some sliver beside the words.
+# How much of the block the balloon's inside has to hold to be believed. Short of
+# this the threshold found some sliver beside the words rather than the ground
+# they were set on, and the block's own box is the honest answer.
 COVER = 0.85
 
 # Left clear inside the outline, as a share of the balloon's shorter side.
@@ -63,19 +46,9 @@ GRID = 128
 # short of it.
 MOSTLY = 200
 
-# How much of a block a balloon has to hold before a block no balloon of its own
-# could be made out for takes a share of it. Well inside, or this is not the room
-# it was written in but a neighbour's reaching over it.
+# How much of a block a balloon has to hold to be the balloon it was written in.
+# Well inside, or this is a balloon merely reaching over a sound effect beside it.
 HELD = 0.85
-
-
-def window(box: Box, width: int, height: int, spread: float) -> Box:
-    """The part of the page to look in for ``box``'s balloon."""
-    reach = max(box.w, box.h, REACH * min(width, height))
-    margin = max(8, round(spread * reach))
-    return Box(
-        box.x0 - margin, box.y0 - margin, box.x1 + margin, box.y1 + margin
-    ).clipped(width, height)
 
 
 def shrunk(box: Box) -> Box:
@@ -88,11 +61,10 @@ def shrunk(box: Box) -> Box:
 def solid(region: np.ndarray) -> np.ndarray:
     """``region`` with everything it encloses counted as part of it.
 
-    The lettering, and any tone inside the balloon, is a hole in the ground the
-    flood spread over, and a rectangle measured around those holes is the
-    rectangle between two lines of text. So whatever the outside cannot reach is
-    filled in; the border of blank added first is what makes "the outside"
-    something there is always a corner of.
+    The lettering, and any tone inside the balloon, is a hole in the ground, and a
+    rectangle measured around those holes is the rectangle between two lines of
+    text. So whatever the outside cannot reach is filled in; the border of blank
+    added first is what makes "the outside" something there is always a corner of.
     """
     padded = cv2.copyMakeBorder(region, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
     scratch = np.zeros((padded.shape[0] + 2, padded.shape[1] + 2), np.uint8)
@@ -100,15 +72,15 @@ def solid(region: np.ndarray) -> np.ndarray:
     return cv2.bitwise_or(region, cv2.bitwise_not(padded[1:-1, 1:-1]))
 
 
-def interior(ground: np.ndarray, seed: Box) -> np.ndarray:
+def joined(ground: np.ndarray, seed: Box) -> np.ndarray:
     """The one piece of ``ground`` the seed sits in, holes and all.
 
     ``seed`` is painted in first, which is what joins the two halves of a balloon
-    a column of Japanese has cut in two.
+    that a column of Japanese down the middle has cut in two.
     """
-    joined = ground.copy()
-    joined[seed.y0 : seed.y1, seed.x0 : seed.x1] = 255
-    _, labels = cv2.connectedComponents(joined, connectivity=4)
+    painted = ground.copy()
+    painted[seed.y0 : seed.y1, seed.x0 : seed.x1] = 255
+    _, labels = cv2.connectedComponents(painted, connectivity=4)
     mine = labels == labels[int(seed.cy), int(seed.cx)]
     return solid(np.where(mine, 255, 0).astype(np.uint8))
 
@@ -120,13 +92,6 @@ def run(strip: np.ndarray) -> np.ndarray:
 
 def holding(mask: np.ndarray, block: Box) -> Box | None:
     """The largest rectangle of set pixels that holds the whole of ``block``.
-
-    Not the largest rectangle in the shape, which is somewhere else in it as
-    often as not: a balloon with a tail, one drawn round two lines with the
-    words in one of them, one whose outline a scan has broken into the panel
-    beside it. A translation belongs where its Japanese was — the balloon is
-    only being asked how much further the words can be opened out — and a line
-    set anywhere else is one the reader has to go looking for.
 
     A row the block is not clear across closes the search off: there is no
     rectangle holding the block on the far side of one. Between them a rectangle
@@ -221,81 +186,39 @@ def roomiest(region: np.ndarray, block: Box) -> Box | None:
     return largest(cv2.erode(region, kernel), block) or largest(region, block)
 
 
-def stopped(region: np.ndarray, view: Box, width: int, height: int) -> bool:
-    """Whether the shape came to a stop on its own rather than at the window.
+def inside(grey: np.ndarray, balloon: Box, block: Box) -> Box | None:
+    """The room inside ``balloon``, measured around ``block``.
 
-    A shape running to an edge of the window was stopped by the window. The
-    page's own edges do not count: a balloon can be drawn against them, and the
-    window has nowhere further to go on that side.
-    """
-    edges = (
-        (region[0].any(), view.y0 > 0),
-        (region[-1].any(), view.y1 < height),
-        (region[:, 0].any(), view.x0 > 0),
-        (region[:, -1].any(), view.x1 < width),
-    )
-    return not any(reached and further for reached, further in edges)
+    Both boxes are the page's. The balloon is thresholded in its own box rather
+    than against the page: what counts as the pale part of one corner of a page
+    is not what counts in another, and the balloon's box is exactly the
+    neighbourhood the question is about.
 
-
-def believable(
-    region: np.ndarray, block: Box, view: Box, width: int, height: int
-) -> bool:
-    """Whether what was flooded looks like the balloon ``block`` is written in.
-
-    It has to have stopped of its own accord; it has to hold the block, or the
-    flood is in some sliver beside the words; and it has to be a balloon rather
-    than a quarter of the page, which is what leaking through a broken outline
-    comes back as.
-    """
-    if not stopped(region, view, width, height):
-        return False
-    held = np.count_nonzero(region[block.y0 : block.y1, block.x0 : block.x1])
-    if held < COVER * block.w * block.h:
-        return False
-    return np.count_nonzero(region) <= LEAK * width * height
-
-
-def fitted(
-    ground: np.ndarray, block: Box, view: Box, width: int, height: int
-) -> Box | None:
-    """The rectangle to letter in, in the window's own pixels."""
-    region = interior(ground, shrunk(block))
-    if not believable(region, block, view, width, height):
-        return None
-    return roomiest(region, block)
-
-
-def around(grey: np.ndarray, box: Box) -> Box | None:
-    """The balloon ``box`` sits in, as the largest rectangle around it that fits.
-
-    ``grey`` is the whole page in one channel. ``None`` says no balloon could be
-    made out and the caller should keep the box it has — the right answer for a
-    sound effect over artwork, and for a balloon this cannot follow.
-
-    What comes back always holds the block: the words stay where they were
-    written and the answer only says how much wider or taller the room around
-    them is. So the block itself is no answer either — a balloon drawn no wider
-    than the words already are has nothing to offer.
+    Light ground first — nearly every balloon is dark words on a pale shape —
+    then the other way round, for a shout set white on black.
     """
     height, width = grey.shape[:2]
-    block = box.clipped(width, height)
-    if block.w < 4 or block.h < 4:
+    view = balloon.clipped(width, height)
+    held = block.clipped(width, height)
+    if view.w < 4 or view.h < 4 or held.w < 4 or held.h < 4:
         return None
 
-    for spread in MARGINS:
-        view = window(block, width, height, spread)
-        patch = np.ascontiguousarray(grey[view.y0 : view.y1, view.x0 : view.x1])
-        local = block.moved(-view.x0, -view.y0)
-        # Thresholded on the window rather than the page: what counts as the pale
-        # part of one corner of a page is not what counts in another.
-        _, light = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    patch = np.ascontiguousarray(grey[view.y0 : view.y1, view.x0 : view.x1])
+    local = held.moved(-view.x0, -view.y0)
+    # The block has to sit in the patch for any of this to mean anything; a
+    # balloon that does not hold its own block is not the room it was written in.
+    if local.x0 < 0 or local.y0 < 0 or local.x1 > view.w or local.y1 > view.h:
+        return None
 
-        # Light ground first — nearly every balloon is dark words on a pale shape
-        # — then the other way round, for a shout set white on black.
-        for ground in (light, cv2.bitwise_not(light)):
-            found = fitted(ground, local, view, width, height)
-            if found is not None and found != local:
-                return found.moved(view.x0, view.y0).clipped(width, height)
+    _, light = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    for ground in (light, cv2.bitwise_not(light)):
+        region = joined(ground, shrunk(local))
+        covered = np.count_nonzero(region[local.y0 : local.y1, local.x0 : local.x1])
+        if covered < COVER * local.w * local.h:
+            continue
+        found = roomiest(region, local)
+        if found is not None and found != local:
+            return found.moved(view.x0, view.y0).clipped(width, height)
     return None
 
 
@@ -324,33 +247,22 @@ def within(room: Box, block: Box) -> float:
     return wide * tall / (block.w * block.h)
 
 
-def sharing(rooms: list[Box]) -> list[list[int]]:
-    """Which blocks would be lettered one on top of the other, gathered together.
+def assigned(blocks: list[Box], balloons: list[Box]) -> list[int | None]:
+    """Which balloon each block was written in, as an index into ``balloons``.
 
-    Whether two answers *collide*, not whether they agree. Agreement cannot be
-    asked for: an oval holds a wide short rectangle and a tall narrow one of
-    nearly the same area, and a pixel of the flood decides which of them wins, so
-    one balloon measured from two of the blocks in it comes back half a balloon
-    apart — under any threshold for "the same balloon twice", and lettered one
-    over the other.
-
-    ``rooms`` is where each block goes if nothing is done, so a block no balloon
-    could be made out for is in here as its own box: a balloon reaching over a
-    neighbour it cannot see is the same bug from the other side.
-
-    Transitively, because A over B and B over C is one balloon holding three
-    blocks however little A and C themselves touch.
+    The smallest balloon that holds the block, so a balloon drawn inside another
+    — a shout within a thought — wins over the one around it. A block no balloon
+    holds is lettering on the art: ``None``, and it keeps its own box.
     """
-    groups: list[list[int]] = []
-    for at, room in enumerate(rooms):
-        joined, apart = [at], []
-        for group in groups:
-            if any(room.covers(rooms[other]) > 0 for other in group):
-                joined.extend(group)
-            else:
-                apart.append(group)
-        groups = [*apart, sorted(joined)]
-    return groups
+    found: list[int | None] = []
+    for block in blocks:
+        holds = [
+            (balloon.w * balloon.h, at)
+            for at, balloon in enumerate(balloons)
+            if within(balloon, block) >= HELD
+        ]
+        found.append(min(holds)[1] if holds else None)
+    return found
 
 
 def span(box: Box, axis: int) -> tuple[int, int]:
@@ -420,60 +332,41 @@ def divided(space: Box, blocks: list[Box]) -> list[Box]:
     return shares
 
 
-def borrowed(answers: list[Box], block: Box) -> Box | None:
-    """A neighbour's balloon, for a block no balloon of its own was made out for.
+def rooms(
+    image: np.ndarray, blocks: list[Box], balloons: list[Box]
+) -> list[Box | None]:
+    """The room each block goes in, in the order the blocks were given.
 
-    :func:`around` fails on plenty of lettering that is in a balloon all the
-    same, and a neighbour written in that balloon flooded it successfully. The
-    balloon has to hold the block to be lent, or this is not the room the block
-    was written in but a neighbour's reaching over it — a sound effect beside a
-    balloon is in none, and moving it into one would take the words off the art
-    they belong to.
+    ``None`` where the block is in no balloon, or where its balloon turned out to
+    have nothing more to offer than the block already has.
+
+    Where several blocks share one balloon, each keeps *its own* answer cropped to
+    its own cell rather than a share of the balloon handed round: an answer is
+    always measured from the block it belongs to, so it is always around that
+    block's words. Colour says nothing about where a balloon ends that its own
+    lightness does not, so the page is flattened to one channel once.
     """
-    room = max(answers, key=lambda box: within(box, block), default=None)
-    return room if room is not None and within(room, block) >= HELD else None
-
-
-def bubbles(image: np.ndarray, boxes: list[Box]) -> list[Box | None]:
-    """The balloon each box sits in, in the order the boxes were given.
-
-    ``None`` where none could be made out. Colour says nothing about where a
-    balloon ends that its own lightness does not, so the page is flattened to one
-    channel once and every box measured against that.
-
-    Where several blocks turn out to be written in the same balloon — which is
-    what a block cut in two by :mod:`mangatrans.split` looks like from here —
-    each is cut back to its own side of the blank between them rather than handed
-    the balloon whole. No two answers may overlap when this is done: two that do
-    are two translations set one on top of the other, and that is what the
-    cutting is for.
-    """
-    height, width = image.shape[:2]
     grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    found = [around(grey, box) for box in boxes]
-    # Where a block would be lettered as things stand: its balloon, or its own
-    # box where none was made out. Two of these overlapping is the whole bug.
-    rooms = [box if room is None else room for room, box in zip(found, boxes)]
+    height, width = grey.shape[:2]
+    home = assigned(blocks, balloons)
+
+    found: list[Box | None] = [
+        None if at is None else inside(grey, balloons[at], block)
+        for block, at in zip(blocks, home)
+    ]
 
     page = Box(0, 0, width, height)
-    for group in sharing(rooms):
+    for at in set(home) - {None}:
+        group = [where for where, mine in enumerate(home) if mine == at]
         if len(group) < 2:
             continue
-        held = [boxes[at] for at in group]
-        answers = [found[at] for at in group if found[at] is not None]
-        # The page cut into a cell per block, along the blanks that told the
-        # blocks apart in the first place. Each block keeps its own balloon,
-        # cropped to its own cell: that parts two answers while leaving each of
-        # them round the words it was measured from. Cutting one balloon up
-        # between the whole group instead is what sends the odd one out — the
-        # block in a different balloon that merely touched this one — to a piece
-        # of a balloon its words are nowhere near.
-        for at, cell in zip(group, divided(page, held)):
-            block = boxes[at]
-            room = found[at] or borrowed(answers, block)
-            share = None if room is None else cropped(room, cell)
+        held = [blocks[where] for where in group]
+        for where, cell in zip(group, divided(page, held)):
+            room = found[where]
+            if room is None:
+                continue
+            share = cropped(room, cell)
             # A cell only cuts across a block where the blocks themselves
             # overlap, and there the box it came in with is the honest answer.
-            held_by = share is not None and within(share, block) >= HELD
-            found[at] = share if held_by else None
+            found[where] = share if within(share, blocks[where]) >= HELD else None
     return found
