@@ -7,8 +7,8 @@ import { formatBytes, plural } from '../lib/images'
 import { BatchProgress } from './BatchProgress'
 import { Dropzone } from './Dropzone'
 import { Gallery } from './Gallery'
-import { BackIcon } from './icons'
-import { Button, FOCUS, Note } from './ui'
+import { BackIcon, DownloadIcon } from './icons'
+import { Button, FOCUS, Note, Spinner } from './ui'
 
 type Props = {
   images: GalleryImage[]
@@ -33,6 +33,12 @@ type Props = {
   canTranslate: boolean
   /** The pages that have been lettered, which a run would do over. */
   lettered: string[]
+  /** A folder back out as the archive it came in as. */
+  onDownloadFolder: (folder: GalleryFolder) => void
+  /** The pages worth putting in one: anything cleaned or lettered. */
+  workedOn: string[]
+  /** How far through packing one, or null when nothing is being packed. */
+  packing: { done: number; total: number } | null
 }
 
 /** The rail down the side: what to drop pages into, and every page dropped in. */
@@ -56,6 +62,9 @@ export function Sidebar({
   onDismissBatch,
   canTranslate,
   lettered,
+  onDownloadFolder,
+  workedOn,
+  packing,
 }: Props) {
   const [open, setOpen] = useState<string | null>(null)
   const folder = folders.find((held) => held.id === open) ?? null
@@ -107,6 +116,16 @@ export function Sidebar({
           onOpen={onOpen}
           onStop={onStopBatch}
           onDismiss={onDismissBatch}
+          onDownload={
+            // The folder it ran through, which is not always the one open.
+            folders.some((held) => held.id === batch.folder)
+              ? () => {
+                  const ran = folders.find((held) => held.id === batch.folder)
+                  if (ran) onDownloadFolder(ran)
+                }
+              : undefined
+          }
+          packing={packing}
         />
       )}
 
@@ -115,9 +134,12 @@ export function Sidebar({
           folder={folder}
           pages={counted}
           lettered={counted.filter((image) => lettered.includes(image.id)).length}
+          done={counted.filter((image) => workedOn.includes(image.id)).length}
           onBack={() => setOpen(null)}
           onRun={() => onRunFolder(folder)}
+          onDownload={() => onDownloadFolder(folder)}
           running={batch !== null && !batch.finished}
+          packing={packing}
           canTranslate={canTranslate}
         />
       )}
@@ -156,17 +178,24 @@ function FolderBar({
   folder,
   pages,
   lettered,
+  done,
   onBack,
   onRun,
+  onDownload,
   running,
+  packing,
   canTranslate,
 }: {
   folder: GalleryFolder
   pages: GalleryImage[]
   lettered: number
+  /** Pages that have been cleaned or lettered, so there is something to save. */
+  done: number
   onBack: () => void
   onRun: () => void
+  onDownload: () => void
   running: boolean
+  packing: { done: number; total: number } | null
   canTranslate: boolean
 }) {
   const [armed, setArmed] = useState(false)
@@ -225,6 +254,34 @@ function FolderBar({
           : canTranslate
             ? 'Clean & translate all'
             : 'Clean all'}
+      </Button>
+
+      {/* Every page goes in, at the best state it reached — so this is offered as
+          soon as any one of them has been worked on, not only once the whole
+          chapter is through. Nothing worked on is nothing but the originals back,
+          which is not worth handing over. */}
+      <Button
+        variant="outline"
+        onClick={onDownload}
+        disabled={running || packing !== null || done === 0}
+        className="mt-1.5 w-full"
+        title={
+          done === 0
+            ? 'Nothing has been cleaned or lettered in this folder yet'
+            : `Save all ${plural(pages.length, 'page')} as one archive`
+        }
+      >
+        {packing ? (
+          <>
+            <Spinner className="mr-1.5 inline size-3 align-[-2px]" />
+            Packing {packing.done} / {packing.total}…
+          </>
+        ) : (
+          <>
+            <DownloadIcon className="mr-1.5 inline size-3.5 align-[-3px]" />
+            Download chapter
+          </>
+        )}
       </Button>
 
       {!canTranslate && (

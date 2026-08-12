@@ -50,13 +50,21 @@ export function useImageLibrary() {
       const unopenable: string[] = []
       const hollow: string[] = []
 
-      /** The folder for this archive: the one it already has, or a new one. */
-      const folderFor = (name: string): GalleryFolder => {
+      /**
+       * The folder for this archive: the one it already has, or a new one.
+       *
+       * Matched on the stem, so `ch01.cbz` dropped twice fills one folder — and
+       * so does `ch01.zip` after it, which keeps whichever extension named the
+       * folder in the first place rather than changing what it will come back as
+       * halfway through a chapter.
+       */
+      const folderFor = (archive: string): GalleryFolder => {
+        const name = stem(archive)
         const held =
           heldFolders.current.find((folder) => folder.name === name) ??
           opened.find((folder) => folder.name === name)
         if (held) return held
-        const made = { id: crypto.randomUUID(), name, addedAt: Date.now() }
+        const made = { id: crypto.randomUUID(), name, addedAt: Date.now(), archive }
         opened.push(made)
         return made
       }
@@ -72,7 +80,7 @@ export function useImageLibrary() {
             hollow.push(file.name)
             continue
           }
-          const folder = folderFor(stem(file.name))
+          const folder = folderFor(file.name)
           for (const page of inside) taken.push({ file: page, folder: folder.id })
         } catch {
           unopenable.push(file.name)

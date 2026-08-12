@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import type { BatchRun } from '../hooks/useBatch'
 import type { Stage } from '../lib/api'
 import { plural } from '../lib/images'
-import { CloseIcon } from './icons'
-import { IconButton, Spinner } from './ui'
+import { CloseIcon, DownloadIcon } from './icons'
+import { Button, IconButton, Spinner } from './ui'
 
 /** What the page in hand is having done to it, said the way the board says it. */
 const LABELS: Record<Stage, string> = {
@@ -22,6 +22,9 @@ type Props = {
   onOpen: (id: string) => void
   onStop: () => void
   onDismiss: () => void
+  /** The folder back out as an archive, once there is one to hand back. */
+  onDownload?: () => void
+  packing: { done: number; total: number } | null
 }
 
 /**
@@ -29,7 +32,15 @@ type Props = {
  * a run takes minutes a page, and the folder it is working through is not
  * where its reader will be sitting.
  */
-export function BatchProgress({ run, stage, onOpen, onStop, onDismiss }: Props) {
+export function BatchProgress({
+  run,
+  stage,
+  onOpen,
+  onStop,
+  onDismiss,
+  onDownload,
+  packing,
+}: Props) {
   const share = run.total === 0 ? 0 : run.done / run.total
   const failed = run.failed.length
 
@@ -126,6 +137,31 @@ export function BatchProgress({ run, stage, onOpen, onStop, onDismiss }: Props) 
             </li>
           ))}
         </ul>
+      )}
+
+      {/* The moment the chapter is actually ready, which is the moment a person
+          wants it. A run stopped part way still has pages worth saving, so this
+          is offered then too — the archive holds every page either way. */}
+      {run.finished && onDownload && (
+        <Button
+          variant="outline"
+          onClick={onDownload}
+          disabled={packing !== null}
+          className="mt-2 w-full"
+          title={`Save ${run.label} as one archive`}
+        >
+          {packing ? (
+            <>
+              <Spinner className="mr-1.5 inline size-3 align-[-2px]" />
+              Packing {packing.done} / {packing.total}…
+            </>
+          ) : (
+            <>
+              <DownloadIcon className="mr-1.5 inline size-3.5 align-[-3px]" />
+              Download chapter
+            </>
+          )}
+        </Button>
       )}
     </section>
   )

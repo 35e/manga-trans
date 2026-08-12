@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Board } from './components/Board'
 import { RegionsPanel } from './components/RegionsPanel'
 import { Settings } from './components/Settings'
@@ -27,6 +27,7 @@ import {
   said,
   translate,
 } from './lib/api'
+import { archiveName, finished } from './lib/chapter'
 import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, ready } from './lib/fit'
 import type { GalleryFolder, GalleryImage } from './lib/images'
@@ -36,6 +37,8 @@ import * as lines from './lib/lettering'
 import { mark } from './lib/mask'
 import { halves, insertionFor, movedIndex } from './lib/order'
 import * as blocks from './lib/regions'
+import type { Packed } from './lib/zip'
+import { pack } from './lib/zip'
 
 /** The same record without one key. */
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
@@ -78,6 +81,8 @@ function App() {
   const [selected, setSelected] = useState<number | null>(null)
   const [mode, setMode] = useState<BoardMode>('inspect')
   const [applying, setApplying] = useState(false)
+  /** How far through packing a folder into an archive, or null when not. */
+  const [packing, setPacking] = useState<{ done: number; total: number } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [showCleaned, setShowCleaned] = useState(false)
 
@@ -820,6 +825,68 @@ function App() {
     }
   }, [active, lettering, cleanedPage, showCleaned])
 
+  /**
+   * A whole folder back out as the archive it came in as.
+   *
+   * One page at a time rather than all at once: each one is drawn at the page's
+   * own resolution, and forty of those in the air together is forty page-sized
+   * canvases held for no gain — the work is the same either way, and this way
+   * there is something true to count.
+   *
+   * A page that will not compose is put in as it arrived rather than left out.
+   * A chapter with a gap in it is not a chapter: the page that fell over is
+   * still part of the story, and dropping it renumbers everything after it.
+   */
+  const downloadFolder = useCallback(
+    async (folder: GalleryFolder) => {
+      const pages = imagesNow.current.filter((image) => image.folder === folder.id)
+      if (pages.length === 0 || packing) return
+
+      setPacking({ done: 0, total: pages.length })
+      setError(null)
+      try {
+        const held: Packed[] = []
+        let anyLettered = false
+
+        for (const [at, page] of pages.entries()) {
+          try {
+            const made = await finished(
+              page,
+              lettering[page.id],
+              cleanedNow.current[page.id] ?? null,
+            )
+            anyLettered ||= made.reached === 'lettered'
+            held.push(made)
+          } catch {
+            held.push({
+              name: page.name,
+              bytes: new Uint8Array(await page.file.arrayBuffer()),
+            })
+          }
+          setPacking({ done: at + 1, total: pages.length })
+        }
+
+        save(await pack(held), archiveName(folder, ollama.target, anyLettered))
+      } catch (cause) {
+        setError(said(cause))
+      } finally {
+        setPacking(null)
+      }
+    },
+    [lettering, ollama.target, packing],
+  )
+
+  /** Pages worth putting in an archive: anything that was cleaned or lettered. */
+  const workedOn = useMemo(
+    () =>
+      Object.keys(cleanedPages).concat(
+        Object.entries(lettering)
+          .filter(([, set]) => set.some((line) => line !== null && line.text.trim()))
+          .map(([id]) => id),
+      ),
+    [cleanedPages, lettering],
+  )
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-canvas text-ink">
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-4 py-2.5">
@@ -866,6 +933,9 @@ function App() {
           onDismissBatch={dismissBatch}
           canTranslate={Boolean(ollama.model)}
           lettered={lettered}
+          onDownloadFolder={(folder) => void downloadFolder(folder)}
+          workedOn={workedOn}
+          packing={packing}
         />
 
         <Board

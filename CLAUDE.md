@@ -148,6 +148,8 @@ through `lib/`.
   a component.
 - `lib/fit.ts` (measuring and wrapping), `lib/order.ts` (reading order),
   `lib/mask.ts` (the brushed mask), `lib/compose.ts` (the canvas letterer),
+  `lib/zip.ts` (a chapter in and back out), `lib/chapter.ts` (which version of a
+  page goes into the archive, and what the archive is called),
   `lib/api.ts` (the client, and every shared type).
 - `components/Board.tsx` draws the page and switches tools by `mode`; the tool
   rows are `InspectTools`, `MaskTools` and `TranslateTools`, and the overlays
@@ -288,6 +290,35 @@ board.** It is a page-sized `ImageBitmap` worked out from the page and so can be
 had again; fifty pages run through would otherwise hold fifty of them alongside
 fifty masks and fifty cleaned pages. The page being brushed keeps its own, that
 being the one that will want it again.
+
+**A chapter is packed on the click, not during the run.** `App.downloadFolder`
+draws every page afresh out of `lettering` and `cleanedPages`, which is what lets
+it be pressed after a whole run, after one stopped part way, or an hour later,
+and pressed again — and it means a run itself holds nothing extra. Pages go
+through **one at a time**: each is composed at the page's own resolution, and
+forty of those in flight together is forty page-sized canvases for no gain, since
+the work is the same either way.
+
+**Every page goes into the archive, at whatever state it reached**
+(`chapter.finished`): lettered, else cleaned, else the original bytes under the
+original name. A page that will not compose falls back to its original rather
+than being skipped — a chapter with a gap in it is not a chapter, and dropping a
+page renumbers every page after it. Anything drawn on is a PNG and says so;
+anything untouched is passed through byte for byte, since re-encoding a JPEG
+nobody touched costs quality for nothing.
+
+**Nothing in the archive is compressed** (`zip.pack`, `level: 0`). Every entry is
+already a PNG or a JPEG: deflating one a second time takes seconds over a chapter
+and gives back about a percent. `pack` also numbers a repeated name rather than
+letting it overwrite — pages are told apart by name *and* size *and* date, so one
+folder really can hold two files called `001.png`, and a record keyed by name
+would silently ship one of them.
+
+**`GalleryFolder.archive` is the only record of what a chapter arrived as.** The
+folder is named after the archive's *stem*, so without it nothing says whether it
+was a `.zip` or a `.cbz`, and `archiveName` could not hand back the kind that came
+in. `folderFor` still matches on the stem, so re-dropping fills the same folder
+and the extension that named it first is the one that sticks.
 
 **A folder is named after its archive, and dedupe is scoped to the folder.**
 Re-dropping an archive fills the same folder rather than making a second one, which

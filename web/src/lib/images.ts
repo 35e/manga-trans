@@ -7,6 +7,13 @@ export type GalleryFolder = {
   id: string
   name: string
   addedAt: number
+  /**
+   * What the archive was called when it was dropped in, extension and all. The
+   * folder is named after its stem, so without this there is nothing left to say
+   * whether the chapter arrived as a `.zip` or a `.cbz` — and a finished chapter
+   * should leave as whatever it came as.
+   */
+  archive?: string
 }
 
 export type GalleryImage = {

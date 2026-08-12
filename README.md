@@ -457,6 +457,24 @@ is named with the reason it gave and the rest carry on. A folder that has been
 lettered already asks once before doing it over, since a line moved or rewritten
 by hand cannot be got back.
 
+**Download chapter**, beside it and on the card the run leaves behind, hands the
+whole folder back as one archive — the way it arrived. A chapter dropped in as
+`ch01.cbz` comes back as `ch01-english.cbz`, named for whatever it was translated
+into; one that was only cleaned comes back `ch01-cleaned.cbz`.
+
+*Every* page goes in, at the best state it reached: lettered where it was
+translated, cleaned where it was only cleaned, and exactly as it arrived where it
+was neither — a page that fell over is still part of the story, and leaving it
+out renumbers everything after it. Pages keep the names they came in under, so a
+comic reader puts them back in the same order. Anything drawn on comes out as a
+PNG; anything untouched is passed through byte for byte rather than re-encoded.
+
+It can be pressed whenever there is something to save — after a whole run, after
+one stopped part way, or later in the session — and pressed again as often as you
+like, since the pages are drawn afresh each time from what is on screen. Nothing
+is compressed on the way in: these are PNGs and JPEGs already, and deflating them
+a second time costs seconds over a chapter to save about a percent.
+
 The dashboard puts a page on a board and works it in three tabs. **Inspect**
 boxes the lettering and reads it. **Page is in**, beside the blocks, is the
 language it is lettered in: it picks the reader, it puts the blocks in the order
