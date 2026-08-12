@@ -10,11 +10,28 @@ server {
     # which shows up as a 413 on exactly the large scans that need cleaning most.
     client_max_body_size 32m;
 
+    # Re-resolved as requests come in, rather than once at start.
+    #
+    # Written `proxy_pass http://api:8000`, nginx looks the name up when it loads
+    # its config and keeps that address for the life of the process. The API
+    # container gets a new address every time it is recreated — a crash, a
+    # `compose up`, a restart — and from then on nginx holds the old one and
+    # answers *everything* with 502, including the pages that were fine. It reads
+    # as "the API is down" long after it has come back.
+    #
+    # A name held in a variable is looked up per request instead, which needs a
+    # resolver named: the one the container itself was given, filled in from
+    # /etc/resolv.conf by the nginx image's own entrypoint. $request_uri has to
+    # be spelled out because a proxy_pass with a variable in it does not pass the
+    # path on by itself.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+
     # The API, on the same origin as the dashboard. This is the whole reason the
     # front end is served rather than handed out by `vite dev`: same origin means
     # no preflight, no MANGA_TRANS_ORIGIN, and one port to publish.
     location /api/ {
-        proxy_pass http://api:8000;
+        set $upstream "api";
+        proxy_pass http://$upstream:8000$request_uri;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

@@ -59,6 +59,23 @@ LEAST = 64
 # as art to copy from — which is how a letter comes back beside where it was.
 APART = 24
 
+# The most a crop may be, in pixels, when it goes through the model. Anything
+# larger is worked out smaller and stretched back.
+#
+# This is the difference between cleaning a scan and being killed part way
+# through one. LaMa's cost is in its Fourier layers, which hold whole feature
+# maps: measured, a 0.6 MP crop peaks around 2.2 GB and a 1.5 MP one around
+# 3.9 GB, so an A4 page scanned at 300 dpi — 8.7 MP, an ordinary size for a
+# chapter — asks for something like 9 GB for one balloon and the process is
+# killed by the kernel. There is no error to catch and no traceback: the API just
+# goes away, and a front end sees a 502.
+#
+# Working smaller costs almost nothing here. Only the marked pixels are kept
+# (see :func:`fill`), lettering is thin, and what replaces it is the tone and the
+# lines around it rather than any detail of its own — so the fill is stretched
+# back up and the seam is still cut at full size against the original mask.
+LARGEST = 1_000_000
+
 
 def grown(mask: np.ndarray, by: int) -> np.ndarray:
     """The mask spread outwards to take in everything within ``by`` pixels.
@@ -150,13 +167,24 @@ class Lama:
     def patch(self, crop: np.ndarray, hole: np.ndarray) -> np.ndarray:
         """One crop with its hole filled in, the same size it came in.
 
-        Padded out to a whole number of blocks on the way in and cut back on the
-        way out. The padding is a reflection of the crop rather than black: an
-        edge invented out of nothing is an edge the model tries to continue.
+        Brought down to :data:`LARGEST` if it is over it, padded out to a whole
+        number of blocks, and put back the size it arrived. The padding is a
+        reflection of the crop rather than black: an edge invented out of nothing
+        is an edge the model tries to continue.
         """
         height, width = crop.shape[:2]
-        down = (-height) % BLOCK
-        right = (-width) % BLOCK
+        small = self.working(crop.shape[:2])
+        if small is not None:
+            crop = cv2.resize(crop, small, interpolation=cv2.INTER_AREA)
+            # Averaged, then anything the mark touched at all is kept as mark:
+            # rounding a thin stroke *out* of the hole leaves that stroke behind.
+            hole = (cv2.resize(hole, small, interpolation=cv2.INTER_AREA) > 0).astype(
+                np.uint8
+            ) * 255
+
+        tall, wide = crop.shape[:2]
+        down = (-tall) % BLOCK
+        right = (-wide) % BLOCK
         if down or right:
             crop = cv2.copyMakeBorder(crop, 0, down, 0, right, cv2.BORDER_REFLECT_101)
             hole = cv2.copyMakeBorder(hole, 0, down, 0, right, cv2.BORDER_CONSTANT, value=0)
@@ -169,7 +197,20 @@ class Lama:
 
         # Out in the same 0..1 the image went in as.
         out = np.clip(filled[0].transpose(1, 2, 0), 0.0, 1.0) * 255.0
-        return out.round().astype(np.uint8)[:height, :width]
+        out = out.round().astype(np.uint8)[:tall, :wide]
+        if small is not None:
+            out = cv2.resize(out, (width, height), interpolation=cv2.INTER_LINEAR)
+        return out
+
+    @staticmethod
+    def working(shape: tuple[int, int]) -> tuple[int, int] | None:
+        """The size to put a crop of this shape through at, or None to leave it."""
+        height, width = shape
+        pixels = width * height
+        if pixels <= LARGEST:
+            return None
+        scale = (LARGEST / pixels) ** 0.5
+        return (max(BLOCK, round(width * scale)), max(BLOCK, round(height * scale)))
 
     def __call__(self, page: np.ndarray, hole: np.ndarray) -> np.ndarray:
         """The page with every marked piece of it made afresh.

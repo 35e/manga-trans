@@ -68,6 +68,22 @@ absolute one and same-origin stops working. nginx needs `client_max_body_size`
 raised past its 1 MB default, and its proxy timeouts raised past 60 s: a page and
 its mask together run to tens of megabytes, and reading one takes seconds.
 
+**nginx must re-resolve the API, and that is why its config is a template.**
+Written `proxy_pass http://api:8000`, nginx looks the name up once as it loads
+and keeps that address for the life of the process. The API container gets a new
+address every time it is recreated — a crash, a `compose up`, a restart — so from
+then on nginx holds a dead one and answers **everything** with 502, long after
+the API is back and healthy; measured, 10.89.0.4 to 10.89.0.183 across one
+restart, and every call 502 until nginx itself was restarted. A name held in a
+variable (`set $upstream`) is looked up per request instead, which needs a
+`resolver`, which is why `default.conf.template` goes to `/etc/nginx/templates/`
+and the image's entrypoint fills `${NGINX_LOCAL_RESOLVERS}` in from the
+container's own `/etc/resolv.conf`. That entrypoint script returns early unless
+`NGINX_ENTRYPOINT_LOCAL_RESOLVERS` is set, and `NGINX_ENVSUBST_FILTER` keeps
+envsubst off nginx's own `$host` and `$remote_addr`. A `proxy_pass` with a
+variable in it does not pass the path on by itself, hence the explicit
+`$request_uri`. Do not "simplify" this back to a plain hostname.
+
 ### API (`api/mangatrans/`)
 
 `server.py` is the whole HTTP surface; the rest are libraries it composes.
@@ -371,6 +387,28 @@ the page (`inpaint.patches`) — a page is mostly art that is staying — and ma
 closer than `APART` go through together, or the context around one letter holds
 the next as material to copy it from. Its input must be a whole multiple of
 `BLOCK`; a size that is not fails inside the graph rather than being padded.
+
+**A crop over `inpaint.LARGEST` is worked out smaller and stretched back**, and
+this is what keeps the API alive rather than what makes it quick. LaMa's cost is
+in its Fourier layers, which hold whole feature maps: measured, a 0.6 MP crop
+peaks near 2.2 GB and a 1.5 MP one near 3.9 GB, so a balloon on an A4 page
+scanned at 300 dpi (8.7 MP — an ordinary chapter) asks for something like 9 GB
+and the kernel kills the process. There is no exception to catch and nothing in
+the API's own log; the container simply goes and a front end sees a **502**, and
+`restart: unless-stopped` brings it back so cleanly that `RestartCount` is still
+0. If a big page ever 502s again, look for `oom-kill` in `podman machine ssh
+sudo dmesg` before anything else. Working smaller costs almost nothing: only the
+marked pixels are kept, lettering is thin, and the fill is the tone and lines
+around it rather than any detail of its own.
+
+**`grow` is in the detector's pixels, not the page's** (`detect.GROW`,
+`page_mask`). The mask is worked out on a 1024-square canvas and stretched, so
+its edge is only accurate to a canvas pixel — one page pixel on a small page,
+three and a half on a 300 dpi scan. Held in page pixels the same `grow` is three
+canvas pixels of allowance on one and barely one on the other: measured, 100% of
+the lettering covered at 1000x1400 against 94.5% at 2480x3508, which comes out as
+the feet of every letter still on the page after a clean. Anything else measured
+against the mask belongs in the same units.
 
 **An answer from `/api/bubbles` depends on which other boxes were asked about**,
 so anything whose answer will be lettered with must send *every* box on the page,

@@ -51,6 +51,15 @@ SEG_THRESHOLD = 0.5
 # cover the halo left ringing a hidden letter — screentone, JPEG ringing, the
 # pale rim of an outlined letter. Four suits clean lettering; scans want more,
 # which is why callers can say `grow`.
+#
+# Measured in the *detector's* pixels rather than the page's. The mask is worked
+# out on a 1024-square canvas and stretched to the page, so its edge is only ever
+# accurate to a canvas pixel — which is one page pixel on a small page and three
+# and a half on an A4 scan at 300 dpi. Fixed in page pixels, the same `grow`
+# covers three canvas pixels of slop on the one and barely one on the other, and
+# a big scan comes back with the feet of its letters still on it: measured,
+# 100% of the lettering covered at 1000x1400 against 94.5% at 2480x3508.
+# In canvas pixels it means the same thing at any size the page was scanned at.
 GROW = 4
 GROW_MAX = 64
 
@@ -203,9 +212,12 @@ def page_mask(
     full = cv2.resize(kept, (width, height), interpolation=cv2.INTER_LINEAR)
     mask = ((full > SEG_THRESHOLD) * 255).astype(np.uint8)
 
-    if grow > 0:
+    # The letterbox puts the page's longer side on the canvas, so this is how
+    # many page pixels one canvas pixel became. See :data:`GROW`.
+    spread = round(grow * max(width, height) / INPUT_SIZE)
+    if spread > 0:
         kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (grow * 2 + 1, grow * 2 + 1)
+            cv2.MORPH_ELLIPSE, (spread * 2 + 1, spread * 2 + 1)
         )
         mask = cv2.dilate(mask, kernel)
     return mask

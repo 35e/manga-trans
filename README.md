@@ -264,12 +264,19 @@ it: a page-sized PNG, opaque white on the ink and clear everywhere else, which
 is the same detector's segmentation head — the one that answers per pixel rather
 than per block. Sent on to `/api/clean` it hides the words and leaves the art
 they were drawn over, which a rectangle cannot do. `grow` (default 4, up to 64)
-is how many pixels to spread the mask by, so no halo is left ringing a letter
-that has been hidden. On clean black-on-white lettering two is already enough at
-any size of page; what needs more is scanned material — screentone, the ring
-JPEG leaves around a hard edge, the pale rim of an outlined letter — and how
-much more depends on the scan, which is why the dashboard puts it next to the
-button rather than deciding for you.
+is how far to spread the mask, so no halo is left ringing a letter that has been
+hidden. On clean black-on-white lettering two is already enough; what needs more
+is scanned material — screentone, the ring JPEG leaves around a hard edge, the
+pale rim of an outlined letter — and how much more depends on the scan, which is
+why the dashboard puts it next to the button rather than deciding for you.
+
+It is measured in the *detector's* pixels rather than the page's, and so means
+the same thing at any resolution the page was scanned at. The mask is worked out
+on a 1024-square canvas and stretched to the page, so its edge is only ever
+accurate to a canvas pixel — one page pixel on a small page, three and a half on
+an A4 scan at 300 dpi. Counted in page pixels the same `grow` would be a
+generous allowance on the one and almost none on the other, which comes back as
+the feet of every letter still on the page after a clean.
 
 **`/api/read`** says what it says: one string per box, in the order the boxes
 were given, so they line up with the regions `/api/detect` returned. Reading is
@@ -356,6 +363,15 @@ own. Marks close together go through as one piece: two letters of a word are not
 worth two passes, and the art around one of them would otherwise hold the other
 as material to copy it from.
 
+A piece larger than about a megapixel is worked out smaller and stretched back.
+LaMa's cost is in its Fourier layers, which hold whole feature maps, so it grows
+with the area it is given: a balloon on an A4 page scanned at 300 dpi would ask
+for something like 9 GB on its own, and the process is killed rather than
+answering. Working smaller costs almost nothing here — only the marked pixels are
+kept, lettering is thin, and what replaces it is the tone and the lines around it
+rather than any detail of its own. A 300 dpi page cleans in about fifteen seconds
+under three and a half gigabytes.
+
 Two pixels around every mark are kept out of what the fill is made of but are
 not themselves painted over. Lettering is printed with soft edges, and a mask
 that stops at the ink leaves a rim of half-ink just outside it; read as art,
@@ -414,6 +430,7 @@ api/
 web/
   src/            the dashboard: drop pages in, detect, read, mask, clean
   Dockerfile      built once, then served by nginx with /api proxied through
+  default.conf.template  nginx, resolving the API afresh rather than once
 docker-compose.yml  both halves, on one origin
 ```
 

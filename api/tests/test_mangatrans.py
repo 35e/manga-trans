@@ -372,6 +372,43 @@ class TestPainter(unittest.TestCase):
         for x0, y0, x1, y1 in found:
             self.assertLess((x1 - x0) * (y1 - y0), 400 * 400)
 
+    def test_a_crop_within_the_cap_goes_through_as_it_is(self):
+        self.assertIsNone(Lama.working((800, 600)))
+
+    def test_a_crop_over_the_cap_is_brought_down_to_it(self):
+        # An A4 page scanned at 300 dpi is 8.7 MP and a balloon on one is a crop
+        # of several. Put through whole, LaMa asks for something like 9 GB and
+        # the process is killed: no error, no traceback, just a 502.
+        wide, tall = Lama.working((2055, 2406))
+        self.assertLessEqual(wide * tall, inpaint.LARGEST)
+        self.assertAlmostEqual(wide / tall, 2406 / 2055, places=1, msg="shape changed")
+
+    def test_a_scaled_crop_still_comes_back_the_size_it_went_in(self):
+        # The caller pastes it back into the page, so anything else is a crop
+        # landing in the wrong place.
+        made = Lama.__new__(Lama)
+        made._lock = threading.Lock()
+
+        class Session:
+            def run(self, wanted, feed):
+                image = feed["image"]
+                assert image[0, 0].size <= inpaint.LARGEST * 1.1, "no smaller than it was"
+                return [np.zeros_like(image)]
+
+        made.session = Session()
+        crop = np.full((2406, 2055, 3), 200, np.uint8)
+        hole = np.zeros((2406, 2055), np.uint8)
+        hole[1000:1100, 1000:1100] = 255
+        self.assertEqual(made.patch(crop, hole).shape, crop.shape)
+
+    def test_a_thin_stroke_survives_being_scaled_down(self):
+        # Rounding a stroke *out* of the hole leaves that stroke on the page.
+        hole = np.zeros((2400, 2000), np.uint8)
+        hole[1200:1202, 500:1500] = 255  # two pixels tall
+        small = Lama.working(hole.shape)
+        shrunk = cv2.resize(hole, small, interpolation=cv2.INTER_AREA)
+        self.assertTrue((shrunk > 0).any(), "the mark was rounded away")
+
     def test_marks_close_together_go_through_as_one(self):
         # Two letters of a word are not worth two passes, and the context around
         # one would hold the other as art to copy it from.
@@ -379,6 +416,42 @@ class TestPainter(unittest.TestCase):
         hole[100:120, 100:120] = 255
         hole[100:120, 125:145] = 255
         self.assertEqual(len(inpaint.patches(hole, 400, 400)), 1)
+
+
+class TestGrowIsScanIndependent(unittest.TestCase):
+    """`grow` means the same thing however large the page was scanned.
+
+    The mask is worked out on a fixed square canvas and stretched to the page, so
+    its edge is only accurate to a canvas pixel — one page pixel on a small page
+    and three and a half on an A4 scan at 300 dpi. Held in page pixels, the same
+    `grow` is three canvas pixels of allowance on the one and barely one on the
+    other, and a big scan comes back with the feet of its letters still on it.
+    """
+
+    def grown(self, width: int, height: int, grow: int = detect.GROW) -> int:
+        """How many page pixels a lit spot spreads to, on a page this size."""
+        seg = np.zeros((detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
+        seg[500:524, 500:524] = 1.0
+        _, pad_w, pad_h = detect.letterbox(np.zeros((height, width, 3), np.uint8))
+        mask = detect.page_mask(seg, width, height, pad_w, pad_h, grow)
+        lit = np.flatnonzero(mask.any(axis=0))
+        return int(lit[-1] - lit[0]) if len(lit) else 0
+
+    def test_a_bigger_scan_of_one_page_is_grown_proportionally(self):
+        small = self.grown(1000, 1400)
+        large = self.grown(2480, 3508)
+        # Both the lit spot and the margin scale with the page, so the whole mark
+        # scales with it: the same allowance, measured the same way.
+        self.assertAlmostEqual(large / small, 3508 / 1400, delta=0.15)
+
+    def test_growing_by_nothing_still_grows_by_nothing(self):
+        plain = self.grown(2480, 3508, 0)
+        self.assertLess(plain, self.grown(2480, 3508, detect.GROW))
+
+    def test_a_small_page_is_not_grown_away(self):
+        # The scale runs the other way below the canvas size, and a mask grown by
+        # a fraction of a pixel must still be grown by none rather than by one.
+        self.assertGreater(self.grown(200, 140, detect.GROW), 0)
 
 
 class TestPageMask(unittest.TestCase):
