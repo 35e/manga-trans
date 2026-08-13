@@ -26,7 +26,7 @@ from mangatrans import (
     server,
     split,
 )
-from mangatrans.detect import Block
+from mangatrans.detect import FREE, SPEECH, Block
 from mangatrans.geometry import Box
 
 DARK = (20, 20, 20)
@@ -106,7 +106,7 @@ def patch(pixels, box: Box) -> np.ndarray:
 class StubRegions:
     """One block, in one balloon, whatever the page."""
 
-    found = Block(Box(10, 10, 60, 40), 0.912)
+    found = Block(Box(10, 10, 60, 40), 0.912, SPEECH)
     balloon = Box(2, 2, 97, 67)
 
     def __init__(self, *args, **kwargs) -> None:
@@ -1598,16 +1598,59 @@ class TestOllama(unittest.TestCase):
         with mock.patch.object(ollama, "ask", return_value=reply(fenced)):
             self.assertEqual(ollama.translate(["おはよう"], "m")[0], ["Good morning"])
 
-    def test_losing_count_falls_back_to_one_line_at_a_time(self):
+    def test_a_miscounted_page_is_asked_again_whole(self):
+        # The cheap recovery, and much the better one: the page is still in front
+        # of it, where the pass line by line has nothing around each line.
         answers = [
             reply(translations("only one")),  # two were asked about
+            reply(translations("first", "second")),
+        ]
+        with mock.patch.object(ollama, "ask", side_effect=answers) as ask:
+            got, _ = ollama.translate(["いち", "に"], "m")
+        self.assertEqual(got, ["first", "second"])
+        self.assertEqual(ask.call_count, 2, "it did not simply ask again")
+
+    def test_asking_again_shows_the_model_what_it_did(self):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"])
+            return reply(translations("only one"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(["いち", "に"], "m")
+        # The miscounted answer, then what was wrong with it: the count is the one
+        # thing it cannot see from the request it was sent.
+        again = asked[1]
+        self.assertEqual(again[2]["role"], "assistant")
+        self.assertIn("only one", again[2]["content"])
+        self.assertIn("1 translations for 2 lines", again[3]["content"])
+
+    def test_losing_count_twice_falls_back_to_one_line_at_a_time(self):
+        answers = [
+            reply(translations("only one")),  # two were asked about
+            reply(translations("still only one")),
             reply(translations("first")),
             reply(translations("second")),
         ]
         with mock.patch.object(ollama, "ask", side_effect=answers) as ask:
             got, _ = ollama.translate(["いち", "に"], "m")
         self.assertEqual(got, ["first", "second"])
-        self.assertEqual(ask.call_count, 3, "it did not ask again line by line")
+        self.assertEqual(ask.call_count, 4, "it did not ask again line by line")
+
+    def test_the_context_is_asked_for(self):
+        # Ollama's own is 4096 and it truncates what it is handed rather than
+        # saying so, front first — which is the briefing and the glossary.
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body)
+            return reply(translations("Good morning"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(["おはよう"], "m")
+        self.assertEqual(asked[0]["options"]["num_ctx"], ollama.CONTEXT)
+        self.assertGreater(ollama.CONTEXT, 4096)
 
     def test_an_empty_line_stays_empty_and_is_never_sent(self):
         def ask(path, body=None, **kwargs):
@@ -1673,19 +1716,89 @@ class TestOllama(unittest.TestCase):
 
         def ask(path, body=None, **kwargs):
             asked.append(body["messages"][0]["content"])
-            # Miscounted the first time, so each line is asked about alone.
-            return reply(translations("only one")) if len(asked) == 1 else reply(
+            # Miscounted twice over, so each line is then asked about alone.
+            return reply(translations("only one")) if len(asked) <= 2 else reply(
                 translations("a line")
             )
 
         with mock.patch.object(ollama, "ask", ask):
             ollama.translate(["いち", "に"], "m", "Dutch", system="Mine.")
-        self.assertEqual(len(asked), 3, "it did not ask again line by line")
+        self.assertEqual(len(asked), 4, "it did not ask again line by line")
         for said in asked:
             self.assertTrue(said.startswith("Mine."), said)
 
     def test_where_ollama_is_can_be_said(self):
         self.assertEqual(ollama.base("http://elsewhere:11434/"), "http://elsewhere:11434")
+
+
+class TestSaidAboutEachLine(unittest.TestCase):
+    """What the caller knows about a block and the model cannot see: whether it
+    is spoken at all, and how much room its translation has."""
+
+    def asking(self, answer):
+        """Ollama patched to answer that, collecting the whole request."""
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"])
+            return answer
+
+        return asked, mock.patch.object(ollama, "ask", ask)
+
+    def test_a_line_says_whether_it_is_spoken(self):
+        asked, patched = self.asking(reply(translations("Morning", "THUD")))
+        with patched:
+            ollama.translate(["おはよう", "ドン"], "m", kinds=[SPEECH, FREE])
+        system, page = asked[0][0]["content"], asked[0][1]["content"]
+        self.assertIn("1. [speech] おはよう", page)
+        self.assertIn("2. [free] ドン", page)
+        self.assertIn(ollama.KINDS_NOTE, system)
+
+    def test_a_line_says_how_much_room_it_has(self):
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m", budgets=[28])
+        system, page = asked[0][0]["content"], asked[0][1]["content"]
+        self.assertIn("1. <=28 おはよう", page)
+        self.assertIn(ollama.BUDGET_NOTE, system)
+
+    def test_a_line_with_nothing_said_about_it_is_sent_as_it_was(self):
+        # And the notes about the markers go with them: a page carrying neither
+        # must not be told how to read either.
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m")
+        system, page = asked[0][0]["content"], asked[0][1]["content"]
+        self.assertEqual(page, "1. おはよう")
+        self.assertNotIn(ollama.KINDS_NOTE, system)
+        self.assertNotIn(ollama.BUDGET_NOTE, system)
+
+    def test_what_is_said_about_a_line_follows_a_blank_being_dropped(self):
+        # The one way this can go quietly wrong: an empty block is never sent, so
+        # everything after it renumbers, and a kind left where it was describes
+        # the wrong line.
+        asked, patched = self.asking(reply(translations("Morning", "THUD")))
+        with patched:
+            ollama.translate(
+                ["おはよう", "   ", "ドン"],
+                "m",
+                kinds=[SPEECH, SPEECH, FREE],
+                budgets=[28, 99, 12],
+            )
+        page = asked[0][1]["content"]
+        self.assertEqual(
+            page.splitlines(),
+            ["1. [speech] <=28 おはよう", "2. [free] <=12 ドン"],
+        )
+
+    def test_what_is_said_about_a_line_holds_when_it_is_asked_about_alone(self):
+        asked, patched = self.asking(reply(translations("only one")))
+        with patched:
+            ollama.translate(["おはよう", "ドン"], "m", kinds=[SPEECH, FREE])
+        # The page, the page again, then each line by itself with its own marker.
+        self.assertEqual(len(asked), 4)
+        self.assertIn("1. [speech] おはよう", asked[2][1]["content"])
+        self.assertIn("1. [free] ドン", asked[3][1]["content"])
 
 
 class TestGlossary(unittest.TestCase):
@@ -1746,13 +1859,14 @@ class TestGlossary(unittest.TestCase):
     def test_a_glossary_holds_when_it_falls_back_to_one_at_a_time(self):
         asked, patched = self.asking(
             reply(translations("only one")),  # two were asked about
+            reply(translations("only one")),  # and again on the second ask
             reply(translations("a line")),
         )
         with patched:
             ollama.translate(
                 ["いち", "に"], "m", glossary=[{"source": "タロウ", "target": "Taro"}]
             )
-        self.assertEqual(len(asked), 3, "it did not ask again line by line")
+        self.assertEqual(len(asked), 4, "it did not ask again line by line")
         for said in asked:
             self.assertIn("タロウ = Taro", said)
 
@@ -1762,8 +1876,22 @@ class TestGlossary(unittest.TestCase):
         named = [{"source": "タロウ", "target": "Taro"}]
         answers = [
             reply(with_terms(["only one"], named)),  # two were asked about
+            reply(translations("only one")),  # and again on the second ask
             reply(translations("first")),
             reply(translations("second")),
+        ]
+        with mock.patch.object(ollama, "ask", side_effect=answers):
+            got, terms = ollama.translate(["いち", "に"], "m")
+        self.assertEqual(got, ["first", "second"])
+        self.assertEqual(terms, named)
+
+    def test_a_page_asked_again_keeps_the_terms_of_the_first_answer(self):
+        # The second answer is the one lettered, but it was asked for a count
+        # rather than for names, and a term named once is named.
+        named = [{"source": "タロウ", "target": "Taro"}]
+        answers = [
+            reply(with_terms(["only one"], named)),  # two were asked about
+            reply(translations("first", "second")),
         ]
         with mock.patch.object(ollama, "ask", side_effect=answers):
             got, terms = ollama.translate(["いち", "に"], "m")
@@ -2202,6 +2330,20 @@ class TestApi(unittest.TestCase):
             "the room is no wider than the words",
         )
 
+    def test_detect_says_whether_a_block_is_spoken(self):
+        # Nothing here treats the two differently. A translation must: a sound
+        # effect rendered as dialogue is a character shouting "thud".
+        with mock.patch.object(server, "Regions", StubRegions):
+            response = client().post("/api/detect", data=payload(stub_balloon()))
+        [region] = response.json["regions"]
+        self.assertEqual(region["kind"], "speech")
+
+        shout = finding([Block(Box(10, 10, 60, 40), 0.9, FREE)], [])
+        with mock.patch.object(server, "Regions", shout):
+            response = client().post("/api/detect", data=payload(stub_balloon()))
+        [region] = response.json["regions"]
+        self.assertEqual(region["kind"], "free")
+
     def test_detect_leaves_lettering_in_no_balloon_in_its_own_box(self):
         # A sound effect over artwork: the detector found the words and no
         # balloon around them, and there is nothing to open the line out into.
@@ -2551,6 +2693,75 @@ class TestApi(unittest.TestCase):
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["glossary"])
+
+    def test_translate_passes_what_each_line_is_on(self):
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as told:
+            client().post(
+                "/api/translate",
+                data={
+                    "texts": json.dumps(["おはよう", "ドン"]),
+                    "model": "m",
+                    "kinds": json.dumps(["speech", "free"]),
+                    "budgets": json.dumps([28, 12]),
+                },
+            )
+        self.assertEqual(told.call_args.kwargs["kinds"], ["speech", "free"])
+        self.assertEqual(told.call_args.kwargs["budgets"], [28, 12])
+
+    def test_translate_without_them_sends_none(self):
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as told:
+            client().post("/api/translate", data={"texts": "[]", "model": "m"})
+        self.assertIsNone(told.call_args.kwargs["kinds"])
+        self.assertIsNone(told.call_args.kwargs["budgets"])
+
+    def test_a_block_classified_by_nothing_is_a_real_answer(self):
+        # One drawn by hand: the detector never saw it, and saying nothing about
+        # it is honest where guessing is not.
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as told:
+            response = client().post(
+                "/api/translate",
+                data={
+                    "texts": json.dumps(["おはよう"]),
+                    "model": "m",
+                    "kinds": json.dumps([""]),
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(told.call_args.kwargs["kinds"], [""])
+
+    def test_what_is_said_about_the_lines_has_to_line_up_with_them(self):
+        # Refused rather than padded: one that has slipped by a place describes
+        # the wrong line, and nothing downstream can tell.
+        response = client().post(
+            "/api/translate",
+            data={
+                "texts": json.dumps(["おはよう", "ドン"]),
+                "model": "m",
+                "kinds": json.dumps(["speech"]),
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("kinds", response.json["error"])
+
+    def test_a_kind_this_does_not_know_is_refused(self):
+        # It goes into a prompt, so it is one of the words /api/detect answers
+        # with or it is nothing.
+        response = client().post(
+            "/api/translate",
+            data={
+                "texts": json.dumps(["おはよう"]),
+                "model": "m",
+                "kinds": json.dumps(["shouting"]),
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("kinds", response.json["error"])
 
     def test_a_glossary_that_is_not_pairs_is_refused(self):
         response = client().post(

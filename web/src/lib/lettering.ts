@@ -6,7 +6,7 @@
  */
 
 import type { Analysis, Box, Lettering, Region } from './api'
-import { fitSize, originalSize } from './fit'
+import { fitSize, originalSize, roomInCharacters } from './fit'
 import { insertAt, moveAt } from './order'
 
 export type Lines = (Lettering | null)[]
@@ -39,6 +39,40 @@ export function sizeFor(
     box[3] - box[1],
     originalSize(original, block[2] - block[0], block[3] - block[1]),
   )
+}
+
+/**
+ * Below this a budget is not worth sending: two or three words is not a length a
+ * line can be written to, it is a length that comes out as a telegram. A block
+ * whose room measures this small has no balloon to letter into — `roomFor` fell
+ * back to the column the Japanese was set in — and it is going to be set smaller
+ * whatever comes back, which is the honest answer there and not the model's to
+ * give.
+ */
+const BUDGET_MIN = 12
+
+/**
+ * About how many characters a translation of this block has room for, at the
+ * size the rest of the page is lettered at, or 0 for "not worth saying".
+ *
+ * The same two measurements {@link sizeFor} works from, asked in the other
+ * direction: not "how small must this be set to fit" but "how long may it be
+ * before it has to be". Worth asking before the line is written rather than
+ * after, since afterwards the only answer left is to set it smaller.
+ */
+export function budgetFor(
+  region: Pick<Region, 'box' | 'bubble'>,
+  original: string,
+): number {
+  const room = roomFor(region)
+  const block = region.box
+  if (!original.trim()) return 0
+  const fits = roomInCharacters(
+    room[2] - room[0],
+    room[3] - room[1],
+    originalSize(original, block[2] - block[0], block[3] - block[1]),
+  )
+  return fits < BUDGET_MIN ? 0 : fits
 }
 
 /**

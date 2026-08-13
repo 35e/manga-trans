@@ -80,6 +80,15 @@ REGIONS_SIZE = 640
 # The classes it answers with.
 BUBBLE, TEXT_BUBBLE, TEXT_FREE = 0, 1, 2
 
+# What a block turned out to be, in the words the answer carries it in. Finding,
+# tracing and cleaning treat the two alike and always will — they are ink on a
+# page either way — but a translation must not: lettering in a balloon is someone
+# speaking, and lettering outside one is a sound effect, a caption or a sign, which
+# is not spoken and is not written the same way. The model is asked both questions
+# in the one pass, so this costs nothing to keep and cannot be recovered later.
+SPEECH, FREE = "speech", "free"
+KINDS = {TEXT_BUBBLE: SPEECH, TEXT_FREE: FREE}
+
 # Below this a box is not worth showing. The dashboard leaves anything under
 # UNSURE (0.8) unselected for review, so this is the floor of what it is offered
 # rather than the line between sure and unsure.
@@ -105,6 +114,9 @@ class Block:
 
     box: Box
     confidence: float = 1.0
+    # SPEECH or FREE where the detector said which. Empty where nothing did: a
+    # block drawn by hand, or one asked about on its own.
+    kind: str = ""
 
 
 def model_path(explicit: str | None = None) -> Path:
@@ -343,13 +355,15 @@ class Regions:
         )
         # Thinned on the tight boxes and padded after, never the other way round:
         # a margin put on first can make two neighbours look like one finding.
+        # Speech and free lettering are thinned together though they are kept
+        # apart: a block the model called both is one block found twice.
         blocks = [
-            Block(padded(block.box, width, height), block.confidence)
+            Block(padded(block.box, width, height), block.confidence, block.kind)
             for block in suppressed(
                 [
-                    Block(box, score)
+                    Block(box, score, KINDS[kind])
                     for kind, box, score in found
-                    if kind in (TEXT_BUBBLE, TEXT_FREE)
+                    if kind in KINDS
                 ]
             )
         ]

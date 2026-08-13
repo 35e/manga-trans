@@ -104,7 +104,9 @@ this path rather than adding a pass.
   one pass, three classes (`bubble`, `text_bubble`, `text_free`), ~0.2 s. Its
   export carries RT-DETR's own postprocessing, so it answers with `labels`,
   `boxes` and `scores` — already corner-to-corner and already in the page's
-  pixels — rather than logits to threshold. It takes `orig_target_sizes` as
+  pixels — rather than logits to threshold. The two text classes are kept apart
+  as `Block.kind` (`speech`/`free`, `detect.KINDS`) and carried all the way to
+  the translator; everything else on the page treats them alike. It takes `orig_target_sizes` as
   **(width, height)**; the other way round returns the same balloons transposed.
   `Letters` is comic-text-detector, kept for its segmentation head *alone* — the
   per-pixel ink map behind `/api/letters`, which is what lets a clean take the
@@ -129,9 +131,10 @@ this path rather than adding a pass.
   `Reader.load()`.** Keep that import deferred, keep `rapidocr` deferred the same
   way inside `Ppocr.load()`, and keep both out of every other module.
 - `ollama.py` — the whole page goes over in one request, held to a JSON schema;
-  if the model returns the wrong number of lines it falls back to one line at a
-  time. Prompts are never stored: callers send `system` each time, and the
-  chapter's settled terms the same way, as `glossary`.
+  a miscounted page is shown its answer and asked again, and only a second
+  miscount falls back to one line at a time. Each line carries what it is and how
+  much room it has (`Line`). Prompts are never stored: callers send `system` each
+  time, and the chapter's settled terms the same way, as `glossary`.
 - `inpaint.py` / `render.py` — hiding and lettering. `render.marked()` turns
   boxes + mask into one greyscale page (white hidden), `render.hidden()` picks
   fill.
@@ -252,6 +255,36 @@ fallback font.
 believes an alpha channel only when some of it is actually clear, since a
 browser canvas always exports one — do not "simplify" that check. `lib/mask.ts`
 exports white-on-black for exactly this reason.
+
+**A line is sent with what it is and how long it may be, and both are positional
+with `texts`.** `kinds` (`speech`/`free`, straight from `/api/detect`) and
+`budgets` (about how many characters fit where it will be lettered,
+`lettering.budgetFor` off `fit.roomInCharacters`) are the two things a caller has
+and the model cannot see. `ollama.translate` drops empty texts and renumbers what
+is left, so it must carry both along with them — a marker a place out describes
+the wrong line, and nothing downstream can tell. `server.beside` refuses a list
+that is not one per text for the same reason. Both are optional and neither is
+ever enforced: a line over its budget is still lettered, smaller. The notes
+explaining the markers (`KINDS_NOTE`, `BUDGET_NOTE`) are appended by `ollama.told`
+only when the lines actually carry them, and appended there rather than written
+into `SYSTEM_DEFAULT` for the same reason `TERMS_NOTE` is — the prompt is the
+caller's to replace.
+
+**`KINDS_NOTE` has to insist on an answer for every line.** A model told a line is
+a sound effect is a model that may decide it needs no translating and answer for
+the other nineteen, which is the one failure the whole schema exists to prevent.
+
+**The context window is asked for, not taken** (`ollama.CONTEXT`). Ollama's default
+is 4096 tokens and it truncates what it is handed silently, front first — the
+briefing and the glossary. The symptom is a page that comes back miscounted, which
+looks like a bad model rather than a full window.
+
+**A miscounted page is asked again before it is taken apart.** The one-line-at-a-time
+pass cannot miscount and is the worst translation this produces: every line loses
+the page it was to be read against. `ollama.corrected` puts the model's own reply
+back in front of it with the counts, since the count is the one thing it cannot see
+from the request. Terms are kept from whichever answer named any (`terms or
+noted(again)`) — being asked for a count again is not being asked for names.
 
 **A chapter's glossary rides on the translate call, and the browser keeps it.**
 `terms` comes back beside `texts` and goes out again as `glossary` on the next

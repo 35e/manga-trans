@@ -18,7 +18,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
 
 from . import bubble, inpaint, languages, ollama, render
-from .detect import GROW, GROW_MAX, Letters, Regions
+from .detect import GROW, GROW_MAX, KINDS, Letters, Regions
 from .geometry import Box
 from .read import Reader
 
@@ -123,6 +123,60 @@ def terms_in(glossary: list | None) -> list[dict] | None:
         if source.strip() and target.strip():
             terms.append({"source": source.strip(), "target": target.strip()})
     return terms
+
+
+def beside(field: str, texts: list[str]) -> list | None:
+    """A list sent alongside `texts` and lined up with it, or None if none was.
+
+    Refused rather than padded when the counts differ: these say what each line
+    *is* and how long it may be, and one that has slipped by a place describes
+    the wrong line — which is worse than not having it at all, since nothing
+    downstream can tell.
+    """
+    values = maybe_sent(field)
+    if values is None:
+        return None
+    if len(values) != len(texts):
+        raise BadRequest(
+            f"'{field}' has {len(values)} for {len(texts)} texts — "
+            "one per text, in the same order"
+        )
+    return values
+
+
+def kinds_in(texts: list[str]) -> list[str] | None:
+    """What each line is, in the words /api/detect answers with."""
+    values = beside("kinds", texts)
+    if values is None:
+        return None
+    kinds = []
+    for kind in values:
+        # Empty is a real answer — a block drawn by hand was classified by
+        # nothing — but anything else goes into a prompt and must be a word this
+        # says, not whatever a caller felt like sending.
+        if kind in (None, ""):
+            kinds.append("")
+        elif kind in KINDS.values():
+            kinds.append(str(kind))
+        else:
+            raise BadRequest(
+                f"'kinds' must be empty or one of: {', '.join(KINDS.values())}"
+            )
+    return kinds
+
+
+def budgets_in(texts: list[str]) -> list[int] | None:
+    """How many characters each line has room for where it will be lettered."""
+    values = beside("budgets", texts)
+    if values is None:
+        return None
+    budgets = []
+    for budget in values:
+        try:
+            budgets.append(max(0, int(budget)))
+        except (TypeError, ValueError) as exc:
+            raise BadRequest("every budget must be a whole number") from exc
+    return budgets
 
 
 def number(field: str, default: int, low: int, high: int) -> int:
@@ -289,6 +343,12 @@ def create_app(
         introduced, with the wording used for each. Send them again as `glossary`
         on the next page and a chapter stays consistent across pages no model ever
         sees together. Nothing is kept here — the caller collects them.
+
+        `kinds` and `budgets` are what the caller knows about each line and the
+        model cannot see: `speech` or `free` from /api/detect, and about how many
+        characters fit where the translation is going. Both are optional, both are
+        one per text in the same order, and both are only ever put to the model as
+        part of what it is asked — a line is never refused for running over.
         """
         texts = [str(text) for text in sent("texts")]
         model = request.form.get("model", "").strip()
@@ -298,9 +358,17 @@ def create_app(
         source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
         system = request.form.get("system", "").strip() or None
         glossary = terms_in(maybe_sent("glossary"))
+        kinds, budgets = kinds_in(texts), budgets_in(texts)
         try:
             said, terms = ollama.translate(
-                texts, model, target, system=system, source=source, glossary=glossary
+                texts,
+                model,
+                target,
+                system=system,
+                source=source,
+                glossary=glossary,
+                kinds=kinds,
+                budgets=budgets,
             )
             return jsonify(texts=said, terms=terms)
         except ollama.Unreachable as exc:
@@ -314,6 +382,11 @@ def create_app(
         in, which is what a translation wants — see /api/bubbles. It comes back
         here too because it is worked out from the page and the boxes alone, and
         both are already in hand.
+
+        `kind` is what the block turned out to be: `speech` for lettering inside
+        a balloon, `free` for lettering outside one — a sound effect, a caption,
+        a sign. Nothing here treats the two differently, but a translation must:
+        send it back on /api/translate as `kinds`.
 
         Finding the text needs no model of the language, but the order they come
         back in does: `language` says which way across the page it is read.
@@ -330,6 +403,7 @@ def create_app(
                     "box": block.box.as_list(),
                     "confidence": round(block.confidence, 3),
                     "bubble": room.as_list() if room else None,
+                    "kind": block.kind,
                 }
                 for block, room in zip(blocks, rooms)
             ],

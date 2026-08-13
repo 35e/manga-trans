@@ -50,6 +50,9 @@ const newRegion = (box: Box, from?: Region): Region => ({
   id: crypto.randomUUID(),
   box,
   confidence: from?.confidence ?? 1,
+  // Half a block is the same kind of thing as the block it was cut from. One
+  // drawn from nothing is of no kind: the detector never saw it.
+  kind: from?.kind,
   manual: from ? from.manual : true,
 })
 
@@ -617,19 +620,26 @@ function App() {
 
       const chapter = page.folder
       const got = await during(page.id, 'translating', async () => {
-        const [answers] = await Promise.all([
-          translate(
-            wanted.map((line) => line.text),
-            ollama.model,
-            ollama.target,
-            prompt,
-            source.language?.name,
-            chapter ? termsNow.current[chapter] : null,
-          ),
-          // Sizes are about to be worked out by measuring: the face has to be in.
-          ready(),
-        ])
-        return answers
+        // The face has to be in before anything is measured, and now something is
+        // measured before the request rather than only after it: how much room a
+        // line has is part of what the model is asked for.
+        await ready()
+        const sending = wanted.map(({ text, index }) => {
+          const region = found.detection.regions[index]
+          return {
+            text,
+            kind: region?.kind,
+            budget: region ? lines.budgetFor(region, text) : undefined,
+          }
+        })
+        return translate(
+          sending,
+          ollama.model,
+          ollama.target,
+          prompt,
+          source.language?.name,
+          chapter ? termsNow.current[chapter] : null,
+        )
       })
       if (!got) return false
 

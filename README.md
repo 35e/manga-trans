@@ -175,6 +175,13 @@ it, as below, because it is worked out from the page and the boxes and both are
 already in hand. `language` changes nothing about what is found, only the order
 it comes back in.
 
+`kind` comes with it too: `speech` where the lettering is inside a balloon and
+`free` where it is not — a sound effect, a caption, a sign, a shout across the
+art. The model is asked both questions in the one pass, so it costs nothing here,
+and nothing about finding, tracing or hiding a block does anything differently
+with it. A translation must: a sound effect rendered as dialogue is a character
+shouting "thud". Send it back on `/api/translate` as `kinds`.
+
 Two balloons that overlap used to be boxed as one, and that is worse than it
 looks: the block is read as one string, so two speakers reach the translator as a
 single line and the lettering that comes back is set into one balloon. The model
@@ -297,9 +304,20 @@ request rather than one line at a time:
 that is both far quicker and better translation, since a line of manga read on
 its own often cannot be translated at all, having no idea who is speaking or
 about what. The model is held to a JSON schema so the answers come back
-countable, and if it loses count anyway the lines are asked about one at a time,
-where it cannot. One translation comes back per text, in order; a text that was
-empty stays empty.
+countable. A page that comes back miscounted anyway is shown its own answer and
+asked again — still the whole page, still every line read against the ones around
+it — and only a second miscount falls back to one line at a time, which cannot
+miscount and is the worst translation this can produce. One translation comes
+back per text, in order; a text that was empty stays empty.
+
+`kinds` and `budgets` are what a caller knows about each line that the model
+cannot see. `kinds` is `speech` or `free` from `/api/detect`, or `""` for a block
+nothing classified. `budgets` is roughly how many characters fit where the
+translation is going to be lettered — worth saying while the words are still
+being chosen, since a line too long for its balloon is not refused anywhere, it
+is set smaller until it fits, and a page of that is a page nobody can read. Both
+are optional; both are one per text in the same order, and a list that is not is
+refused rather than lined up wrong.
 
 What the model is told is the caller's too: send `system`, with `{target}` and
 `{source}` wherever the languages should go, and `GET /api/prompt` hands back the
@@ -322,6 +340,13 @@ comes through; asking it to reformat what it returns mostly does not. That is wh
 the sentence asking for `terms` is added by the API to whatever `system` says
 rather than living in the default prompt: replace the prompt and the glossary
 goes on working.
+
+The request asks for a context window rather than taking the one it is given:
+Ollama's own default is 4096 tokens and it drops what will not fit rather than
+saying so, front first — which is the briefing and the glossary, in a request
+that is otherwise a page of dialogue. What that costs is invisible from the
+outside: the terms quietly stop being honoured, and a briefing half gone comes
+back as a miscounted page.
 
 The model runs under [Ollama](https://ollama.com) on your own machine, and
 nothing is sent anywhere else. In a container that machine is not `localhost`,

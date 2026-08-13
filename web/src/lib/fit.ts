@@ -192,6 +192,41 @@ export function originalSize(
   )
 }
 
+/**
+ * What is measured to find the width of an average character. The alphabet with
+ * its space: the mix of a sentence, near enough, and measured in the face the
+ * lettering is actually set in rather than guessed at as a share of the em.
+ */
+const SAMPLE = 'abcdefghijklmnopqrstuvwxyz '
+
+/** What a greedy wrap leaves ragged at the end of each line. */
+const PACKING = 0.85
+
+/**
+ * Roughly how many characters fit in a box set at `size`.
+ *
+ * For saying how much room a line has *before* it is written, which is the only
+ * time it can be acted on: a translation too long for its balloon is not refused
+ * anywhere downstream, it is set smaller by {@link fitSize} until it fits, and a
+ * page of that is a page nobody can read. An estimate on purpose — what really
+ * fits depends on which letters — and nothing is held to it.
+ */
+export function roomInCharacters(
+  width: number,
+  height: number,
+  size: number,
+): number {
+  const context = measurer()
+  if (!context || width <= 0 || height <= 0 || size <= 0) return 0
+  context.font = fontFor(size)
+  const character = context.measureText(SAMPLE).width / SAMPLE.length
+  if (character <= 0) return 0
+  // At least one line: a room only tall enough for one still holds a short one,
+  // and the fitting is what decides in the end.
+  const rows = Math.max(1, Math.floor(height / (size * LINE_HEIGHT)))
+  return Math.max(0, Math.floor((width / character) * rows * PACKING))
+}
+
 /** The largest size that lands, or null if not even the smallest does. */
 function largestThatLands(
   context: CanvasRenderingContext2D,

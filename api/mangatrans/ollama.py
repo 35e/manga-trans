@@ -6,7 +6,14 @@ caller's choice out of whatever has been pulled there.
 The page goes over in one request rather than one per line: a line of manga read
 on its own often cannot be translated at all, having no idea who is speaking or
 about what. The model is held to a JSON schema so the answers come back
-countable, and if it loses count anyway the lines are asked about one at a time.
+countable; a page that comes back miscounted is shown what it did and asked
+again, and only a second miscount falls back to one line at a time — which always
+works and is the worst translation this can produce, having thrown away the page
+each line was to be read against.
+
+Each line carries what the detector made of it and how much room it has to be
+lettered into. Both are things a translator has and a model reading a bare list
+of strings does not: whether a line is spoken at all, and how long it may be.
 
 The same answer carries back the names and terms the page introduced, and the
 caller sends back what it has collected so far. That is what keeps a chapter
@@ -21,6 +28,7 @@ import os
 import threading
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 OLLAMA_ENV = "MANGA_TRANS_OLLAMA"
 
@@ -45,6 +53,16 @@ LISTING_TIMEOUT = 15
 # than a hang: nothing is listening is a refused connection or an unknown name,
 # and both come back at once.
 FINDING_TIMEOUT = 5
+
+# How much context to ask for. Ollama's own default is 4096 tokens and it drops
+# what will not fit rather than saying so, front first — which is the briefing and
+# the glossary, in a request that is otherwise a page of dialogue. Japanese runs
+# to a token or two a character, so a busy page with a chapter's names in front of
+# it is not far off it. What that costs is invisible: the terms quietly stop being
+# honoured, and a briefing half gone is a page that comes back miscounted and is
+# then translated a line at a time with nothing around it. The KV cache this asks
+# for is a few hundred MB at most, and only while a page is being translated.
+CONTEXT = 8192
 
 # `terms` is deliberately not required. The count — one translation per line, in
 # order — is what this whole module protects, and it must not start failing over
@@ -103,6 +121,42 @@ TERMS_NOTE = (
 )
 
 GLOSSARY_HEADING = "Terms already used in this chapter. Translate them the same way:"
+
+# Said only when the lines actually carry a kind, since a note about markers that
+# are not there is a note about nothing. The last sentence is doing real work: a
+# model told a line is a sound effect is a model that may decide it needs no
+# translation and answer for the other nineteen, which is the one failure this
+# module cannot let through.
+KINDS_NOTE = (
+    "Each line is marked [speech] where the lettering is inside a balloon and "
+    "[free] where it is not — a sound effect, a caption, a sign, a shout across the "
+    "art. A [free] line is not someone talking: render a sound effect as a sound "
+    "effect and a caption as narration, not as dialogue. Answer for every line, "
+    "[free] ones included, and do not repeat the markers in your answer."
+)
+
+# Likewise. A translation longer than its balloon is not refused anywhere — it is
+# lettered smaller until it fits, which is how a page ends up set in type nobody
+# can read — so the length is worth saying while the words are still being chosen.
+BUDGET_NOTE = (
+    "A line marked <=N has room for about N characters where it will be lettered. "
+    "Past that it has to be set too small to read, so say it in fewer words rather "
+    "than running over. It is a ceiling and not a target: short is fine."
+)
+
+
+@dataclass(frozen=True)
+class Line:
+    """One block on its way over: what it says, what it is, what room it has.
+
+    `kind` is the detector's word for it — speech or free lettering — and empty
+    where nothing said. `budget` is roughly how many characters fit where the
+    translation will be set, and None where the caller did not work it out.
+    """
+
+    text: str
+    kind: str = ""
+    budget: int | None = None
 
 
 class Unreachable(RuntimeError):
@@ -204,6 +258,11 @@ def answered(message: dict) -> dict | None:
     return None
 
 
+def text_of(message: dict) -> str:
+    """Whatever a reply said, wherever it filed it — see :func:`answered`."""
+    return (message.get("content") or message.get("thinking") or "").strip()
+
+
 def noted(reply: dict | None) -> list[dict]:
     """The terms out of an answer, keeping only the ones that are actually a pair.
 
@@ -253,17 +312,35 @@ def told(
     system: str | None,
     source: str,
     glossary: list[dict] | None = None,
+    kinds: bool = False,
+    budgets: bool = False,
 ) -> str:
-    """The whole system message: the prompt, the terms note, the glossary."""
+    """The whole system message: the prompt, the notes that apply, the glossary."""
     return "\n\n".join(
         part
-        for part in (briefing(target, system, source), TERMS_NOTE, settled(glossary))
+        for part in (
+            briefing(target, system, source),
+            TERMS_NOTE,
+            KINDS_NOTE if kinds else "",
+            BUDGET_NOTE if budgets else "",
+            settled(glossary),
+        )
         if part
     )
 
 
+def marked(number: int, line: Line) -> str:
+    """One line as it goes over: its number, what it is, how much room it has."""
+    notes = []
+    if line.kind:
+        notes.append(f"[{line.kind}]")
+    if line.budget:
+        notes.append(f"<={line.budget}")
+    return f"{number}. {' '.join(notes + [line.text])}"
+
+
 def request_for(
-    lines: list[str],
+    lines: list[Line],
     model: str,
     target: str,
     system: str | None = None,
@@ -276,14 +353,57 @@ def request_for(
         # Thinking off where the model allows it: on a page of twenty lines it is
         # the difference between seconds and minutes, and none of it is wanted.
         "think": False,
-        "options": {"temperature": 0.2},
+        "options": {"temperature": 0.2, "num_ctx": CONTEXT},
         "format": SCHEMA,
         "messages": [
-            {"role": "system", "content": told(target, system, source, glossary)},
+            {
+                "role": "system",
+                "content": told(
+                    target,
+                    system,
+                    source,
+                    glossary,
+                    any(line.kind for line in lines),
+                    any(line.budget for line in lines),
+                ),
+            },
             {
                 "role": "user",
                 "content": "\n".join(
-                    f"{number}. {line}" for number, line in enumerate(lines, 1)
+                    marked(number, line) for number, line in enumerate(lines, 1)
+                ),
+            },
+        ],
+    }
+
+
+def counted(reply: dict | None, wanted: int) -> list[str] | None:
+    """The translations out of an answer, if it came back with one for every line."""
+    got = reply.get("translations") if reply else None
+    if not isinstance(got, list) or len(got) != wanted:
+        return None
+    return [str(line) for line in got]
+
+
+def corrected(body: dict, said: dict, got: int, wanted: int) -> dict:
+    """The same page again, with the miscounted answer and what was wrong with it.
+
+    Shown its own reply rather than only asked again: what it got wrong was the
+    count, which it cannot see from the request alone. The page stays in front of
+    it either way, which is the whole difference between this and :func:`one`.
+    """
+    return {
+        **body,
+        "messages": [
+            *body["messages"],
+            {"role": "assistant", "content": text_of(said)},
+            {
+                "role": "user",
+                "content": (
+                    f"That was {got} translations for {wanted} lines. Answer again "
+                    f"with exactly {wanted}, one for each numbered line, in the same "
+                    "order. A line you would leave as it is still needs one: give "
+                    "it back as it stands rather than dropping it."
                 ),
             },
         ],
@@ -291,7 +411,7 @@ def request_for(
 
 
 def one(
-    text: str,
+    line: Line,
     model: str,
     target: str,
     host=None,
@@ -299,8 +419,8 @@ def one(
     source: str = SOURCE_DEFAULT,
     glossary: list[dict] | None = None,
 ) -> str:
-    """One line on its own, for when a whole page came back miscounted."""
-    body = request_for([text], model, target, system, source, glossary)
+    """One line on its own, for a page that came back miscounted twice."""
+    body = request_for([line], model, target, system, source, glossary)
     sent = ask("/api/chat", body, host=host)
     message = sent["message"]
     reply = answered(message)
@@ -318,28 +438,55 @@ def translate(
     system: str | None = None,
     source: str = SOURCE_DEFAULT,
     glossary: list[dict] | None = None,
+    kinds: list[str] | None = None,
+    budgets: list[int] | None = None,
 ) -> tuple[list[str], list[dict]]:
     """One translation per text in the order given, and the terms the page named.
+
+    `kinds` and `budgets` are positional with `texts` where they are sent at all:
+    what the detector made of each block, and how much room its translation has.
 
     An empty text stays empty and is never sent: there is nothing to translate,
     and a blank line only gives the model something to miscount.
     """
-    wanted = [(at, text) for at, text in enumerate(texts) if text.strip()]
+    wanted = [
+        (
+            at,
+            Line(
+                text,
+                kinds[at] if kinds else "",
+                budgets[at] if budgets else None,
+            ),
+        )
+        for at, text in enumerate(texts)
+        if text.strip()
+    ]
     done = [""] * len(texts)
     if not wanted:
         return done, []
 
-    lines = [text for _, text in wanted]
+    lines = [line for _, line in wanted]
     body = request_for(lines, model, target, system, source, glossary)
-    reply = answered(ask("/api/chat", body, host=host)["message"])
-    got = reply["translations"] if reply else None
+    said = ask("/api/chat", body, host=host)["message"]
+    reply = answered(said)
+    got = counted(reply, len(lines))
     # Kept even when the count was wrong: naming a character does not depend on
-    # counting the lines, and the pass below has no page left to find one in.
+    # counting the lines, and neither pass below has a page left to find one in.
     terms = noted(reply)
 
-    if got is None or len(got) != len(lines):
-        # It lost count. Asked one line at a time it cannot, though it loses the
-        # rest of the page as context.
+    if got is None:
+        # It lost count. Shown its own answer and asked again it usually holds,
+        # and a page asked again is still a page — every line still read against
+        # the ones around it, which is what the fallback below gives up.
+        gave = len(reply["translations"]) if reply else 0
+        asked_again = corrected(body, said, gave, len(lines))
+        again = answered(ask("/api/chat", asked_again, host=host)["message"])
+        got = counted(again, len(lines))
+        terms = terms or noted(again)
+
+    if got is None:
+        # Twice. Asked one line at a time it cannot miscount, though every line
+        # loses the rest of the page it was to be read against.
         got = [
             one(line, model, target, host, system, source, glossary) for line in lines
         ]

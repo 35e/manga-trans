@@ -17,6 +17,13 @@ export type Language = { code: string; name: string; rtl: boolean }
 /** What the API reads a page as when it is told nothing. */
 export const LANGUAGE_DEFAULT = 'ja'
 
+/**
+ * What a block turned out to be: lettering inside a balloon, or lettering over
+ * the art — a sound effect, a caption, a sign. Nothing about finding, cleaning or
+ * lettering a block cares which, and a translation cannot do without it.
+ */
+export type Kind = 'speech' | 'free'
+
 export type Region = {
   /**
    * This block, for as long as it exists. Blocks are resized, reordered and
@@ -26,6 +33,8 @@ export type Region = {
   id: string
   box: Box
   confidence: number
+  /** Speech or not, where the detector said. Absent on a block drawn by hand. */
+  kind?: Kind
   /**
    * The room the block was written in: the largest rectangle inside the balloon
    * around it, which is where a translation goes. Null where no balloon could be
@@ -217,7 +226,14 @@ export async function defaultPrompt(): Promise<string> {
 export type Term = { source: string; target: string }
 
 /**
- * One translation per text, in order. The whole page goes over at once: a line
+ * One line on its way over: what it says, and the two things about it the model
+ * cannot see for itself — whether it is spoken, and how much room a translation
+ * of it has. Both are optional; a line is never refused for running over.
+ */
+export type Untranslated = { text: string; kind?: Kind; budget?: number }
+
+/**
+ * One translation per line, in order. The whole page goes over at once: a line
  * of manga read on its own often cannot be translated at all.
  *
  * `system` is what the model is told; leave it out for the API's own. `source`
@@ -230,23 +246,31 @@ export type Term = { source: string; target: string }
  * second one: over a folder of forty pages a second would be forty more calls.
  */
 export async function translate(
-  texts: string[],
+  lines: Untranslated[],
   model: string,
   target: string,
   system?: string | null,
   source?: string | null,
   glossary?: Term[] | null,
 ): Promise<{ texts: string[]; terms: Term[] }> {
-  if (texts.length === 0) return { texts: [], terms: [] }
+  if (lines.length === 0) return { texts: [], terms: [] }
 
   const body = new FormData()
-  body.append('texts', JSON.stringify(texts))
+  body.append('texts', JSON.stringify(lines.map((line) => line.text)))
   body.append('model', model)
   body.append('target', target)
   if (system) body.append('system', system)
   if (source) body.append('source', source)
   if (glossary && glossary.length > 0) {
     body.append('glossary', JSON.stringify(glossary))
+  }
+  // Sent whole or not at all, and the API refuses a list that is not one per
+  // line: a marker that has slipped a place describes the wrong line.
+  if (lines.some((line) => line.kind)) {
+    body.append('kinds', JSON.stringify(lines.map((line) => line.kind ?? '')))
+  }
+  if (lines.some((line) => line.budget)) {
+    body.append('budgets', JSON.stringify(lines.map((line) => line.budget ?? 0)))
   }
 
   const response = await reach('/api/translate', { method: 'POST', body })
