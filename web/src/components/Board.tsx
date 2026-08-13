@@ -328,6 +328,9 @@ export function Board({
       )}
 
       <div className="relative min-h-0 flex-1">
+        {/* Isolated so the overlays' z-indices stay inside it: the boxes are z-20
+            and the view bar floating over the page is a sibling with none, so
+            without this they paint over the bar. */}
         <div
           ref={surface}
           onPointerDown={(event) => {
@@ -337,7 +340,7 @@ export function Board({
             if (selected === null) return
             if (!(event.target as Element).closest('[data-box]')) onSelect(null)
           }}
-          className={`absolute inset-0 overflow-auto overscroll-contain ${
+          className={`absolute inset-0 isolate overflow-auto overscroll-contain ${
             view.panning ? 'cursor-grabbing' : ''
           }`}
         >
