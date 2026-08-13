@@ -7,6 +7,11 @@ The page goes over in one request rather than one per line: a line of manga read
 on its own often cannot be translated at all, having no idea who is speaking or
 about what. The model is held to a JSON schema so the answers come back
 countable, and if it loses count anyway the lines are asked about one at a time.
+
+The same answer carries back the names and terms the page introduced, and the
+caller sends back what it has collected so far. That is what keeps a chapter
+consistent across pages the model never sees together — and it rides on the one
+request rather than a second, which over a folder run would double the calls.
 """
 
 from __future__ import annotations
@@ -41,11 +46,32 @@ LISTING_TIMEOUT = 15
 # and both come back at once.
 FINDING_TIMEOUT = 5
 
+# `terms` is deliberately not required. The count — one translation per line, in
+# order — is what this whole module protects, and it must not start failing over
+# a model that saw nothing worth naming on a page of "...".
 SCHEMA = {
     "type": "object",
-    "properties": {"translations": {"type": "array", "items": {"type": "string"}}},
+    "properties": {
+        "translations": {"type": "array", "items": {"type": "string"}},
+        "terms": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "target": {"type": "string"},
+                },
+                "required": ["source", "target"],
+            },
+        },
+    },
     "required": ["translations"],
 }
+
+# How many terms are worth putting in front of a page. A chapter's recurring cast
+# is a couple of dozen names; past that it is vocabulary, and a prompt long enough
+# to hold it crowds out the page it is meant to help.
+GLOSSARY_LIMIT = 40
 
 # ``{target}`` is replaced by the language being translated into and ``{source}``
 # by the one the page was lettered in. Saying the source is worth the words: the
@@ -63,6 +89,20 @@ SYSTEM_DEFAULT = (
     "bubble. Translate only: no notes, no romaji, no quotation marks around the "
     "line."
 )
+
+# Said on every request, whatever the prompt is. It belongs here rather than in
+# SYSTEM_DEFAULT because the prompt above is the caller's to replace: a
+# hand-written one would not mention terms, and the glossary would quietly stop
+# working the moment anyone edited it. This is about the shape of the answer, the
+# way the schema is, rather than about how to translate.
+TERMS_NOTE = (
+    "Also list, under `terms`, any name, place, honorific or invented word on this "
+    "page that a later page would have to render the same way, each with the "
+    "wording you just used for it. Recurring ones only: nothing that is ordinary "
+    "vocabulary, and nothing already listed as settled below."
+)
+
+GLOSSARY_HEADING = "Terms already used in this chapter. Translate them the same way:"
 
 
 class Unreachable(RuntimeError):
@@ -146,19 +186,44 @@ def as_json(text: str):
         return None
 
 
-def answered(message: dict) -> list | None:
-    """The translations out of one reply.
+def answered(message: dict) -> dict | None:
+    """The whole answer out of one reply, translations and terms together.
 
     Ollama files a thinking model's reasoning under `thinking` and its answer
     under `content`, but a model held to a schema may not think at all — and then
     some builds put the whole answer under `thinking`. The answer is whichever
     field holds the JSON.
+
+    What makes a reply an answer is still the translations: a page that came back
+    with terms and nothing to letter is not one.
     """
     for field in ("content", "thinking"):
         found = as_json(message.get(field) or "")
         if isinstance(found, dict) and isinstance(found.get("translations"), list):
-            return found["translations"]
+            return found
     return None
+
+
+def noted(reply: dict | None) -> list[dict]:
+    """The terms out of an answer, keeping only the ones that are actually a pair.
+
+    `terms` is optional and unpoliced by the schema beyond its shape, so a model
+    that files something else there costs nothing rather than reaching the caller.
+    """
+    if not reply:
+        return []
+    found = reply.get("terms")
+    if not isinstance(found, list):
+        return []
+    terms = []
+    for term in found:
+        if not isinstance(term, dict):
+            continue
+        source = str(term.get("source") or "").strip()
+        target = str(term.get("target") or "").strip()
+        if source and target:
+            terms.append({"source": source, "target": target})
+    return terms[:GLOSSARY_LIMIT]
 
 
 def briefing(
@@ -173,12 +238,37 @@ def briefing(
     return said.replace("{target}", target).replace("{source}", source)
 
 
+def settled(glossary: list[dict] | None) -> str:
+    """The terms already decided, as lines to put in front of the page."""
+    if not glossary:
+        return ""
+    lines = "\n".join(
+        f"{term['source']} = {term['target']}" for term in glossary[:GLOSSARY_LIMIT]
+    )
+    return f"{GLOSSARY_HEADING}\n{lines}"
+
+
+def told(
+    target: str,
+    system: str | None,
+    source: str,
+    glossary: list[dict] | None = None,
+) -> str:
+    """The whole system message: the prompt, the terms note, the glossary."""
+    return "\n\n".join(
+        part
+        for part in (briefing(target, system, source), TERMS_NOTE, settled(glossary))
+        if part
+    )
+
+
 def request_for(
     lines: list[str],
     model: str,
     target: str,
     system: str | None = None,
     source: str = SOURCE_DEFAULT,
+    glossary: list[dict] | None = None,
 ) -> dict:
     return {
         "model": model,
@@ -189,7 +279,7 @@ def request_for(
         "options": {"temperature": 0.2},
         "format": SCHEMA,
         "messages": [
-            {"role": "system", "content": briefing(target, system, source)},
+            {"role": "system", "content": told(target, system, source, glossary)},
             {
                 "role": "user",
                 "content": "\n".join(
@@ -207,12 +297,14 @@ def one(
     host=None,
     system: str | None = None,
     source: str = SOURCE_DEFAULT,
+    glossary: list[dict] | None = None,
 ) -> str:
     """One line on its own, for when a whole page came back miscounted."""
-    body = request_for([text], model, target, system, source)
+    body = request_for([text], model, target, system, source, glossary)
     sent = ask("/api/chat", body, host=host)
     message = sent["message"]
-    got = answered(message)
+    reply = answered(message)
+    got = reply["translations"] if reply else None
     if got:
         return str(got[0]).strip()
     return (message.get("content") or "").strip()
@@ -225,8 +317,9 @@ def translate(
     host=None,
     system: str | None = None,
     source: str = SOURCE_DEFAULT,
-) -> list[str]:
-    """One translation per text, in the order they were given.
+    glossary: list[dict] | None = None,
+) -> tuple[list[str], list[dict]]:
+    """One translation per text in the order given, and the terms the page named.
 
     An empty text stays empty and is never sent: there is nothing to translate,
     and a blank line only gives the model something to miscount.
@@ -234,17 +327,23 @@ def translate(
     wanted = [(at, text) for at, text in enumerate(texts) if text.strip()]
     done = [""] * len(texts)
     if not wanted:
-        return done
+        return done, []
 
     lines = [text for _, text in wanted]
-    body = request_for(lines, model, target, system, source)
-    got = answered(ask("/api/chat", body, host=host)["message"])
+    body = request_for(lines, model, target, system, source, glossary)
+    reply = answered(ask("/api/chat", body, host=host)["message"])
+    got = reply["translations"] if reply else None
+    # Kept even when the count was wrong: naming a character does not depend on
+    # counting the lines, and the pass below has no page left to find one in.
+    terms = noted(reply)
 
     if got is None or len(got) != len(lines):
         # It lost count. Asked one line at a time it cannot, though it loses the
         # rest of the page as context.
-        got = [one(line, model, target, host, system, source) for line in lines]
+        got = [
+            one(line, model, target, host, system, source, glossary) for line in lines
+        ]
 
     for (at, _), answer in zip(wanted, got):
         done[at] = str(answer).strip()
-    return done
+    return done, terms

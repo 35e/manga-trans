@@ -183,10 +183,15 @@ export function Select({
 
 export function TextInput({
   className = '',
+  ref,
   ...rest
-}: React.InputHTMLAttributes<HTMLInputElement>) {
+}: React.InputHTMLAttributes<HTMLInputElement> & {
+  /** Taken so a field that appears on a click can be typed into straight away. */
+  ref?: React.Ref<HTMLInputElement>
+}) {
   return (
     <input
+      ref={ref}
       className={`rounded-lg border border-line bg-raised px-2 py-1 text-xs text-ink transition-colors hover:border-faint ${FOCUS} ${className}`}
       {...rest}
     />

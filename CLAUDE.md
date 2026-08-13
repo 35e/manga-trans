@@ -130,7 +130,8 @@ this path rather than adding a pass.
   way inside `Ppocr.load()`, and keep both out of every other module.
 - `ollama.py` — the whole page goes over in one request, held to a JSON schema;
   if the model returns the wrong number of lines it falls back to one line at a
-  time. Prompts are never stored: callers send `system` each time.
+  time. Prompts are never stored: callers send `system` each time, and the
+  chapter's settled terms the same way, as `glossary`.
 - `inpaint.py` / `render.py` — hiding and lettering. `render.marked()` turns
   boxes + mask into one greyscale page (white hidden), `render.hidden()` picks
   fill.
@@ -251,6 +252,28 @@ fallback font.
 believes an alpha channel only when some of it is actually clear, since a
 browser canvas always exports one — do not "simplify" that check. `lib/mask.ts`
 exports white-on-black for exactly this reason.
+
+**A chapter's glossary rides on the translate call, and the browser keeps it.**
+`terms` comes back beside `texts` and goes out again as `glossary` on the next
+page, so a folder run stays consistent without a second request per page — which
+over forty pages would be forty more. Four things about it are load-bearing:
+`terms` is **not** in `SCHEMA["required"]`, so a page that names nobody cannot
+break the count contract that the rest of the module exists to protect; a
+**miscounted** page still keeps the terms of its spoiled reply, since naming a
+character does not depend on counting lines and the one-at-a-time pass has no page
+left to find one in; the note asking for terms is appended by `ollama.told` rather
+than written into `SYSTEM_DEFAULT`, because the prompt is the caller's to replace
+and the glossary must not stop working when it is; and in `useGlossary` the
+**first** rendering of a term wins and is never overwritten, capped at `LIMIT` —
+consistency is the point, and a later answer is not better for being later.
+
+**A folder made by hand outlives its pages.** `useImageLibrary.remove` deletes an
+archive's folder when its last page goes, and must not do that to a `manual` one:
+it was made empty and is meant to be filled. That flag is held rather than read
+off a missing `archive`, because the first zip dropped into such a folder fills
+`archive` in — matched by name, which is also why `makeFolder` refuses a name
+already taken rather than making it unique. Loose pages dropped while a folder is
+open land in it; an archive still makes its own.
 
 **A block is marked into a mask by the lettering in it, never by its box.**
 `mask.mark` falls back to stamping the whole rectangle when it is handed no

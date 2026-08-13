@@ -35,8 +35,37 @@ export function useImageLibrary() {
     setNotice({ id: crypto.randomUUID(), text })
   }, [])
 
+  /**
+   * A folder of one's own, empty until pages are dropped into it.
+   *
+   * The name is refused when one is already held, rather than made unique:
+   * `folderFor` matches an archive to a folder by name alone, so two of a name
+   * would leave which one a re-dropped chapter fills up to the order they happen
+   * to be in.
+   */
+  const makeFolder = useCallback(
+    (name: string): string | null => {
+      const called = name.trim()
+      if (!called) return null
+      if (heldFolders.current.some((folder) => folder.name === called)) {
+        say(`there is already a folder called ${called}`)
+        return null
+      }
+      const made: GalleryFolder = {
+        id: crypto.randomUUID(),
+        name: called,
+        addedAt: Date.now(),
+        manual: true,
+      }
+      setFolders((current) => [...current, made])
+      setNotice(null)
+      return made.id
+    },
+    [say],
+  )
+
   const add = useCallback(
-    async (incoming: FileList | File[] | null) => {
+    async (incoming: FileList | File[] | null, into?: string) => {
       const dropped = Array.from(incoming ?? [])
       if (dropped.length === 0) return
 
@@ -47,6 +76,7 @@ export function useImageLibrary() {
       // with a folder of their own on the way through.
       const taken: { file: File; folder?: string }[] = []
       const opened: GalleryFolder[] = []
+      const named = new Map<string, string>()
       const unopenable: string[] = []
       const hollow: string[] = []
 
@@ -63,15 +93,24 @@ export function useImageLibrary() {
         const held =
           heldFolders.current.find((folder) => folder.name === name) ??
           opened.find((folder) => folder.name === name)
-        if (held) return held
+        // A folder made by hand has no archive to be named after, so the first
+        // one dropped into it says what the chapter came in as — without which it
+        // would come back out as a .zip whatever it arrived as. Noted rather than
+        // written here: the held one is in state, and state is not edited in place.
+        if (held) {
+          if (!held.archive) named.set(held.id, archive)
+          return held
+        }
         const made = { id: crypto.randomUUID(), name, addedAt: Date.now(), archive }
         opened.push(made)
         return made
       }
 
       for (const file of dropped) {
+        // Loose pages land in the folder being looked at; an archive still makes
+        // one of its own, since a chapter inside a chapter means nothing here.
         if (!isZip(file)) {
-          taken.push({ file })
+          taken.push({ file, folder: into })
           continue
         }
         try {
@@ -119,7 +158,21 @@ export function useImageLibrary() {
       const filled = opened.filter((folder) =>
         fresh.some((image) => image.folder === folder.id),
       )
-      if (filled.length > 0) setFolders((current) => [...current, ...filled])
+      // Only the back-fills that actually took a page, for the same reason.
+      const naming = new Map(
+        [...named].filter(([id]) => fresh.some((image) => image.folder === id)),
+      )
+      if (filled.length > 0 || naming.size > 0) {
+        setFolders((current) =>
+          current
+            .map((folder) =>
+              naming.has(folder.id)
+                ? { ...folder, archive: naming.get(folder.id) }
+                : folder,
+            )
+            .concat(filled),
+        )
+      }
       if (fresh.length > 0) setImages((current) => [...current, ...fresh])
 
       const broken = candidates.length - loaded.length
@@ -145,10 +198,13 @@ export function useImageLibrary() {
     URL.revokeObjectURL(going.url)
     setImages((current) => current.filter((image) => image.id !== id))
 
-    // A folder with nothing left in it is not a folder.
+    // An archive's folder with nothing left in it is not a folder. One made by
+    // hand is: it was made empty and is meant to be filled, so taking its last
+    // page out must not take the folder with it.
     const folder = going.folder
     if (
       folder &&
+      !heldFolders.current.find((held) => held.id === folder)?.manual &&
       !latest.current.some((image) => image.folder === folder && image.id !== id)
     ) {
       setFolders((current) => current.filter((held) => held.id !== folder))
@@ -176,6 +232,7 @@ export function useImageLibrary() {
   return {
     images,
     folders,
+    makeFolder,
     add,
     remove,
     dropFolder,

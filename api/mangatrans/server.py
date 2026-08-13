@@ -98,6 +98,33 @@ def sent(field: str) -> list:
     return value
 
 
+def maybe_sent(field: str) -> list | None:
+    """The same, for a list a caller may simply not have."""
+    if request.form.get(field) is None:
+        return None
+    return sent(field)
+
+
+def terms_in(glossary: list | None) -> list[dict] | None:
+    """A glossary as it arrives, refused rather than half-read if it is malformed.
+
+    Strict where `ollama.noted` is lenient: that reads a model's answer, this
+    reads a caller's request, and a caller sending the wrong shape wants telling.
+    """
+    if glossary is None:
+        return None
+    terms = []
+    for term in glossary:
+        if not isinstance(term, dict):
+            raise BadRequest("'glossary' must be a list of {source, target} objects")
+        source, target = term.get("source"), term.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            raise BadRequest("every term in 'glossary' needs a source and a target")
+        if source.strip() and target.strip():
+            terms.append({"source": source.strip(), "target": target.strip()})
+    return terms
+
+
 def number(field: str, default: int, low: int, high: int) -> int:
     """A whole number sent beside the image, clamped to what makes sense."""
     raw = request.form.get(field)
@@ -257,6 +284,11 @@ def create_app(
         `source` and `target` are language names rather than codes: they are only
         ever words in a prompt, and a caller may well be translating something
         this API has no reader for.
+
+        `terms` comes back beside them: the names and coinages this page
+        introduced, with the wording used for each. Send them again as `glossary`
+        on the next page and a chapter stays consistent across pages no model ever
+        sees together. Nothing is kept here — the caller collects them.
         """
         texts = [str(text) for text in sent("texts")]
         model = request.form.get("model", "").strip()
@@ -265,9 +297,12 @@ def create_app(
         target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
         source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
         system = request.form.get("system", "").strip() or None
+        glossary = terms_in(maybe_sent("glossary"))
         try:
-            said = ollama.translate(texts, model, target, system=system, source=source)
-            return jsonify(texts=said)
+            said, terms = ollama.translate(
+                texts, model, target, system=system, source=source, glossary=glossary
+            )
+            return jsonify(texts=said, terms=terms)
         except ollama.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 

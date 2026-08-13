@@ -8,6 +8,7 @@ import { GearIcon } from './components/icons'
 import { IconButton } from './components/ui'
 import { useBatch } from './hooks/useBatch'
 import { useFileDrop } from './hooks/useFileDrop'
+import { useGlossary } from './hooks/useGlossary'
 import { useImageLibrary } from './hooks/useImageLibrary'
 import { useLanguage } from './hooks/useLanguage'
 import { useLetterMasks } from './hooks/useLetterMasks'
@@ -53,9 +54,47 @@ const newRegion = (box: Box, from?: Region): Region => ({
 })
 
 function App() {
-  const { images, folders, add, remove, dropFolder, clear, busy, notice, dismissNotice } =
-    useImageLibrary()
-  const dragging = useFileDrop(add)
+  const {
+    images,
+    folders,
+    makeFolder,
+    add,
+    remove,
+    dropFolder,
+    clear,
+    busy,
+    notice,
+    dismissNotice,
+  } = useImageLibrary()
+
+  // Which folder the rail is looking into. Held here rather than in the Sidebar
+  // because a drop lands in it, and the drop is caught at the window.
+  const [openFolder, setOpenFolder] = useState<string | null>(null)
+  const openNow = useRef(openFolder)
+  openNow.current = openFolder
+
+  const addTo = useCallback(
+    (files: FileList | File[] | null) => void add(files, openNow.current ?? undefined),
+    [add],
+  )
+  const dragging = useFileDrop(addTo)
+
+  /** A folder of one's own, opened as it is made so the next drop lands in it. */
+  const newFolder = useCallback(
+    (name: string) => {
+      const made = makeFolder(name)
+      if (made) setOpenFolder(made)
+      return made !== null
+    },
+    [makeFolder],
+  )
+
+  // A folder deleted while it was open leaves nothing to be inside of.
+  useEffect(() => {
+    if (openFolder !== null && !folders.some((held) => held.id === openFolder)) {
+      setOpenFolder(null)
+    }
+  }, [openFolder, folders])
   const { forPage, drop: dropMask, clear: clearMasks } = useMasks()
   const traced = useLetterMasks()
   const {
@@ -66,6 +105,13 @@ function App() {
   } = useObjectUrls()
   const ollama = useOllama()
   const source = useLanguage()
+  const {
+    terms: chapterTerms,
+    now: termsNow,
+    learn: learnTerms,
+    forget: forgetTerms,
+    clear: clearTerms,
+  } = useGlossary()
   const { prompt, setPrompt, builtIn: builtInPrompt } = usePrompt()
 
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -554,6 +600,10 @@ function App() {
    * together. Each line lands in the balloon its original was written in, not in
    * the box the original came out of, which for vertical Japanese is a column
    * too narrow to set a word of English across.
+   *
+   * A page in a folder is translated against what that chapter has already
+   * settled on, and hands back whatever it added — which is what keeps one
+   * character's name spelled one way across pages the model never sees together.
    */
   const translatePage = useCallback(
     async (page: GalleryImage, found: Analysis): Promise<boolean> => {
@@ -565,6 +615,7 @@ function App() {
         .filter(({ text, index }) => text.trim() && !skip.has(index))
       if (wanted.length === 0) return false
 
+      const chapter = page.folder
       const got = await during(page.id, 'translating', async () => {
         const [answers] = await Promise.all([
           translate(
@@ -573,6 +624,7 @@ function App() {
             ollama.target,
             prompt,
             source.language?.name,
+            chapter ? termsNow.current[chapter] : null,
           ),
           // Sizes are about to be worked out by measuring: the face has to be in.
           ready(),
@@ -581,15 +633,25 @@ function App() {
       })
       if (!got) return false
 
+      if (chapter) learnTerms(chapter, got.terms)
+
       const set: Lines = found.detection.regions.map(() => null)
       wanted.forEach((line, at) => {
-        const text = (got[at] ?? '').trim()
+        const text = (got.texts[at] ?? '').trim()
         if (text) set[line.index] = lines.laidOut(found, line.index, text)
       })
       setLettering((current) => ({ ...current, [page.id]: set }))
       return true
     },
-    [during, ollama.model, ollama.target, prompt, source.language?.name],
+    [
+      during,
+      ollama.model,
+      ollama.target,
+      prompt,
+      source.language?.name,
+      termsNow,
+      learnTerms,
+    ],
   )
 
   // The three steps as the buttons on the board call them. Only cleaning moves on
@@ -690,9 +752,10 @@ function App() {
     (id: string) => {
       if (batch?.folder === id) stopBatch()
       for (const image of images) if (image.folder === id) forget(image.id)
+      forgetTerms(id)
       dropFolder(id)
     },
-    [batch?.folder, stopBatch, images, forget, dropFolder],
+    [batch?.folder, stopBatch, images, forget, forgetTerms, dropFolder],
   )
 
   const clearAll = useCallback(() => {
@@ -701,10 +764,11 @@ function App() {
     clearMasks()
     clearCleaned()
     traced.clear()
+    clearTerms()
     setLettering({})
     setAnalyses({})
     setActiveId(null)
-  }, [stopBatch, clear, clearMasks, clearCleaned, traced])
+  }, [stopBatch, clear, clearMasks, clearCleaned, traced, clearTerms])
 
   const changeLettering = useCallback(
     (index: number, patch: Partial<Lettering>) => {
@@ -866,11 +930,16 @@ function App() {
         <Sidebar
           images={images}
           folders={folders}
+          open={openFolder}
+          onOpenFolder={setOpenFolder}
+          onNewFolder={newFolder}
+          terms={openFolder ? (chapterTerms[openFolder] ?? []) : []}
+          onForgetTerms={() => openFolder && forgetTerms(openFolder)}
           activeId={active?.id ?? null}
           onOpen={setActiveId}
           onRemove={removeImage}
           onRemoveFolder={removeFolder}
-          onFiles={add}
+          onFiles={addTo}
           dragging={dragging}
           busy={busy}
           notice={notice}

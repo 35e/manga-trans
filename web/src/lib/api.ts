@@ -213,6 +213,9 @@ export async function defaultPrompt(): Promise<string> {
   return answer.prompt
 }
 
+/** A name or coinage, and the wording settled on for it. */
+export type Term = { source: string; target: string }
+
 /**
  * One translation per text, in order. The whole page goes over at once: a line
  * of manga read on its own often cannot be translated at all.
@@ -221,6 +224,10 @@ export async function defaultPrompt(): Promise<string> {
  * is the language the page was lettered in, as a word rather than a code —
  * worth saying, since the same characters are Japanese or Chinese depending on
  * nothing a model can see from one line of dialogue.
+ *
+ * `glossary` is what the chapter has settled on so far, and `terms` comes back
+ * with whatever this page added to it. That rides on this request rather than a
+ * second one: over a folder of forty pages a second would be forty more calls.
  */
 export async function translate(
   texts: string[],
@@ -228,8 +235,9 @@ export async function translate(
   target: string,
   system?: string | null,
   source?: string | null,
-): Promise<string[]> {
-  if (texts.length === 0) return []
+  glossary?: Term[] | null,
+): Promise<{ texts: string[]; terms: Term[] }> {
+  if (texts.length === 0) return { texts: [], terms: [] }
 
   const body = new FormData()
   body.append('texts', JSON.stringify(texts))
@@ -237,10 +245,13 @@ export async function translate(
   body.append('target', target)
   if (system) body.append('system', system)
   if (source) body.append('source', source)
+  if (glossary && glossary.length > 0) {
+    body.append('glossary', JSON.stringify(glossary))
+  }
 
   const response = await reach('/api/translate', { method: 'POST', body })
-  const answer = (await response.json()) as { texts: string[] }
-  return answer.texts
+  const answer = (await response.json()) as { texts: string[]; terms?: Term[] }
+  return { texts: answer.texts, terms: answer.terms ?? [] }
 }
 
 /**

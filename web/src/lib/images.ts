@@ -14,6 +14,12 @@ export type GalleryFolder = {
    * should leave as whatever it came as.
    */
   archive?: string
+  /**
+   * Made by hand rather than by an archive, and so kept when it is emptied: it
+   * was made empty in the first place. Held rather than read off a missing
+   * `archive`, which the first zip dropped into one fills in.
+   */
+  manual?: true
 }
 
 export type GalleryImage = {

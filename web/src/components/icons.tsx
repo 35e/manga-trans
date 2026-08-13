@@ -122,6 +122,15 @@ export function FolderIcon(props: Props) {
   )
 }
 
+/** Start a folder of your own, rather than waiting for an archive to make one. */
+export function PlusIcon(props: Props) {
+  return (
+    <Line {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Line>
+  )
+}
+
 /** Back out of a folder, to everything that was dropped in. */
 export function BackIcon(props: Props) {
   return (

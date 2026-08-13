@@ -130,7 +130,7 @@ port can call it.
 | `GET` | `/api/languages` | → the languages a page can be read in |
 | `GET` | `/api/models` | → the models Ollama has to translate with |
 | `GET` | `/api/prompt` | → what the model is told, unless told otherwise |
-| `POST` | `/api/translate` | `texts`, `model` → the same lines in another language |
+| `POST` | `/api/translate` | `texts`, `model` → the same lines in another language, and the terms it named |
 | `POST` | `/api/clean` | `image`, `boxes` and/or `mask` → the page with them taken out |
 | `POST` | `/api/render` | `image`, `regions` → the same, with text set in them |
 
@@ -307,9 +307,21 @@ default to start from. Nothing is kept — every request carries its own — so 
 that wants its own prompt remembers it and sends it each time, which is what the
 dashboard's settings do.
 
+`terms` comes back beside `texts`: the names, places, honorifics and coinages
+this page introduced, each with the wording just used for it. Send them back as
+`glossary` — a JSON list of `{"source": …, "target": …}` — with the next page, and
+the model is told to render them the same way again. That is what keeps a chapter
+consistent across pages no model ever sees together, and it rides on the request
+that was going anyway rather than a second one, which over forty pages would be
+forty more calls. Nothing is kept here either: the caller collects the terms and
+sends them on, the same as the prompt.
+
 Bear in mind that the answers are held to a JSON schema, and a model under a
 schema follows a prompt loosely. Asking for a voice — casual, formal, terse —
-comes through; asking it to reformat what it returns mostly does not.
+comes through; asking it to reformat what it returns mostly does not. That is why
+the sentence asking for `terms` is added by the API to whatever `system` says
+rather than living in the default prompt: replace the prompt and the glossary
+goes on working.
 
 The model runs under [Ollama](https://ollama.com) on your own machine, and
 nothing is sent anywhere else. In a container that machine is not `localhost`,
@@ -446,6 +458,15 @@ second one beside it, and a page is only ever the duplicate of another in the sa
 folder: two chapters both hold a `001.png`, and those are two pages. Deleting a
 folder deletes its pages, and deleting the last page deletes the folder.
 
+**New folder** starts an empty one, for pages that did not arrive as a chapter.
+It is named as it is made, there being nothing that renames one afterwards, and
+opens straight away — because pages dropped while a folder is open land *in* it,
+which is the whole point of having made it. An archive is the exception and still
+makes a folder of its own: a chapter inside a chapter means nothing here. A
+hand-made folder is kept when its last page is deleted, having been made empty in
+the first place, and the first archive dropped into one tells it what to come back
+out as.
+
 **Clean & translate all**, inside an opened folder, puts every page in it through
 the whole of the above — detect, read, hide, letter — one page at a time, since
 the API holds one detector and one reader behind a lock each and pages sent
@@ -456,6 +477,15 @@ the page in hand, a request already sent being left to land. A page that falls o
 is named with the reason it gave and the rest carry on. A folder that has been
 lettered already asks once before doing it over, since a line moved or rewritten
 by hand cannot be got back.
+
+A run builds the folder's **chapter terms** as it goes: each page hands back the
+names, places and coinages it introduced, and every page after it is translated
+against them, so a character keeps one spelling across pages the model never sees
+together. They are listed under the folder's buttons — the first page to name
+someone settles it for the rest of the chapter, and there would otherwise be
+nothing saying why a later page came out as it did. **Forget** starts the list
+over; pages already lettered are left as they are. The list belongs to the folder,
+is capped at forty, and like everything else here is gone when the tab is.
 
 **Download chapter**, beside it and on the card the run leaves behind, hands the
 whole folder back as one archive — the way it arrived. A chapter dropped in as

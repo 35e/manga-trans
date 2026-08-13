@@ -41,8 +41,8 @@ export function Gallery({
     return (
       <p className="px-1 py-8 text-center text-xs text-faint">
         {open === null
-          ? 'Pages you drop in show up here. A zip becomes a folder.'
-          : 'Every page in this folder has been deleted.'}
+          ? 'Pages you drop in show up here. A zip becomes a folder, and so does New folder.'
+          : 'Nothing in this folder. Pages dropped in while it is open land here.'}
       </p>
     )
   }

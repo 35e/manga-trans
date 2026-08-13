@@ -1559,6 +1559,11 @@ def translations(*texts) -> str:
     return json.dumps({"translations": list(texts)})
 
 
+def with_terms(texts: list[str], terms: list[dict]) -> str:
+    """An answer that named some of what it translated."""
+    return json.dumps({"translations": texts, "terms": terms})
+
+
 class TestOllama(unittest.TestCase):
     """The talking to Ollama. Nothing here goes near the network."""
 
@@ -1575,7 +1580,7 @@ class TestOllama(unittest.TestCase):
             return reply(translations("Good morning", "What is this?"))
 
         with mock.patch.object(ollama, "ask", ask):
-            got = ollama.translate(["おはよう", "なにこれ"], "gemma4:12b")
+            got, _ = ollama.translate(["おはよう", "なにこれ"], "gemma4:12b")
         self.assertEqual(got, ["Good morning", "What is this?"])
         self.assertEqual(len(asked), 1, "the lines were not sent together")
         self.assertEqual(asked[0][0], "/api/chat")
@@ -1586,12 +1591,12 @@ class TestOllama(unittest.TestCase):
         with mock.patch.object(
             ollama, "ask", return_value=reply("", translations("Good morning"))
         ):
-            self.assertEqual(ollama.translate(["おはよう"], "m"), ["Good morning"])
+            self.assertEqual(ollama.translate(["おはよう"], "m")[0], ["Good morning"])
 
     def test_a_fenced_answer_is_still_read(self):
         fenced = f"```json\n{translations('Good morning')}\n```"
         with mock.patch.object(ollama, "ask", return_value=reply(fenced)):
-            self.assertEqual(ollama.translate(["おはよう"], "m"), ["Good morning"])
+            self.assertEqual(ollama.translate(["おはよう"], "m")[0], ["Good morning"])
 
     def test_losing_count_falls_back_to_one_line_at_a_time(self):
         answers = [
@@ -1600,7 +1605,7 @@ class TestOllama(unittest.TestCase):
             reply(translations("second")),
         ]
         with mock.patch.object(ollama, "ask", side_effect=answers) as ask:
-            got = ollama.translate(["いち", "に"], "m")
+            got, _ = ollama.translate(["いち", "に"], "m")
         self.assertEqual(got, ["first", "second"])
         self.assertEqual(ask.call_count, 3, "it did not ask again line by line")
 
@@ -1615,12 +1620,12 @@ class TestOllama(unittest.TestCase):
             return reply(translations("Good morning", "Let's go"))
 
         with mock.patch.object(ollama, "ask", ask):
-            got = ollama.translate(["おはよう", "   ", "行こう"], "m")
+            got, _ = ollama.translate(["おはよう", "   ", "行こう"], "m")
         self.assertEqual(got, ["Good morning", "", "Let's go"])
 
     def test_nothing_to_translate_asks_nothing(self):
         with mock.patch.object(ollama, "ask", side_effect=AssertionError("asked")):
-            self.assertEqual(ollama.translate(["", "  "], "m"), ["", ""])
+            self.assertEqual(ollama.translate(["", "  "], "m"), (["", ""], []))
 
     def test_the_briefing_says_what_to_translate_into(self):
         self.assertIn("Dutch", ollama.briefing("Dutch"))
@@ -1659,7 +1664,9 @@ class TestOllama(unittest.TestCase):
 
         with mock.patch.object(ollama, "ask", ask):
             ollama.translate(["おはよう"], "m", "Dutch", system="Be brief in {target}.")
-        self.assertEqual(asked, ["Be brief in Dutch."])
+        # First, and whole: what follows it is the note about terms, which is the
+        # API's rather than the caller's.
+        self.assertTrue(asked[0].startswith("Be brief in Dutch."), asked[0])
 
     def test_the_briefing_holds_when_it_falls_back_to_one_at_a_time(self):
         asked = []
@@ -1673,10 +1680,111 @@ class TestOllama(unittest.TestCase):
 
         with mock.patch.object(ollama, "ask", ask):
             ollama.translate(["いち", "に"], "m", "Dutch", system="Mine.")
-        self.assertEqual(asked, ["Mine.", "Mine.", "Mine."])
+        self.assertEqual(len(asked), 3, "it did not ask again line by line")
+        for said in asked:
+            self.assertTrue(said.startswith("Mine."), said)
 
     def test_where_ollama_is_can_be_said(self):
         self.assertEqual(ollama.base("http://elsewhere:11434/"), "http://elsewhere:11434")
+
+
+class TestGlossary(unittest.TestCase):
+    """Carrying a chapter's names from one page to the next."""
+
+    def asking(self, *answers):
+        """Ollama patched to give these answers, collecting the system messages."""
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][0]["content"])
+            return answers[min(len(asked) - 1, len(answers) - 1)]
+
+        return asked, mock.patch.object(ollama, "ask", ask)
+
+    def test_terms_come_back_beside_the_translations(self):
+        named = [{"source": "タロウ", "target": "Taro"}]
+        answer = reply(with_terms(["Taro is here"], named))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            got, terms = ollama.translate(["タロウだ"], "m")
+        self.assertEqual(got, ["Taro is here"])
+        self.assertEqual(terms, named)
+
+    def test_a_page_that_named_nothing_still_translates(self):
+        # `terms` is not required by the schema: a page of "..." names nobody, and
+        # that must not cost the translation.
+        with mock.patch.object(
+            ollama, "ask", return_value=reply(translations("Good morning"))
+        ):
+            got, terms = ollama.translate(["おはよう"], "m")
+        self.assertEqual(got, ["Good morning"])
+        self.assertEqual(terms, [])
+
+    def test_a_term_that_is_not_a_pair_is_dropped(self):
+        ragged = [{"source": "タロウ"}, {"target": "only"}, "nonsense", {}]
+        kept = [{"source": "先輩", "target": "senpai"}]
+        answer = reply(with_terms(["Morning"], ragged + kept))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            _, terms = ollama.translate(["おはよう"], "m")
+        self.assertEqual(terms, kept)
+
+    def test_the_glossary_is_put_in_front_of_the_page(self):
+        asked, patched = self.asking(reply(translations("Taro is here")))
+        with patched:
+            ollama.translate(
+                ["タロウだ"],
+                "m",
+                glossary=[{"source": "タロウ", "target": "Taro"}],
+            )
+        self.assertIn("タロウ = Taro", asked[0])
+
+    def test_a_page_with_no_glossary_is_not_told_about_one(self):
+        asked, patched = self.asking(reply(translations("Good morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m")
+        self.assertNotIn(ollama.GLOSSARY_HEADING, asked[0])
+
+    def test_a_glossary_holds_when_it_falls_back_to_one_at_a_time(self):
+        asked, patched = self.asking(
+            reply(translations("only one")),  # two were asked about
+            reply(translations("a line")),
+        )
+        with patched:
+            ollama.translate(
+                ["いち", "に"], "m", glossary=[{"source": "タロウ", "target": "Taro"}]
+            )
+        self.assertEqual(len(asked), 3, "it did not ask again line by line")
+        for said in asked:
+            self.assertIn("タロウ = Taro", said)
+
+    def test_a_miscounted_page_keeps_the_terms_it_did_return(self):
+        # Naming a character does not depend on counting the lines, and the pass
+        # line by line has no page left to find one in.
+        named = [{"source": "タロウ", "target": "Taro"}]
+        answers = [
+            reply(with_terms(["only one"], named)),  # two were asked about
+            reply(translations("first")),
+            reply(translations("second")),
+        ]
+        with mock.patch.object(ollama, "ask", side_effect=answers):
+            got, terms = ollama.translate(["いち", "に"], "m")
+        self.assertEqual(got, ["first", "second"])
+        self.assertEqual(terms, named)
+
+    def test_only_so_many_terms_are_put_in_front_of_a_page(self):
+        many = [{"source": f"あ{at}", "target": f"A{at}"} for at in range(80)]
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m", glossary=many)
+        self.assertIn("あ0 = A0", asked[0])
+        self.assertNotIn(f"あ{ollama.GLOSSARY_LIMIT} =", asked[0])
+
+    def test_the_terms_note_is_said_whatever_the_prompt_is(self):
+        # It is about the shape of the answer rather than how to translate, so a
+        # prompt of one's own must not silently turn the glossary off.
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m", system="Pirate, please.")
+        self.assertIn(ollama.TERMS_NOTE, asked[0])
 
 
 class TestOllamaHost(unittest.TestCase):
@@ -2391,23 +2499,70 @@ class TestApi(unittest.TestCase):
 
     def test_translate_answers_with_one_text_per_text(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=["Good morning"]
+            server.ollama, "translate", return_value=(["Good morning"], [])
         ) as translating:
             response = client().post(
                 "/api/translate",
                 data={"texts": json.dumps(["おはよう"]), "model": "gemma4:12b"},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json, {"texts": ["Good morning"]})
+        self.assertEqual(response.json, {"texts": ["Good morning"], "terms": []})
         self.assertEqual(translating.call_args.args[1], "gemma4:12b")
 
     def test_translate_takes_the_language_to_translate_into(self):
-        with mock.patch.object(server.ollama, "translate", return_value=[""]) as into:
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as into:
             client().post(
                 "/api/translate",
                 data={"texts": "[]", "model": "m", "target": "Dutch"},
             )
         self.assertEqual(into.call_args.args[2], "Dutch")
+
+    def test_translate_hands_back_the_terms_the_page_named(self):
+        named = [{"source": "タロウ", "target": "Taro"}]
+        with mock.patch.object(
+            server.ollama, "translate", return_value=(["Taro is here"], named)
+        ):
+            response = client().post(
+                "/api/translate",
+                data={"texts": json.dumps(["タロウだ"]), "model": "m"},
+            )
+        self.assertEqual(response.json["terms"], named)
+
+    def test_translate_passes_a_glossary_on(self):
+        named = [{"source": "タロウ", "target": "Taro"}]
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as told:
+            client().post(
+                "/api/translate",
+                data={
+                    "texts": "[]",
+                    "model": "m",
+                    "glossary": json.dumps(named),
+                },
+            )
+        self.assertEqual(told.call_args.kwargs["glossary"], named)
+
+    def test_translate_without_a_glossary_sends_none(self):
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as told:
+            client().post("/api/translate", data={"texts": "[]", "model": "m"})
+        self.assertIsNone(told.call_args.kwargs["glossary"])
+
+    def test_a_glossary_that_is_not_pairs_is_refused(self):
+        response = client().post(
+            "/api/translate",
+            data={
+                "texts": "[]",
+                "model": "m",
+                "glossary": json.dumps([{"source": "タロウ"}]),
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("glossary", response.json["error"])
 
     def test_the_default_prompt_is_handed_out(self):
         response = client().get("/api/prompt")
@@ -2416,7 +2571,9 @@ class TestApi(unittest.TestCase):
         self.assertIn("{target}", response.json["prompt"])
 
     def test_translate_passes_a_prompt_of_your_own_on(self):
-        with mock.patch.object(server.ollama, "translate", return_value=[""]) as told:
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as told:
             client().post(
                 "/api/translate",
                 data={"texts": "[]", "model": "m", "system": "Be brief."},
@@ -2424,7 +2581,9 @@ class TestApi(unittest.TestCase):
         self.assertEqual(told.call_args.kwargs["system"], "Be brief.")
 
     def test_translate_without_a_prompt_leaves_the_default_alone(self):
-        with mock.patch.object(server.ollama, "translate", return_value=[""]) as told:
+        with mock.patch.object(
+            server.ollama, "translate", return_value=([""], [])
+        ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["system"])
 

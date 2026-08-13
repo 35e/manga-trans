@@ -1,18 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 import type { BatchRun } from '../hooks/useBatch'
 import type { LibraryNotice } from '../hooks/useImageLibrary'
-import type { Stage } from '../lib/api'
+import type { Stage, Term } from '../lib/api'
 import type { GalleryFolder, GalleryImage } from '../lib/images'
 import { formatBytes, plural } from '../lib/images'
 import { BatchProgress } from './BatchProgress'
 import { Dropzone } from './Dropzone'
 import { Gallery } from './Gallery'
-import { BackIcon, DownloadIcon } from './icons'
-import { Button, FOCUS, Note, Spinner } from './ui'
+import { BackIcon, DownloadIcon, PlusIcon } from './icons'
+import { Button, FOCUS, Note, Spinner, TextInput } from './ui'
 
 type Props = {
   images: GalleryImage[]
   folders: GalleryFolder[]
+  /** Which folder is being looked into, held above so a drop can land in it. */
+  open: string | null
+  onOpenFolder: (id: string | null) => void
+  /** Start one of your own. False when the name is already taken. */
+  onNewFolder: (name: string) => boolean
+  /** What the open folder has settled on translating its names as. */
+  terms: Term[]
+  onForgetTerms: () => void
   activeId: string | null
   onOpen: (id: string) => void
   onRemove: (id: string) => void
@@ -45,6 +53,11 @@ type Props = {
 export function Sidebar({
   images,
   folders,
+  open,
+  onOpenFolder,
+  onNewFolder,
+  terms,
+  onForgetTerms,
   activeId,
   onOpen,
   onRemove,
@@ -66,22 +79,7 @@ export function Sidebar({
   workedOn,
   packing,
 }: Props) {
-  const [open, setOpen] = useState<string | null>(null)
   const folder = folders.find((held) => held.id === open) ?? null
-
-  // A folder that was deleted while it was open leaves nothing to be inside of.
-  useEffect(() => {
-    if (open !== null && !folders.some((held) => held.id === open)) setOpen(null)
-  }, [open, folders])
-
-  // Anything dropped in while a folder is open lands outside it — loose, or in a
-  // folder of its own — so the rail comes back out to where it can be seen.
-  const held = useRef(images.length)
-  useEffect(() => {
-    const grew = images.length > held.current
-    held.current = images.length
-    if (grew) setOpen(null)
-  }, [images.length])
 
   // Counted for whatever is being looked at: inside a folder, that folder.
   const counted = folder
@@ -89,10 +87,22 @@ export function Sidebar({
     : images
   const total = counted.reduce((sum, image) => sum + image.size, 0)
 
+  // A page dropped while a folder is open lands in it; an archive makes one of
+  // its own. Only the second sends the rail back out — going out to look at a
+  // folder you did not drop into, and staying put when you dropped into this one.
+  const inside = folder ? counted.length : 0
+  const held = useRef({ total: images.length, inside })
+  useEffect(() => {
+    const was = held.current
+    held.current = { total: images.length, inside }
+    if (images.length > was.total && inside === was.inside) onOpenFolder(null)
+  }, [images.length, inside, onOpenFolder])
+
   return (
     <aside className="flex shrink-0 flex-col border-line bg-surface max-lg:h-64 max-lg:border-b lg:w-60 lg:border-r xl:w-72">
-      <div className="shrink-0 p-3">
+      <div className="shrink-0 space-y-2 p-3">
         <Dropzone onFiles={onFiles} dragging={dragging} busy={busy} />
+        {!folder && <NewFolder onCreate={onNewFolder} />}
       </div>
 
       {notice && (
@@ -135,12 +145,14 @@ export function Sidebar({
           pages={counted}
           lettered={counted.filter((image) => lettered.includes(image.id)).length}
           done={counted.filter((image) => workedOn.includes(image.id)).length}
-          onBack={() => setOpen(null)}
+          onBack={() => onOpenFolder(null)}
           onRun={() => onRunFolder(folder)}
           onDownload={() => onDownloadFolder(folder)}
           running={batch !== null && !batch.finished}
           packing={packing}
           canTranslate={canTranslate}
+          terms={terms}
+          onForgetTerms={onForgetTerms}
         />
       )}
 
@@ -149,7 +161,7 @@ export function Sidebar({
           images={images}
           folders={folders}
           open={open}
-          onOpenFolder={setOpen}
+          onOpenFolder={onOpenFolder}
           activeId={activeId}
           onOpen={onOpen}
           onRemove={onRemove}
@@ -170,6 +182,75 @@ export function Sidebar({
 }
 
 /**
+ * A folder started by hand, for pages that did not arrive as a chapter.
+ *
+ * Named as it is made, there being nothing anywhere that renames one — and the
+ * field is left open on a name already taken, which is the only way it is
+ * refused, so the next one typed lands somewhere.
+ */
+function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
+  const [naming, setNaming] = useState(false)
+  const [name, setName] = useState('')
+  const field = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (naming) field.current?.focus()
+  }, [naming])
+
+  if (!naming) {
+    return (
+      <Button
+        variant="outline"
+        onClick={() => setNaming(true)}
+        className="w-full"
+        title="Start an empty folder. Pages dropped in while it is open go into it"
+      >
+        <PlusIcon className="mr-1.5 inline size-3.5 align-[-3px]" />
+        New folder
+      </Button>
+    )
+  }
+
+  const settle = () => {
+    const called = name.trim()
+    // Nothing typed is a change of mind, not a folder called nothing.
+    if (!called) {
+      setNaming(false)
+      return
+    }
+    if (onCreate(called)) {
+      setName('')
+      setNaming(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <TextInput
+        ref={field}
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') settle()
+          if (event.key === 'Escape') {
+            setName('')
+            setNaming(false)
+          }
+        }}
+        onBlur={settle}
+        placeholder="Chapter name"
+        aria-label="Name for the new folder"
+        spellCheck={false}
+        className="min-w-0 flex-1"
+      />
+      <Button variant="primary" onClick={settle} title="Make the folder">
+        Add
+      </Button>
+    </div>
+  )
+}
+
+/**
  * The head of an opened folder: the way back out, and the one button that runs
  * the whole chapter through. Armed first when there is lettering in the folder
  * already, since a run does every page over and hand work is not recoverable.
@@ -185,6 +266,8 @@ function FolderBar({
   running,
   packing,
   canTranslate,
+  terms,
+  onForgetTerms,
 }: {
   folder: GalleryFolder
   pages: GalleryImage[]
@@ -197,6 +280,8 @@ function FolderBar({
   running: boolean
   packing: { done: number; total: number } | null
   canTranslate: boolean
+  terms: Term[]
+  onForgetTerms: () => void
 }) {
   const [armed, setArmed] = useState(false)
 
@@ -289,6 +374,54 @@ function FolderBar({
           <Note>no model picked — pages will be cleaned but not translated</Note>
         </p>
       )}
+
+      {terms.length > 0 && <Terms terms={terms} onForget={onForgetTerms} />}
+    </div>
+  )
+}
+
+/**
+ * What this chapter has settled on calling things, sent over with every page in
+ * it so a name keeps one spelling across pages no model sees together.
+ *
+ * Shown rather than only used, because the first page to name someone decides it
+ * for the rest of the chapter and there would otherwise be nothing saying why a
+ * later page came out as it did. Read-only but forgettable: correcting one entry
+ * is not offered, starting the list over is.
+ */
+function Terms({ terms, onForget }: { terms: Term[]; onForget: () => void }) {
+  return (
+    <div className="mt-2 border-t border-line pt-2">
+      <div className="flex items-center justify-between gap-2">
+        <p
+          className="text-[11px] font-medium text-faint"
+          title="Names and coinages this chapter has already been translated with. Every page in the folder is translated against them"
+        >
+          Chapter terms
+        </p>
+        <button
+          type="button"
+          onClick={onForget}
+          title="Start the list over — the pages already lettered are left as they are"
+          className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-faint transition-colors hover:bg-surface hover:text-ink ${FOCUS}`}
+        >
+          Forget
+        </button>
+      </div>
+      <ul className="mt-1 max-h-24 overflow-y-auto">
+        {terms.map((term) => (
+          <li
+            key={term.source}
+            className="flex items-baseline gap-1 text-[11px] leading-snug"
+          >
+            <span className="min-w-0 shrink truncate text-muted">{term.source}</span>
+            <span className="shrink-0 text-faint" aria-hidden>
+              →
+            </span>
+            <span className="min-w-0 flex-1 truncate text-ink">{term.target}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
