@@ -130,8 +130,10 @@ function Line({
           fontSize: `${set.size * scale}px`,
           lineHeight: LINE_HEIGHT,
           // White laid under the letters, not over them: without this the words
-          // are unreadable anywhere the art behind them is dark.
-          WebkitTextStrokeWidth: `${strokeFor(set.size) * scale}px`,
+          // are unreadable anywhere the art behind them is dark. Twice the white
+          // wanted, as the canvas sets it — half the stroke falls inside the
+          // letter and is painted over by the fill.
+          WebkitTextStrokeWidth: `${strokeFor(set.size) * 2 * scale}px`,
           WebkitTextStrokeColor: '#fff',
           paintOrder: 'stroke fill',
         }}

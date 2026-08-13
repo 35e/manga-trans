@@ -21,7 +21,7 @@ const HYPHEN = '-'
  * holds up whether the line is set large or small. Black words over black
  * artwork are unreadable without it.
  */
-const STROKE_RATIO = 0.09
+const STROKE_RATIO = 0.12
 
 /**
  * Latin is set a little larger than the em it is matched to: a capital fills
@@ -29,6 +29,11 @@ const STROKE_RATIO = 0.09
  */
 const LATIN = 1.25
 
+/**
+ * The white wanted *outside* the letter. A stroke is centred on the outline
+ * either way it is drawn, so both letterers set twice this and paint the fill
+ * over the half that falls inside.
+ */
 export function strokeFor(size: number): number {
   return Math.max(1, size * STROKE_RATIO)
 }
