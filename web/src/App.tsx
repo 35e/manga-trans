@@ -756,16 +756,6 @@ function App() {
     [active, analyses, lettering, changeLettering],
   )
 
-  const fitAll = useCallback(() => {
-    if (!active) return
-    const { id } = active
-    const held = analyses[id]
-    if (!held) return
-    setLettering((current) =>
-      current[id] ? { ...current, [id]: lines.refitted(current[id], held) } : current,
-    )
-  }, [active, analyses])
-
   /** Set the lettering into the page and hand it over as a PNG. */
   const applyToImage = useCallback(async () => {
     if (!active) return
@@ -941,7 +931,6 @@ function App() {
             target: ollama.target,
             onTarget: ollama.setTarget,
             onTranslate: runTranslate,
-            onFitAll: fitAll,
             lettering: pageLettering,
             onBox: setLetteringBox,
             onTurn: setLetteringAngle,

@@ -502,10 +502,7 @@ type that fits one is far bigger than the type it was drawn around whenever the
 line is short, and "OK!" left to fill its balloon comes out four times the height
 of the dialogue on either side of it. How large the page is lettered is read off
 the original — Japanese is set on a square em, so a block of *n* characters
-covering *w × h* was set at about the square root of *wh/n*. **Fit to balloons**
-puts every line back where that says, which is what to reach for after drawing a
-block by hand, cutting one in two, or dragging a box somewhere it should not have
-gone; a block with no balloon around it is left exactly where it is.
+covering *w × h* was set at about the square root of *wh/n*.
 
 The box can be dragged about, pulled wider or narrower by its edges,
 sized with the up and down arrows and turned with the left and right ones — or
@@ -516,6 +513,9 @@ square over one of those reads as a sticker rather than as part of the art. The
 box itself stays square to the page and only what sits in it turns, so a line
 still wraps to the width it was given; pulling a turned box by an edge pulls it
 along its own axes, and the edge that was not pulled stays where it looks.
+**Fit**, against each line in the translations list, sets that one line at the
+largest size that lands in its box, held to the size the page is lettered at —
+which is the size the arrows deliberately go past.
 **Translate again**, beside it, runs the page
 over against the blocks as they stand: blocks are added, dropped and put back
 after a page has been translated, and this is what brings the lines back into

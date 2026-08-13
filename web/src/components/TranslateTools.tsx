@@ -6,8 +6,6 @@ type Props = {
   onModel: (model: string) => void
   target: string
   onTarget: (target: string) => void
-  onFitAll: () => void
-  canFit: boolean
   /** Translate the page over again, against the blocks as they stand now. */
   onTranslate: () => void
   canTranslate: boolean
@@ -24,8 +22,6 @@ export function TranslateTools({
   onModel,
   target,
   onTarget,
-  onFitAll,
-  canFit,
   onTranslate,
   canTranslate,
   lettered,
@@ -59,24 +55,16 @@ export function TranslateTools({
 
       {note && <Note>{note}</Note>}
 
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        {lettered && (
-          <Button
-            onClick={onTranslate}
-            disabled={!canTranslate}
-            title="Translate the page again, against the blocks as they stand now — one added or dropped since is taken in, and every line already set is replaced"
-          >
-            Translate again
-          </Button>
-        )}
+      {lettered && (
         <Button
-          onClick={onFitAll}
-          disabled={!canFit}
-          title="Set every line at the largest size that lands in its box, held to the size this page is lettered at"
+          onClick={onTranslate}
+          disabled={!canTranslate}
+          title="Translate the page again, against the blocks as they stand now — one added or dropped since is taken in, and every line already set is replaced"
+          className="ml-auto"
         >
-          Fit all
+          Translate again
         </Button>
-      </div>
+      )}
     </Toolbar>
   )
 }

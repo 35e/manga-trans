@@ -52,7 +52,6 @@ export type Translating = {
   target: string
   onTarget: (target: string) => void
   onTranslate: () => void
-  onFitAll: () => void
   lettering: Lines
   onBox: (index: number, box: Box) => void
   onTurn: (index: number, angle: number) => void
@@ -313,8 +312,6 @@ export function Board({
           onModel={translating.onModel}
           target={translating.target}
           onTarget={translating.onTarget}
-          onFitAll={translating.onFitAll}
-          canFit={lettered}
           onTranslate={translating.onTranslate}
           canTranslate={Boolean(translating.model) && read && !busy}
           lettered={lettered}

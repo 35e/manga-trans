@@ -94,14 +94,6 @@ export function laidOut(
   return size === null ? null : { text, box, size, angle }
 }
 
-/** Every line set at the largest size that lands in the box it is already in. */
-export function refitted(lines: Lines, analysis: Analysis): Lines {
-  return lines.map((line, at) => {
-    if (line === null) return line
-    const size = sizeAt(analysis, at, line.text, line.box)
-    return size === null ? line : { ...line, size }
-  })
-}
 
 /**
  * One line cut in two, in step with the block being cut.
