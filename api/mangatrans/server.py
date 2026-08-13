@@ -120,9 +120,70 @@ def terms_in(glossary: list | None) -> list[dict] | None:
         source, target = term.get("source"), term.get("target")
         if not isinstance(source, str) or not isinstance(target, str):
             raise BadRequest("every term in 'glossary' needs a source and a target")
-        if source.strip() and target.strip():
-            terms.append({"source": source.strip(), "target": target.strip()})
+        if not (source.strip() and target.strip()):
+            continue
+        # Optional, and carried as it came: it is a line in a prompt rather than
+        # anything this acts on, and a caller that kept one wants it back.
+        note = term.get("note")
+        settled = {"source": source.strip(), "target": target.strip()}
+        if isinstance(note, str) and note.strip():
+            settled["note"] = note.strip()[: ollama.NOTE_LIMIT]
+        terms.append(settled)
     return terms
+
+
+def story_in():
+    """Where the chapter had got to, as the caller has it.
+
+    Strict where `ollama.storied` is lenient, the same way `terms_in` is: that
+    reads a model's answer, this reads a caller's request. `settled` is the
+    caller's own — a fact set by hand rather than worked out from a page — and is
+    carried through so the prompt can say so.
+    """
+    raw = request.form.get("previously")
+    if raw is None:
+        return None
+    try:
+        said = json.loads(raw)
+    except ValueError as exc:
+        raise BadRequest(f"'previously' is not valid JSON: {exc}") from exc
+    if not isinstance(said, dict):
+        raise BadRequest("'previously' must be a JSON object of {scene, cast}")
+
+    cast = said.get("cast") or []
+    if not isinstance(cast, list):
+        raise BadRequest("'previously.cast' must be a list")
+    people = []
+    for person in cast:
+        if not isinstance(person, dict):
+            raise BadRequest("every one of 'previously.cast' must be an object")
+        name = str(person.get("name") or "").strip()
+        if not name:
+            raise BadRequest("every one of 'previously.cast' needs a name")
+        gender = person.get("gender", ollama.UNKNOWN)
+        if gender not in ollama.GENDERS:
+            raise BadRequest(
+                f"a cast gender must be one of: {', '.join(ollama.GENDERS)}"
+            )
+        settled = person.get("settled") or []
+        if not isinstance(settled, list) or any(
+            fact not in ollama.FACTS for fact in settled
+        ):
+            raise BadRequest(
+                f"'settled' must be a list of: {', '.join(ollama.FACTS)}"
+            )
+        people.append(
+            {
+                "name": name,
+                "gender": gender,
+                "note": str(person.get("note") or "").strip()[: ollama.NOTE_LIMIT],
+                "settled": settled,
+            }
+        )
+    return {
+        "scene": str(said.get("scene") or "").strip()[: ollama.SCENE_LIMIT],
+        "cast": people[: ollama.CAST_LIMIT],
+    }
 
 
 def beside(field: str, texts: list[str]) -> list | None:
@@ -349,6 +410,19 @@ def create_app(
         characters fit where the translation is going. Both are optional, both are
         one per text in the same order, and both are only ever put to the model as
         part of what it is asked — a line is never refused for running over.
+
+        `story` comes back the way `terms` does, and goes out again as
+        `previously`: `scene`, a sentence or two on where the chapter has got to,
+        and `cast`, who is in it. A page that opens on two people mid-argument is
+        then translated as that rather than as strangers meeting.
+
+        A cast `gender` is `male`, `female` or `unknown`, and `unknown` is the
+        answer wanted until the chapter has actually shown otherwise: Japanese
+        drops the subject wherever the room can supply it, and a page translated
+        on a guess is wrong on every page after it too. Mark an entry `settled` on
+        the way in and the model is told it is not to be changed — which is how a
+        caller says what it already knows. Nothing is kept here: the caller carries
+        the story from page to page, the same as the glossary.
         """
         texts = [str(text) for text in sent("texts")]
         model = request.form.get("model", "").strip()
@@ -359,8 +433,9 @@ def create_app(
         system = request.form.get("system", "").strip() or None
         glossary = terms_in(maybe_sent("glossary"))
         kinds, budgets = kinds_in(texts), budgets_in(texts)
+        story = story_in()
         try:
-            said, terms = ollama.translate(
+            done = ollama.translate(
                 texts,
                 model,
                 target,
@@ -369,8 +444,9 @@ def create_app(
                 glossary=glossary,
                 kinds=kinds,
                 budgets=budgets,
+                story=story,
             )
-            return jsonify(texts=said, terms=terms)
+            return jsonify(texts=done.texts, terms=done.terms, story=done.story)
         except ollama.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 

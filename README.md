@@ -334,6 +334,48 @@ that was going anyway rather than a second one, which over forty pages would be
 forty more calls. Nothing is kept here either: the caller collects the terms and
 sends them on, the same as the prompt.
 
+A term may carry a `note` — a few words on who or what it is, where that is what
+decided the wording. A name is rendered one way for a boy and another for a
+teacher, and the page that named him is the only one that ever saw which he was.
+It is optional both ways, and goes back out beside the pair it belongs to.
+
+`story` comes back the same way and goes out again as `previously`: `scene`, a
+sentence or two on where the chapter has got to, and `cast`, who it is going on
+between. A page that opens on two people mid-argument is then translated as that
+rather than as strangers meeting. Japanese drops the subject of a sentence
+wherever the room can supply it, and a page read with no idea what came before it
+supplies the wrong one. The scene is *rewritten* each page rather than added to —
+the model is handed the last one and writes it again with this page in it — so a
+chapter of forty pages carries two sentences rather than eighty.
+
+A cast entry is `{"name": …, "gender": "male"|"female"|"unknown", "note": …}`, and
+`unknown` is the answer wanted until the chapter has actually shown otherwise. A
+chapter says who someone is when it is ready to, which is often several pages
+after the first translation needed to know — and a guess made on page one is read
+back as established fact by every page after it, which is how a chapter ends up
+with the wrong pronoun throughout. So the schema makes `unknown` a value rather
+than something the model has to phrase its way around, the cast is named in the
+page's own script (`先輩`, not "the senior") so the name is a key that holds from
+page to page, and each page is asked at the foot of its own text whether anything
+on it settles whoever is still unknown. Measured with gemma4:12b, that last part
+is what makes the difference: told only in the briefing to correct what it is
+given, the model translates 「先輩は僕の兄です」 perfectly and hands the cast
+straight back unchanged.
+
+Send `"settled": ["gender"]` on an entry and the model is told that one is not
+its to change. That is how a caller says what it already knows — someone reading
+the chapter usually knows the protagonist's gender long before the pages spell it
+out.
+
+The same line twice on one page is asked about once and lettered twice: a page of
+`……` is one question, and two identical balloons coming back worded differently is
+the commonest way a page reads as though nobody checked it. Same words *and* same
+`kind` — a shout over the art and the same word in a balloon are not the same
+thing. Where the two blocks have different room, the tighter one is what is asked
+for, since the one answer has to fit both. For the same reason the repetition
+penalty is turned off: a page repeats itself on purpose, and a default of 1.1 is a
+push to word the second one differently for no reason but that it came second.
+
 Bear in mind that the answers are held to a JSON schema, and a model under a
 schema follows a prompt loosely. Asking for a voice — casual, formal, terse —
 comes through; asking it to reformat what it returns mostly does not. That is why

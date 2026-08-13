@@ -133,8 +133,10 @@ this path rather than adding a pass.
 - `ollama.py` — the whole page goes over in one request, held to a JSON schema;
   a miscounted page is shown its answer and asked again, and only a second
   miscount falls back to one line at a time. Each line carries what it is and how
-  much room it has (`Line`). Prompts are never stored: callers send `system` each
-  time, and the chapter's settled terms the same way, as `glossary`.
+  much room it has (`Line`), and the answer comes back as a `Translation` — the
+  lines, the terms, and where the chapter has got to. Prompts are never stored:
+  callers send `system` each time, and the chapter's settled terms and story the
+  same way, as `glossary` and `previously`.
 - `inpaint.py` / `render.py` — hiding and lettering. `render.marked()` turns
   boxes + mask into one greyscale page (white hidden), `render.hidden()` picks
   fill.
@@ -150,6 +152,9 @@ through `lib/`.
 - `lib/regions.ts` / `lib/lettering.ts` — **all** the per-block editing, as pure
   transforms on one `Analysis` / one `Lines`. Add a block operation here, not in
   a component.
+- `lib/story.ts` — every rule about which of two answers about a chapter's cast
+  wins. In `lib/` rather than in `useStory` for the same reason the block edits
+  are: it is the whole of what decides whether a chapter's facts are right.
 - `lib/fit.ts` (measuring and wrapping), `lib/order.ts` (reading order),
   `lib/mask.ts` (the brushed mask), `lib/compose.ts` (the canvas letterer),
   `lib/zip.ts` (a chapter in and back out), `lib/chapter.ts` (which version of a
@@ -166,8 +171,8 @@ through `lib/`.
   control.
 - Hooks own one concern each: `useImageLibrary`, `useBatch`, `useMasks`,
   `useLetterMasks`, `useObjectUrls`, `useOllama`, `usePrompt`, `useLanguage`,
-  `useBoardView`, `useBoardKeys`, `useBoxDrag`, `useFileDrop`,
-  `useLetteringFont`.
+  `useGlossary`, `useStory`, `useBoardView`, `useBoardKeys`, `useBoxDrag`,
+  `useFileDrop`, `useLetteringFont`.
 
 ## Invariants worth knowing before editing
 
@@ -285,6 +290,52 @@ the page it was to be read against. `ollama.corrected` puts the model's own repl
 back in front of it with the counts, since the count is the one thing it cannot see
 from the request. Terms are kept from whichever answer named any (`terms or
 noted(again)`) — being asked for a count again is not being asked for names.
+
+**A chapter carries two things, and they are kept opposite ways round.** The
+glossary accumulates and the **first** rendering of a term wins (`useGlossary`);
+the story's `scene` is **replaced** and the **last** page wins (`useStory`, via
+`lib/story.ts`). Consistency is what a name wants and a story is the thing that
+moves — and replacing rather than appending is what stops it growing with the
+chapter, so the model is handed the last one and asked to write it again with the
+new page in it (`STORY_NOTE`). Everything is capped on the way in and out
+(`SCENE_LIMIT`, `CAST_LIMIT`, `NOTE_LIMIT`, `GLOSSARY_LIMIT`): they ride on
+*every* page of a folder run. An empty answer leaves what was held — a model that
+said nothing is not news that nothing happened.
+
+**`unknown` is a real answer about the cast, and the schema is what makes it
+cheap.** A chapter says who someone is when it is ready to, often pages after the
+first translation needed to know. Asked for prose, a model must pick a pronoun, so
+page one guesses, and the guess is read back as settled fact by every page after
+it. So `gender` is an enum of `male`/`female`/`unknown` and the merge rules
+(`lib/story.ts`) are asymmetric: **`unknown` never overwrites something known**
+(most pages show most characters not at all), any other known value replaces what
+was held (that is a page saying it saw something), and a fact in `settled` is not
+moved by either side. Same shape for `note`: empty never clears.
+
+**The cast is keyed on the name, so the name has to be the page's own.**
+`STORY_NOTE` asks for `先輩`, not "the senior": an English label drifts between
+pages ("Student", "The student") and every drift is a second person in a cast of
+twelve. `ollama.NOT_A_NAME` drops the placeholder a model reaches for when nobody
+is named — filed under "unknown", an unnamed character collides with the next one
+*and* turns the question below into `Still unknown: 先輩, unknown`.
+
+**Whoever is still unknown is asked about under the page, not in the briefing**
+(`ollama.asking`). Measured with gemma4:12b: told only in the system message to
+correct what it is given, the model translates 「先輩は僕の兄です」 — *senpai is my
+older brother* — faithfully, and hands the cast straight back with 先輩 still
+unknown. Moved to a line under the page naming who is waiting and what counts as
+evidence, it corrects. Standing instructions read as a description of the job; a
+question under the text reads as being about the text.
+
+**The same line twice on one page is one question** (`ollama.asked_once`). Keyed on
+the words *and* the kind, since a shout over the art and the same word in a balloon
+are not the same thing; answered once and lettered into every block it came from;
+and where those blocks have different room the **tightest** budget is the one sent,
+because the one answer has to fit all of them. Two identical balloons worded
+differently is the commonest way a page reads as though nobody checked it, and
+fewer lines is also less to miscount. For the same reason `repeat_penalty` is 1.0
+against a default of 1.1 — a page repeats itself on purpose — and `num_predict`
+(`PREDICT`) is what bounds the looping that penalty was nominally there to stop.
 
 **A chapter's glossary rides on the translate call, and the browser keeps it.**
 `terms` comes back beside `texts` and goes out again as `glossary` on the next

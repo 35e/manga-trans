@@ -16,6 +16,7 @@ import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
 import { useOllama } from './hooks/useOllama'
 import { usePrompt } from './hooks/usePrompt'
+import { useStory } from './hooks/useStory'
 import type { Analysis, BoardMode, Box, Fill, Lettering, Region, Stage } from './lib/api'
 import {
   API_BASE,
@@ -115,6 +116,14 @@ function App() {
     forget: forgetTerms,
     clear: clearTerms,
   } = useGlossary()
+  const {
+    stories: chapterStories,
+    now: storyNow,
+    learn: learnStory,
+    correct: correctStory,
+    forget: forgetStory,
+    clear: clearStories,
+  } = useStory()
   const { prompt, setPrompt, builtIn: builtInPrompt } = usePrompt()
 
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -639,11 +648,15 @@ function App() {
           prompt,
           source.language?.name,
           chapter ? termsNow.current[chapter] : null,
+          chapter ? storyNow.current[chapter] : null,
         )
       })
       if (!got) return false
 
-      if (chapter) learnTerms(chapter, got.terms)
+      if (chapter) {
+        learnTerms(chapter, got.terms)
+        learnStory(chapter, got.story)
+      }
 
       const set: Lines = found.detection.regions.map(() => null)
       wanted.forEach((line, at) => {
@@ -661,6 +674,8 @@ function App() {
       source.language?.name,
       termsNow,
       learnTerms,
+      storyNow,
+      learnStory,
     ],
   )
 
@@ -763,9 +778,10 @@ function App() {
       if (batch?.folder === id) stopBatch()
       for (const image of images) if (image.folder === id) forget(image.id)
       forgetTerms(id)
+      forgetStory(id)
       dropFolder(id)
     },
-    [batch?.folder, stopBatch, images, forget, forgetTerms, dropFolder],
+    [batch?.folder, stopBatch, images, forget, forgetTerms, forgetStory, dropFolder],
   )
 
   const clearAll = useCallback(() => {
@@ -775,10 +791,11 @@ function App() {
     clearCleaned()
     traced.clear()
     clearTerms()
+    clearStories()
     setLettering({})
     setAnalyses({})
     setActiveId(null)
-  }, [stopBatch, clear, clearMasks, clearCleaned, traced, clearTerms])
+  }, [stopBatch, clear, clearMasks, clearCleaned, traced, clearTerms, clearStories])
 
   const changeLettering = useCallback(
     (index: number, patch: Partial<Lettering>) => {
@@ -944,7 +961,15 @@ function App() {
           onOpenFolder={setOpenFolder}
           onNewFolder={newFolder}
           terms={openFolder ? (chapterTerms[openFolder] ?? []) : []}
-          onForgetTerms={() => openFolder && forgetTerms(openFolder)}
+          story={openFolder ? (chapterStories[openFolder] ?? null) : null}
+          onCorrect={(name, fact, value) =>
+            openFolder && correctStory(openFolder, name, fact, value)
+          }
+          onForgetTerms={() => {
+            if (!openFolder) return
+            forgetTerms(openFolder)
+            forgetStory(openFolder)
+          }}
           activeId={active?.id ?? null}
           onOpen={setActiveId}
           onRemove={removeImage}

@@ -222,8 +222,38 @@ export async function defaultPrompt(): Promise<string> {
   return answer.prompt
 }
 
-/** A name or coinage, and the wording settled on for it. */
-export type Term = { source: string; target: string }
+/**
+ * A name or coinage, and the wording settled on for it. `note` is a few words on
+ * who or what it is, where that is what decided the wording — a name is rendered
+ * one way for a boy and another for a teacher, and only the page that named him
+ * ever saw which he was.
+ */
+export type Term = { source: string; target: string; note?: string }
+
+/**
+ * What is known about someone, and what is not. `unknown` is a real answer and
+ * the one wanted until a page has actually shown otherwise: a chapter says who
+ * someone is when it is ready to, and a page translated on a guess is wrong on
+ * every page after it as well.
+ */
+export type Gender = 'male' | 'female' | 'unknown'
+
+/** The facts about one of the cast that can be held, and so corrected. */
+export type Fact = 'gender' | 'note'
+
+export type CastMember = {
+  name: string
+  gender: Gender
+  note?: string
+  /**
+   * Facts set by hand rather than worked out from a page. The API tells the model
+   * those are not its to change, and {@link merged} will not move them either.
+   */
+  settled?: Fact[]
+}
+
+/** Where a chapter has got to: what is going on, and who it is going on between. */
+export type Story = { scene: string; cast: CastMember[] }
 
 /**
  * One line on its way over: what it says, and the two things about it the model
@@ -242,8 +272,10 @@ export type Untranslated = { text: string; kind?: Kind; budget?: number }
  * nothing a model can see from one line of dialogue.
  *
  * `glossary` is what the chapter has settled on so far, and `terms` comes back
- * with whatever this page added to it. That rides on this request rather than a
- * second one: over a folder of forty pages a second would be forty more calls.
+ * with whatever this page added to it. `previously` is where the chapter had got
+ * to, and `story` comes back with this page written into it. Both ride on this
+ * request rather than a second one: over a folder of forty pages a second would
+ * be forty more calls.
  */
 export async function translate(
   lines: Untranslated[],
@@ -252,8 +284,11 @@ export async function translate(
   system?: string | null,
   source?: string | null,
   glossary?: Term[] | null,
-): Promise<{ texts: string[]; terms: Term[] }> {
-  if (lines.length === 0) return { texts: [], terms: [] }
+  previously?: Story | null,
+): Promise<{ texts: string[]; terms: Term[]; story: Story }> {
+  if (lines.length === 0) {
+    return { texts: [], terms: [], story: { scene: '', cast: [] } }
+  }
 
   const body = new FormData()
   body.append('texts', JSON.stringify(lines.map((line) => line.text)))
@@ -263,6 +298,11 @@ export async function translate(
   if (source) body.append('source', source)
   if (glossary && glossary.length > 0) {
     body.append('glossary', JSON.stringify(glossary))
+  }
+  // Sent whole where there is anything to send: the cast is what the model is
+  // asked to correct, so it has to see all of it.
+  if (previously && (previously.scene !== '' || previously.cast.length > 0)) {
+    body.append('previously', JSON.stringify(previously))
   }
   // Sent whole or not at all, and the API refuses a list that is not one per
   // line: a marker that has slipped a place describes the wrong line.
@@ -274,8 +314,19 @@ export async function translate(
   }
 
   const response = await reach('/api/translate', { method: 'POST', body })
-  const answer = (await response.json()) as { texts: string[]; terms?: Term[] }
-  return { texts: answer.texts, terms: answer.terms ?? [] }
+  const answer = (await response.json()) as {
+    texts: string[]
+    terms?: Term[]
+    story?: Partial<Story>
+  }
+  return {
+    texts: answer.texts,
+    terms: answer.terms ?? [],
+    story: {
+      scene: answer.story?.scene ?? '',
+      cast: answer.story?.cast ?? [],
+    },
+  }
 }
 
 /**

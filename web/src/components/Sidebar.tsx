@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { BatchRun } from '../hooks/useBatch'
 import type { LibraryNotice } from '../hooks/useImageLibrary'
-import type { Stage, Term } from '../lib/api'
+import type { CastMember, Fact, Stage, Story, Term } from '../lib/api'
 import type { GalleryFolder, GalleryImage } from '../lib/images'
 import { formatBytes, plural } from '../lib/images'
+import { isEmpty } from '../lib/story'
 import { BatchProgress } from './BatchProgress'
 import { Dropzone } from './Dropzone'
 import { Gallery } from './Gallery'
 import { BackIcon, DownloadIcon, PlusIcon } from './icons'
-import { Button, FOCUS, Note, Spinner, TextInput } from './ui'
+import { Button, FOCUS, Note, Select, Spinner, TextInput } from './ui'
 
 type Props = {
   images: GalleryImage[]
@@ -20,6 +21,10 @@ type Props = {
   onNewFolder: (name: string) => boolean
   /** What the open folder has settled on translating its names as. */
   terms: Term[]
+  /** Where the open folder's chapter has got to, as its last page left it. */
+  story: Story | null
+  /** A fact about one of the cast, put right by hand. */
+  onCorrect: (name: string, fact: Fact, value: string) => void
   onForgetTerms: () => void
   activeId: string | null
   onOpen: (id: string) => void
@@ -57,6 +62,8 @@ export function Sidebar({
   onOpenFolder,
   onNewFolder,
   terms,
+  story,
+  onCorrect,
   onForgetTerms,
   activeId,
   onOpen,
@@ -152,6 +159,8 @@ export function Sidebar({
           packing={packing}
           canTranslate={canTranslate}
           terms={terms}
+          story={story}
+          onCorrect={onCorrect}
           onForgetTerms={onForgetTerms}
         />
       )}
@@ -267,6 +276,8 @@ function FolderBar({
   packing,
   canTranslate,
   terms,
+  story,
+  onCorrect,
   onForgetTerms,
 }: {
   folder: GalleryFolder
@@ -281,6 +292,8 @@ function FolderBar({
   packing: { done: number; total: number } | null
   canTranslate: boolean
   terms: Term[]
+  story: Story | null
+  onCorrect: (name: string, fact: Fact, value: string) => void
   onForgetTerms: () => void
 }) {
   const [armed, setArmed] = useState(false)
@@ -375,43 +388,87 @@ function FolderBar({
         </p>
       )}
 
-      {terms.length > 0 && <Terms terms={terms} onForget={onForgetTerms} />}
+      {(terms.length > 0 || !isEmpty(story)) && (
+        <Chapter
+          terms={terms}
+          story={story}
+          onCorrect={onCorrect}
+          onForget={onForgetTerms}
+        />
+      )}
     </div>
   )
 }
 
 /**
- * What this chapter has settled on calling things, sent over with every page in
- * it so a name keeps one spelling across pages no model sees together.
+ * What this chapter has settled on calling things and where its story has got to.
+ * Both go over with every page in the folder, so a name keeps one spelling and a
+ * page that opens mid-argument is translated as that rather than as strangers
+ * meeting — across pages no model ever sees together.
  *
  * Shown rather than only used, because the first page to name someone decides it
  * for the rest of the chapter and there would otherwise be nothing saying why a
- * later page came out as it did. Read-only but forgettable: correcting one entry
- * is not offered, starting the list over is.
+ * later page came out as it did. The story is the other way round — the last page
+ * to speak decides it — which is worth being able to see for the same reason.
+ *
+ * The cast is the one part that can be corrected: a chapter says who someone is
+ * when it is ready to, which may be pages after the first translation needed to
+ * know, and someone reading it already knows. Anything set here is settled — the
+ * model is told so on every page after it, and stops being asked to work it out.
  */
-function Terms({ terms, onForget }: { terms: Term[]; onForget: () => void }) {
+function Chapter({
+  terms,
+  story,
+  onCorrect,
+  onForget,
+}: {
+  terms: Term[]
+  story: Story | null
+  onCorrect: (name: string, fact: Fact, value: string) => void
+  onForget: () => void
+}) {
   return (
     <div className="mt-2 border-t border-line pt-2">
       <div className="flex items-center justify-between gap-2">
         <p
           className="text-[11px] font-medium text-faint"
-          title="Names and coinages this chapter has already been translated with. Every page in the folder is translated against them"
+          title="What this chapter has been translated with so far: where the story has got to, who is in it, and the names and coinages already settled. Every page in the folder is translated against them"
         >
-          Chapter terms
+          Chapter so far
         </p>
         <button
           type="button"
           onClick={onForget}
-          title="Start the list over — the pages already lettered are left as they are"
+          title="Start over — the pages already lettered are left as they are"
           className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-faint transition-colors hover:bg-surface hover:text-ink ${FOCUS}`}
         >
           Forget
         </button>
       </div>
+      {story && story.scene !== '' && (
+        <p
+          className="mt-1 max-h-16 overflow-y-auto text-[11px] leading-snug text-muted italic"
+          title={story.scene}
+        >
+          {story.scene}
+        </p>
+      )}
+      {story && story.cast.length > 0 && (
+        <ul className="mt-1.5 max-h-32 space-y-1 overflow-y-auto">
+          {story.cast.map((person) => (
+            <Person key={person.name} person={person} onCorrect={onCorrect} />
+          ))}
+        </ul>
+      )}
       <ul className="mt-1 max-h-24 overflow-y-auto">
         {terms.map((term) => (
           <li
             key={term.source}
+            // What it is, where the page that named it said: too long for the row
+            // and the row is one line on purpose.
+            title={
+              term.note ? `${term.source} → ${term.target} — ${term.note}` : undefined
+            }
             className="flex items-baseline gap-1 text-[11px] leading-snug"
           >
             <span className="min-w-0 shrink truncate text-muted">{term.source}</span>
@@ -423,6 +480,102 @@ function Terms({ terms, onForget }: { terms: Term[]; onForget: () => void }) {
         ))}
       </ul>
     </div>
+  )
+}
+
+/**
+ * One of the cast, and the two things about them that can be put right.
+ *
+ * `unknown` is not a gap to be filled in for the sake of it: it is what the
+ * chapter has honestly shown so far, and setting it back to unknown hands the
+ * question to the model again rather than asserting anything.
+ */
+function Person({
+  person,
+  onCorrect,
+}: {
+  person: CastMember
+  onCorrect: (name: string, fact: Fact, value: string) => void
+}) {
+  const [noting, setNoting] = useState(false)
+  const [note, setNote] = useState(person.note ?? '')
+  const settled = person.settled ?? []
+
+  const settle = () => {
+    setNoting(false)
+    if (note !== (person.note ?? '')) onCorrect(person.name, 'note', note)
+  }
+
+  return (
+    <li>
+      <div className="flex items-center gap-1">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-ink">
+          {person.name}
+          {settled.length > 0 && (
+            <span
+              className="ml-1 text-faint"
+              title="Set by hand. The model is told these are not its to change"
+            >
+              ●
+            </span>
+          )}
+        </span>
+        <Select
+          value={person.gender}
+          onChange={(event) => onCorrect(person.name, 'gender', event.target.value)}
+          title={
+            settled.includes('gender')
+              ? 'Set by hand. Every page from here is translated knowing this'
+              : 'What the chapter has shown so far. Set it and it is settled'
+          }
+          className={`shrink-0 px-1 py-0 text-[11px] ${
+            settled.includes('gender') ? 'text-ink' : 'text-faint'
+          }`}
+        >
+          <option value="unknown">not shown</option>
+          <option value="female">she</option>
+          <option value="male">he</option>
+        </Select>
+      </div>
+
+      {noting ? (
+        <TextInput
+          autoFocus
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          onBlur={settle}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') settle()
+            if (event.key === 'Escape') {
+              setNote(person.note ?? '')
+              setNoting(false)
+            }
+          }}
+          placeholder="who they are"
+          className="mt-0.5 w-full px-1 py-0 text-[11px]"
+        />
+      ) : (
+        <button
+          type="button"
+          // Taken from the person rather than from what was typed last time: a
+          // page since may have said something, and this row is not the record.
+          onClick={() => {
+            setNote(person.note ?? '')
+            setNoting(true)
+          }}
+          title={
+            settled.includes('note')
+              ? 'Set by hand. The model is told it is not to change it'
+              : 'What the chapter has made of them. Click to say it yourself'
+          }
+          className={`block w-full truncate px-1 text-left text-[11px] leading-snug ${
+            settled.includes('note') ? 'text-muted' : 'text-faint'
+          } hover:text-ink`}
+        >
+          {person.note || 'who they are…'}
+        </button>
+      )}
+    </li>
   )
 }
 
