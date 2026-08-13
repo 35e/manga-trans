@@ -61,7 +61,6 @@ export type Stage =
   | 'tracing'
   | 'cleaning'
   | 'translating'
-  | 'fitting'
 
 /** What the board is being used for: looking, hiding, or lettering. */
 export type BoardMode = 'inspect' | 'mask' | 'translate'

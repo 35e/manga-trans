@@ -592,10 +592,11 @@ function App() {
     [during, ollama.model, ollama.target, prompt, source.language?.name],
   )
 
-  // The three steps as the buttons on the board call them, each moving on to the
-  // next once it has something to move on with.
+  // The three steps as the buttons on the board call them. Only cleaning moves on
+  // by itself: detection is imperfect and its boxes are there to be looked at and
+  // corrected, so it stays on the step that shows them.
   const runDetect = useCallback(async () => {
-    if (active && (await detectAndRead(active))) setMode('mask')
+    if (active) await detectAndRead(active)
   }, [active, detectAndRead])
 
   const runClean = useCallback(
@@ -626,7 +627,6 @@ function App() {
 
       const found = await detectAndRead(page)
       if (!found) return lastFailure.current ?? 'the text could not be found'
-      if (onBoard(page.id)) setMode('mask')
 
       const marks = await marksFor(page, found)
       if (marks) {
@@ -765,44 +765,6 @@ function App() {
       current[id] ? { ...current, [id]: lines.refitted(current[id], held) } : current,
     )
   }, [active, analyses])
-
-  /**
-   * Put every line back in the balloon its block was written in, and resize it
-   * to suit.
-   *
-   * Detecting already answers with those balloons, so this is for the blocks it
-   * never saw: one drawn by hand, one cut in two, one pulled off its neighbour.
-   * It is also the way back after a box has been dragged about by hand.
-   */
-  const fitBoxes = useCallback(async () => {
-    if (!active) return
-    const { id, file } = active
-    const found = analyses[id]
-    if (!found) return
-
-    const balloons = await during(id, 'fitting', async () => {
-      const [answers] = await Promise.all([
-        bubbles(
-          file,
-          found.detection.regions.map((region) => region.box),
-        ),
-        ready(),
-      ])
-      return answers
-    })
-    if (!balloons) return
-
-    setAnalyses((current) => {
-      const now = current[id]
-      const next = now && blocks.withBubbles(now, balloons)
-      return next ? { ...current, [id]: next } : current
-    })
-    setLettering((current) => {
-      const page = current[id]
-      const next = page && lines.intoBubbles(page, found, balloons)
-      return next ? { ...current, [id]: next } : current
-    })
-  }, [active, analyses, during])
 
   /** Set the lettering into the page and hand it over as a PNG. */
   const applyToImage = useCallback(async () => {
@@ -980,7 +942,6 @@ function App() {
             onTarget: ollama.setTarget,
             onTranslate: runTranslate,
             onFitAll: fitAll,
-            onFitBoxes: fitBoxes,
             lettering: pageLettering,
             onBox: setLetteringBox,
             onTurn: setLetteringAngle,

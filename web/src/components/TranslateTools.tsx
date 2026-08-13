@@ -8,9 +8,6 @@ type Props = {
   onTarget: (target: string) => void
   onFitAll: () => void
   canFit: boolean
-  /** Put every line back in the balloon its block was written in. */
-  onFitBoxes: () => void
-  canFitBoxes: boolean
   /** Translate the page over again, against the blocks as they stand now. */
   onTranslate: () => void
   canTranslate: boolean
@@ -29,8 +26,6 @@ export function TranslateTools({
   onTarget,
   onFitAll,
   canFit,
-  onFitBoxes,
-  canFitBoxes,
   onTranslate,
   canTranslate,
   lettered,
@@ -74,13 +69,6 @@ export function TranslateTools({
             Translate again
           </Button>
         )}
-        <Button
-          onClick={onFitBoxes}
-          disabled={!canFitBoxes}
-          title="Move every line back into the balloon its block was written in, and size it to suit — for a block drawn by hand, one cut in two, or a box dragged somewhere it should not have been. A block with no balloon around it is left where it is"
-        >
-          Fit to balloons
-        </Button>
         <Button
           onClick={onFitAll}
           disabled={!canFit}

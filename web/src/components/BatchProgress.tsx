@@ -12,7 +12,6 @@ const LABELS: Record<Stage, string> = {
   tracing: 'Tracing',
   cleaning: 'Cleaning',
   translating: 'Translating',
-  fitting: 'Finding the balloons',
 }
 
 type Props = {

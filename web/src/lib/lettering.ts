@@ -104,25 +104,6 @@ export function refitted(lines: Lines, analysis: Analysis): Lines {
 }
 
 /**
- * Every line put back in the balloon its block was written in, and sized to
- * suit. A block with no balloon around it — a sound effect over artwork — is
- * left exactly where it is, there being nowhere better to put it.
- */
-export function intoBubbles(
-  lines: Lines,
-  analysis: Analysis,
-  balloons: (Box | null)[],
-): Lines | null {
-  if (lines.length !== balloons.length) return null
-  return lines.map((line, at) => {
-    const box = balloons[at]
-    if (!line || !box) return line
-    const size = sizeAt(analysis, at, line.text, box)
-    return size === null ? line : { ...line, box, size }
-  })
-}
-
-/**
  * One line cut in two, in step with the block being cut.
  *
  * Both halves are held to the size of the block *before* the cut: the page is

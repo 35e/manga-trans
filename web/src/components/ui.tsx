@@ -14,11 +14,14 @@ export const FOCUS =
 type Variant = 'primary' | 'outline' | 'ghost' | 'danger'
 type Size = 'sm' | 'md'
 
+// Every variant carries a border, transparent where it is not drawn: without it
+// the outlined one is two pixels taller than the rest and a row of buttons does
+// not line up.
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-accent text-white hover:bg-accent-lit',
+  primary: 'border border-transparent bg-accent text-white hover:bg-accent-lit',
   outline: 'border border-line text-muted hover:border-line hover:bg-raised hover:text-ink',
-  ghost: 'text-muted hover:bg-raised hover:text-ink',
-  danger: 'text-muted hover:bg-danger/15 hover:text-danger',
+  ghost: 'border border-transparent text-muted hover:bg-raised hover:text-ink',
+  danger: 'border border-transparent text-muted hover:bg-danger/15 hover:text-danger',
 }
 
 const SIZES: Record<Size, string> = {

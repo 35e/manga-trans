@@ -127,10 +127,9 @@ export function withReading(
 /**
  * The room each of those blocks is in, by name rather than by position.
  *
- * Blocks that go missing while the answer is in the air are skipped, and blocks
- * that were not asked about are left alone. Used where the list may have moved
- * under the request — {@link withBubbles} is the same thing for an answer that
- * is known to still line up.
+ * By name because the list may have moved under the request: blocks that went
+ * missing while the answer was in the air are skipped, and blocks that were not
+ * asked about are left alone.
  */
 export function withRooms(
   analysis: Analysis,
@@ -148,21 +147,3 @@ export function withRooms(
   return touched ? withRegions(analysis, regions) : analysis
 }
 
-/**
- * A balloon for every block, from one `/api/bubbles` call. Both lists are held
- * by position, so the answer only means anything while the page still has the
- * blocks it was asked about.
- */
-export function withBubbles(
-  analysis: Analysis,
-  balloons: (Box | null)[],
-): Analysis | null {
-  if (analysis.detection.regions.length !== balloons.length) return null
-  return withRegions(
-    analysis,
-    analysis.detection.regions.map((region, at) => ({
-      ...region,
-      bubble: balloons[at],
-    })),
-  )
-}

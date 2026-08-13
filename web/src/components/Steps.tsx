@@ -32,7 +32,7 @@ export function Steps({ steps, current, onPick }: Props) {
             type="button"
             onClick={() => onPick(step.id)}
             aria-current={current === step.id ? 'step' : undefined}
-            className={`flex items-center gap-1.5 rounded-md py-1 pr-2.5 pl-1.5 text-xs font-medium whitespace-nowrap transition-colors ${FOCUS} ${
+            className={`flex items-center gap-1.5 rounded-md py-2 pr-2.5 pl-1.5 text-xs font-medium whitespace-nowrap transition-colors ${FOCUS} ${
               current === step.id
                 ? 'bg-raised text-ink'
                 : step.open
