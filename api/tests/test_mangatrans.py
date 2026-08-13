@@ -1570,6 +1570,26 @@ def with_story(texts: list[str], scene: str = "", cast: list[dict] | None = None
     return json.dumps({"translations": texts, "story": story})
 
 
+def with_beats(
+    beats: list[str],
+    synopsis: str = "",
+    register: str = "",
+    cast: list[dict] | None = None,
+    terms: list[dict] | None = None,
+) -> str:
+    """A survey window's answer: a line per page, and what it made of the chapter."""
+    said: dict = {"beats": beats}
+    if synopsis:
+        said["synopsis"] = synopsis
+    if register:
+        said["register"] = register
+    if cast is not None:
+        said["cast"] = cast
+    if terms is not None:
+        said["terms"] = terms
+    return json.dumps(said)
+
+
 def person(name: str, gender: str = ollama.UNKNOWN, note: str = "") -> dict:
     return {"name": name, "gender": gender, "note": note}
 
@@ -1579,6 +1599,17 @@ def translated(
 ) -> ollama.Translation:
     """What `ollama.translate` hands the server back."""
     return ollama.Translation(texts, terms or [], story or {})
+
+
+def surveyed(
+    beats: list[str] | None = None,
+    synopsis: str = "",
+    register: str = "",
+    cast: list[dict] | None = None,
+    terms: list[dict] | None = None,
+) -> ollama.Chapter:
+    """What `ollama.survey` hands the server back."""
+    return ollama.Chapter(beats or [], synopsis, register, cast or [], terms or [])
 
 
 class TestOllama(unittest.TestCase):
@@ -2226,6 +2257,353 @@ class TestTermNotes(unittest.TestCase):
         with mock.patch.object(ollama, "ask", ask):
             ollama.translate(["先輩！"], "m", glossary=glossary)
         self.assertIn("先輩 = senpai  (an older pupil)", asked[0])
+
+
+class TestSurvey(unittest.TestCase):
+    """Reading a whole chapter before any of it is translated.
+
+    The one thing a page-at-a-time run cannot do for itself: page three is
+    translated long before page forty has been read, and page forty is usually
+    where a chapter gets round to saying who someone is.
+    """
+
+    def asking(self, *answers):
+        """Ollama patched to give these answers, collecting the system messages."""
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][0]["content"])
+            return answers[min(len(asked) - 1, len(answers) - 1)]
+
+        return asked, mock.patch.object(ollama, "ask", ask)
+
+    def paging(self, *answers):
+        """The same, collecting the pages sent rather than the briefing."""
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][1]["content"])
+            return answers[min(len(asked) - 1, len(answers) - 1)]
+
+        return asked, mock.patch.object(ollama, "ask", ask)
+
+    def test_one_beat_comes_back_for_each_page(self):
+        answer = reply(with_beats(["Taro arrives.", "They argue."]))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["タロウだ"], ["なんだと"]], "m")
+        self.assertEqual(found.beats, ["Taro arrives.", "They argue."])
+
+    def test_a_page_with_nothing_on_it_still_gets_a_beat(self):
+        # Left out, it would put every beat after it a page out.
+        answer = reply(with_beats(["Taro arrives.", "Nobody speaks."]))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["タロウだ"], []], "m")
+        self.assertEqual(len(found.beats), 2)
+
+    def test_the_page_is_named_even_where_it_says_nothing(self):
+        asked, patched = self.paging(reply(with_beats(["one", "two"])))
+        with patched:
+            ollama.survey([["タロウだ"], []], "m")
+        self.assertIn("Page 2:", asked[0])
+
+    def test_what_the_chapter_is_comes_back_beside_the_beats(self):
+        cast = [person("タロウ", ollama.MALE, "late for school")]
+        terms = [{"source": "タロウ", "target": "Taro"}]
+        answer = reply(
+            with_beats(["He arrives."], "Taro is late.", "Light and modern.", cast, terms)
+        )
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["タロウだ"]], "m")
+        self.assertEqual(found.synopsis, "Taro is late.")
+        self.assertEqual(found.register, "Light and modern.")
+        self.assertEqual(found.cast, cast)
+        self.assertEqual(found.terms, terms)
+
+    def test_a_window_that_said_nothing_about_the_chapter_still_answers(self):
+        # Only `beats` is required, for the reason only `translations` is.
+        with mock.patch.object(ollama, "ask", return_value=reply(with_beats(["one"]))):
+            found = ollama.survey([["タロウだ"]], "m")
+        self.assertEqual(found.beats, ["one"])
+        self.assertEqual(found.cast, [])
+        self.assertEqual(found.synopsis, "")
+
+    def test_a_window_that_lost_count_is_asked_again(self):
+        answers = [
+            reply(with_beats(["only one"])),
+            reply(with_beats(["first", "second"])),
+        ]
+        with mock.patch.object(ollama, "ask", side_effect=answers) as asked:
+            found = ollama.survey([["いち"], ["に"]], "m")
+        self.assertEqual(found.beats, ["first", "second"])
+        self.assertEqual(asked.call_count, 2)
+
+    def test_a_window_that_lost_count_twice_hands_back_no_beats(self):
+        # Beats a page out are worse than none at all: they describe the wrong
+        # page, and nothing downstream of here can tell that they do.
+        with mock.patch.object(ollama, "ask", return_value=reply(with_beats(["one"]))):
+            found = ollama.survey([["いち"], ["に"]], "m")
+        self.assertEqual(found.beats, [])
+
+    def test_a_miscounted_window_keeps_what_it_said_about_the_chapter(self):
+        # Naming a character has nothing to do with counting pages.
+        answer = reply(with_beats(["one"], "Taro is late.", cast=[person("タロウ")]))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["いち"], ["に"]], "m")
+        self.assertEqual(found.synopsis, "Taro is late.")
+        self.assertEqual(found.cast, [person("タロウ")])
+
+    def test_a_window_that_lost_count_is_told_the_number_it_got_wrong(self):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][-1]["content"])
+            return reply(with_beats(["only one"]))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.survey([["いち"], ["に"]], "m")
+        self.assertIn("1 beats for 2 pages", asked[1])
+
+    def test_what_the_earlier_pages_came_to_is_put_in_front_of_the_next(self):
+        asked, patched = self.asking(reply(with_beats(["three"])))
+        with patched:
+            ollama.survey(
+                [["さん"]],
+                "m",
+                chapter={
+                    "synopsis": "Taro is late.",
+                    "register": "Light and modern.",
+                    "cast": [person("タロウ", ollama.MALE)],
+                    "terms": [{"source": "タロウ", "target": "Taro"}],
+                },
+            )
+        self.assertIn("Taro is late.", asked[0])
+        self.assertIn("Light and modern.", asked[0])
+        self.assertIn("タロウ — male", asked[0])
+        self.assertIn("タロウ = Taro", asked[0])
+
+    def test_the_beats_already_written_are_not_sent_back(self):
+        # This window writes beats for its own pages; the earlier ones are not
+        # improved by being read again, and they are the bulk of the answer.
+        asked, patched = self.asking(reply(with_beats(["three"])))
+        with patched:
+            ollama.survey([["さん"]], "m", chapter={"beats": ["he wakes", "he runs"]})
+        self.assertNotIn("he wakes", asked[0])
+
+    def test_the_pages_are_numbered_from_where_the_window_starts(self):
+        asked, patched = self.paging(reply(with_beats(["nine"])))
+        with patched:
+            ollama.survey([["きゅう"]], "m", first=8)
+        self.assertIn("Page 9:", asked[0])
+
+    def test_the_cast_is_asked_for_in_the_language_of_the_pages(self):
+        asked, patched = self.asking(reply(with_beats(["one"])))
+        with patched:
+            ollama.survey([["タロウだ"]], "m", source="Korean")
+        self.assertIn("in the Korean they are written in", asked[0])
+
+    def test_a_synopsis_that_runs_on_is_cut_rather_than_dropped(self):
+        answer = reply(with_beats(["one"], "so " * 2000))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["いち"]], "m")
+        self.assertEqual(len(found.synopsis), ollama.SYNOPSIS_LIMIT)
+
+    def test_a_register_that_runs_on_is_cut(self):
+        answer = reply(with_beats(["one"], register="formal " * 200))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["いち"]], "m")
+        self.assertEqual(len(found.register), ollama.REGISTER_LIMIT)
+
+    def test_a_beat_that_runs_on_is_cut(self):
+        answer = reply(with_beats(["and then " * 100]))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["いち"]], "m")
+        self.assertEqual(len(found.beats[0]), ollama.BEAT_LIMIT)
+
+    def test_only_so_many_people_are_carried(self):
+        crowd = [person(f"人{at}") for at in range(40)]
+        answer = reply(with_beats(["one"], cast=crowd))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["いち"]], "m")
+        self.assertEqual(len(found.cast), ollama.CAST_LIMIT)
+
+    def test_a_placeholder_for_a_name_is_dropped_here_too(self):
+        answer = reply(with_beats(["one"], cast=[person("unknown"), person("ハナ")]))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["いち"]], "m")
+        self.assertEqual(found.cast, [person("ハナ")])
+
+    def test_a_chapter_with_no_pages_asks_nothing(self):
+        with mock.patch.object(ollama, "ask") as asked:
+            found = ollama.survey([], "m")
+        asked.assert_not_called()
+        self.assertEqual(found.beats, [])
+
+    def test_the_survey_asks_for_a_window_of_its_own(self):
+        # A windowful of raw lettering is several pages where a translation is one.
+        sent = []
+
+        def ask(path, body=None, **kwargs):
+            sent.append(body)
+            return reply(with_beats(["one"]))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.survey([["いち"]], "m")
+        self.assertEqual(sent[0]["options"]["num_ctx"], ollama.SURVEY_CONTEXT)
+        self.assertEqual(sent[0]["format"], ollama.SURVEY_SCHEMA)
+
+
+class TestChapter(unittest.TestCase):
+    """A page translated against what the whole chapter turned out to be."""
+
+    def asking(self, answer):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][0]["content"])
+            return answer
+
+        return asked, mock.patch.object(ollama, "ask", ask)
+
+    def test_the_chapter_is_put_in_front_of_the_page(self):
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(
+                ["おはよう"],
+                "m",
+                chapter={"synopsis": "Taro is late.", "register": "Light."},
+            )
+        self.assertIn("Taro is late.", asked[0])
+        self.assertIn("Light.", asked[0])
+
+    def test_a_page_with_no_chapter_is_not_told_about_one(self):
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m")
+        self.assertNotIn(ollama.SYNOPSIS_HEADING, asked[0])
+
+    def test_the_note_about_giving_things_away_is_said_only_with_a_chapter(self):
+        # A warning about revealing what is coming is a warning about nothing
+        # where there is no chapter in front of it revealing anything.
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m")
+        self.assertNotIn("must not be made to hint", asked[0])
+
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m", chapter={"synopsis": "Taro is late."})
+        self.assertIn("must not be made to hint", asked[0])
+
+    def test_the_note_is_said_whatever_the_prompt_is(self):
+        # The same reason TERMS_NOTE is not written into SYSTEM_DEFAULT: the
+        # prompt is the caller's to replace, and this must not go with it.
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(
+                ["おはよう"], "m", system="Translate.", chapter={"synopsis": "Late."}
+            )
+        self.assertIn("must not be made to hint", asked[0])
+
+    def test_the_note_names_the_language_it_is_about(self):
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(
+                ["안녕"], "m", source="Korean", chapter={"synopsis": "Late."}
+            )
+        self.assertIn("Where the Korean is vague on purpose", asked[0])
+
+    def test_the_page_being_translated_is_marked_among_the_beats(self):
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(
+                ["おはよう"], "m", chapter={"beats": ["one", "two", "three"]}, page=1
+            )
+        self.assertIn("→ 2. two", asked[0])
+        self.assertIn("  1. one", asked[0])
+
+    def test_only_the_beats_around_the_page_are_sent(self):
+        # The chapter reaches the page through the synopsis and the cast; forty
+        # beats would crowd out the page they are there to help.
+        beats = [f"beat{at}" for at in range(40)]
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m", chapter={"beats": beats}, page=20)
+        self.assertIn("beat20", asked[0])
+        self.assertNotIn("beat13", asked[0])
+        self.assertNotIn("beat23", asked[0])
+
+    def test_the_window_is_cut_at_the_ends_of_the_chapter(self):
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(
+                ["おはよう"],
+                "m",
+                chapter={"beats": [f"beat{at}" for at in range(5)]},
+                page=0,
+            )
+        self.assertIn("→ 1. beat0", asked[0])
+        self.assertNotIn("beat3", asked[0])
+
+    def test_a_chapter_of_nothing_is_not_put_in_front_of_the_page(self):
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(["おはよう"], "m", chapter={"beats": ["", ""]})
+        self.assertNotIn(ollama.BEATS_HEADING, asked[0])
+
+    def test_the_chapter_holds_when_it_falls_back_to_one_at_a_time(self):
+        # The pass that gives up the page must not also give up the chapter.
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][0]["content"])
+            return reply(translations("only one"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(
+                ["いち", "に"], "m", chapter={"synopsis": "Taro is late."}
+            )
+        self.assertIn("Taro is late.", asked[-1])
+
+    def test_the_page_is_told_where_in_the_chapter_it_is(self):
+        # Under the page rather than in the briefing, the same finding `asking`
+        # records: how far the reader has got is a fact about this page.
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][1]["content"])
+            return reply(translations("Morning"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(
+                ["おはよう"], "m", chapter={"beats": ["one", "two", "three"]}, page=1
+            )
+        self.assertIn("This is page 2 of 3", asked[0])
+        self.assertTrue(asked[0].startswith("1. おはよう"), asked[0])
+
+    def test_a_page_with_no_chapter_is_not_told_where_it_is(self):
+        asked = []
+
+        def ask(path, body=None, **kwargs):
+            asked.append(body["messages"][1]["content"])
+            return reply(translations("Morning"))
+
+        with mock.patch.object(ollama, "ask", ask):
+            ollama.translate(["おはよう"], "m")
+        self.assertEqual(asked[0], "1. おはよう")
+
+    def test_the_chapter_comes_before_the_story_so_far(self):
+        # What the chapter is, then where it had got to, then the page.
+        asked, patched = self.asking(reply(translations("Morning")))
+        with patched:
+            ollama.translate(
+                ["おはよう"],
+                "m",
+                chapter={"synopsis": "Taro is late."},
+                story={"scene": "He is running."},
+            )
+        self.assertLess(
+            asked[0].index("Taro is late."), asked[0].index("He is running.")
+        )
 
 
 class TestOllamaHost(unittest.TestCase):
@@ -3165,11 +3543,213 @@ class TestApi(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("glossary", response.json["error"])
 
+    def test_survey_answers_with_what_the_chapter_is(self):
+        found = surveyed(
+            ["He arrives.", "They argue."],
+            "Taro is late.",
+            "Light and modern.",
+            [person("タロウ", "male")],
+            [{"source": "タロウ", "target": "Taro"}],
+        )
+        with mock.patch.object(server.ollama, "survey", return_value=found):
+            response = client().post(
+                "/api/survey",
+                data={"pages": json.dumps([["タロウだ"], ["なんだと"]]), "model": "m"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json["chapter"],
+            {
+                "beats": ["He arrives.", "They argue."],
+                "synopsis": "Taro is late.",
+                "register": "Light and modern.",
+                "cast": [person("タロウ", "male")],
+                "terms": [{"source": "タロウ", "target": "Taro"}],
+            },
+        )
+
+    def test_survey_needs_pages(self):
+        response = client().post("/api/survey", data={"model": "m"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("pages", response.json["error"])
+
+    def test_survey_needs_a_model(self):
+        response = client().post("/api/survey", data={"pages": "[]"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("model", response.json["error"])
+
+    def test_survey_refuses_pages_that_are_not_lists_of_lines(self):
+        response = client().post(
+            "/api/survey",
+            data={"pages": json.dumps(["おはよう"]), "model": "m"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("pages", response.json["error"])
+
+    def test_survey_keeps_a_page_with_nothing_on_it(self):
+        # The beats are one per page and positional: a page dropped on the way in
+        # is every beat after it one place wrong.
+        with mock.patch.object(
+            server.ollama, "survey", return_value=surveyed(["one", "two"])
+        ) as told:
+            client().post(
+                "/api/survey",
+                data={"pages": json.dumps([["タロウだ"], []]), "model": "m"},
+            )
+        self.assertEqual(told.call_args.args[0], [["タロウだ"], []])
+
+    def test_survey_passes_the_chapter_so_far_on(self):
+        held = {"synopsis": "Taro is late.", "beats": ["He wakes."]}
+        with mock.patch.object(
+            server.ollama, "survey", return_value=surveyed(["two"])
+        ) as told:
+            client().post(
+                "/api/survey",
+                data={
+                    "pages": json.dumps([["に"]]),
+                    "model": "m",
+                    "chapter": json.dumps(held),
+                    "first": "1",
+                },
+            )
+        self.assertEqual(told.call_args.kwargs["chapter"]["synopsis"], "Taro is late.")
+        self.assertEqual(told.call_args.kwargs["first"], 1)
+
+    def test_survey_without_a_chapter_sends_none(self):
+        with mock.patch.object(
+            server.ollama, "survey", return_value=surveyed(["one"])
+        ) as told:
+            client().post(
+                "/api/survey", data={"pages": json.dumps([["いち"]]), "model": "m"}
+            )
+        self.assertIsNone(told.call_args.kwargs["chapter"])
+        self.assertEqual(told.call_args.kwargs["first"], 0)
+
+    def test_survey_says_so_when_ollama_is_not_there(self):
+        with mock.patch.object(
+            server.ollama,
+            "survey",
+            side_effect=server.ollama.Unreachable("no ollama"),
+        ):
+            response = client().post(
+                "/api/survey", data={"pages": json.dumps([["いち"]]), "model": "m"}
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("ollama", response.json["error"])
+
+    def test_translate_carries_the_chapter_and_which_page_it_is(self):
+        held = {
+            "synopsis": "Taro is late.",
+            "register": "Light.",
+            "beats": ["He wakes.", "He runs."],
+            "cast": [person("タロウ", "male")],
+            "terms": [{"source": "タロウ", "target": "Taro"}],
+        }
+        with mock.patch.object(
+            server.ollama, "translate", return_value=translated(["Morning"])
+        ) as told:
+            client().post(
+                "/api/translate",
+                data={
+                    "texts": json.dumps(["おはよう"]),
+                    "model": "m",
+                    "chapter": json.dumps(held),
+                    "page": "1",
+                },
+            )
+        given = told.call_args.kwargs["chapter"]
+        self.assertEqual(given["synopsis"], "Taro is late.")
+        self.assertEqual(given["beats"], ["He wakes.", "He runs."])
+        self.assertEqual(given["cast"][0]["name"], "タロウ")
+        self.assertEqual(told.call_args.kwargs["page"], 1)
+
+    def test_translate_without_a_chapter_sends_none(self):
+        with mock.patch.object(
+            server.ollama, "translate", return_value=translated([""])
+        ) as told:
+            client().post("/api/translate", data={"texts": "[]", "model": "m"})
+        self.assertIsNone(told.call_args.kwargs["chapter"])
+        self.assertEqual(told.call_args.kwargs["page"], 0)
+
+    def test_a_chapter_that_is_not_a_chapter_is_refused(self):
+        for bad in ('"just a sentence"', json.dumps({"beats": "all of them"})):
+            response = client().post(
+                "/api/translate",
+                data={"texts": "[]", "model": "m", "chapter": bad},
+            )
+            self.assertEqual(response.status_code, 400, bad)
+            self.assertIn("chapter", response.json["error"])
+
+    def test_a_chapter_cast_is_read_the_way_a_story_cast_is(self):
+        # The one validator, so a bible and a story cannot disagree about what a
+        # person is.
+        response = client().post(
+            "/api/translate",
+            data={
+                "texts": "[]",
+                "model": "m",
+                "chapter": json.dumps({"cast": [{"name": "ハナ", "gender": "?"}]}),
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("gender", response.json["error"])
+
+    def test_a_chapter_carries_what_was_settled_by_hand(self):
+        with mock.patch.object(
+            server.ollama, "translate", return_value=translated([""])
+        ) as told:
+            client().post(
+                "/api/translate",
+                data={
+                    "texts": "[]",
+                    "model": "m",
+                    "chapter": json.dumps(
+                        {"cast": [{"name": "先輩", "gender": "female",
+                                   "settled": ["gender"]}]}
+                    ),
+                },
+            )
+        self.assertEqual(
+            told.call_args.kwargs["chapter"]["cast"][0]["settled"], ["gender"]
+        )
+
+    def test_a_synopsis_that_runs_on_is_cut_on_the_way_in(self):
+        with mock.patch.object(
+            server.ollama, "translate", return_value=translated([""])
+        ) as told:
+            client().post(
+                "/api/translate",
+                data={
+                    "texts": "[]",
+                    "model": "m",
+                    "chapter": json.dumps({"synopsis": "so " * 2000}),
+                },
+            )
+        self.assertEqual(
+            len(told.call_args.kwargs["chapter"]["synopsis"]),
+            server.ollama.SYNOPSIS_LIMIT,
+        )
+
+    def test_a_page_that_is_not_a_number_is_refused(self):
+        response = client().post(
+            "/api/translate",
+            data={"texts": "[]", "model": "m", "page": "seven"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("page", response.json["error"])
+
     def test_the_default_prompt_is_handed_out(self):
         response = client().get("/api/prompt")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json, {"prompt": server.ollama.SYSTEM_DEFAULT})
+        self.assertEqual(
+            response.json,
+            {
+                "prompt": server.ollama.SYSTEM_DEFAULT,
+                "survey": server.ollama.SURVEY_DEFAULT,
+            },
+        )
         self.assertIn("{target}", response.json["prompt"])
+        self.assertIn("{target}", response.json["survey"])
 
     def test_translate_passes_a_prompt_of_your_own_on(self):
         with mock.patch.object(

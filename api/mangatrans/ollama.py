@@ -21,6 +21,14 @@ what keeps a chapter consistent across pages the model never sees together — a
 it rides on the one request rather than a second, which over a folder run would
 double the calls. The terms are collected; the story is rewritten each page, so
 neither grows with the chapter.
+
+All of which is still built forwards, and a chapter is not read forwards. Page
+three cannot know what page forty reveals, and in manga that is precisely where
+the pronouns, the honorifics and the names are settled — so :func:`survey` reads
+the whole chapter's lettering first, a few pages at a time, and hands back what it
+is about, how it is written, a line for each page and the cast and terms it found.
+Every page is then translated with all of that in front of it. What that risks is
+a model that gives away what it has been shown, which is what CHAPTER_NOTE is for.
 """
 
 from __future__ import annotations
@@ -64,7 +72,13 @@ FINDING_TIMEOUT = 5
 # honoured, and a briefing half gone is a page that comes back miscounted and is
 # then translated a line at a time with nothing around it. The KV cache this asks
 # for is a few hundred MB at most, and only while a page is being translated.
-CONTEXT = 8192
+#
+# Raised from 8192 when the survey went in: a surveyed chapter puts a synopsis, a
+# register and a handful of beats in front of every page, which is most of a
+# thousand tokens on top of a request that already carried the notes, the cast and
+# forty terms. The headroom is the point — what running out looks like from
+# outside is a good model that has started miscounting.
+CONTEXT = 12288
 
 # As much as an answer could honestly need: a page of forty balloons, its terms
 # and two sentences of summary come to well under a thousand tokens. It is here as
@@ -74,6 +88,39 @@ CONTEXT = 8192
 # holds the request open until the ten-minute timeout.
 PREDICT = 4096
 
+# One term, in both of the answers that carry one. The same shape in the page's
+# answer and in the survey's because they go into the one glossary: what a survey
+# worked out and what a page named are not told apart downstream.
+TERM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "source": {"type": "string"},
+        "target": {"type": "string"},
+        # Who or what it is, where that is what decides the wording: a name is
+        # rendered one way for a boy and another for a teacher, and the page that
+        # named him is the only one that ever sees which he was.
+        "note": {"type": "string"},
+    },
+    "required": ["source", "target"],
+}
+
+# Likewise one of the cast.
+#
+# `gender` is an enum with `unknown` in it rather than a free string, and that is
+# the whole point of the shape: asked for prose a model has to pick a pronoun, so
+# the first page guesses, the guess is read back as established fact by every page
+# after it, and the page that finally shows otherwise is rewriting a text that
+# already disagrees with it. Here saying nothing is a value.
+CAST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "gender": {"type": "string", "enum": ["male", "female", "unknown"]},
+        "note": {"type": "string"},
+    },
+    "required": ["name", "gender"],
+}
+
 # `terms` is deliberately not required. The count — one translation per line, in
 # order — is what this whole module protects, and it must not start failing over
 # a model that saw nothing worth naming on a page of "...".
@@ -81,54 +128,42 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "translations": {"type": "array", "items": {"type": "string"}},
-        "terms": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "source": {"type": "string"},
-                    "target": {"type": "string"},
-                    # Who or what it is, where that is what decides the wording:
-                    # a name is rendered one way for a boy and another for a
-                    # teacher, and the page that named him is the only one that
-                    # ever sees which he was.
-                    "note": {"type": "string"},
-                },
-                "required": ["source", "target"],
-            },
-        },
+        "terms": {"type": "array", "items": TERM_SCHEMA},
         # The story so far, rewritten with this page in it. Not required, for the
         # same reason `terms` is not.
-        #
-        # `gender` is an enum with `unknown` in it rather than a free string, and
-        # that is the whole point of the shape: asked for prose a model has to
-        # pick a pronoun, so the first page guesses, the guess is read back as
-        # established fact by every page after it, and the page that finally shows
-        # otherwise is rewriting a text that already disagrees with it. Here
-        # saying nothing is a value.
         "story": {
             "type": "object",
             "properties": {
                 "scene": {"type": "string"},
-                "cast": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "gender": {
-                                "type": "string",
-                                "enum": ["male", "female", "unknown"],
-                            },
-                            "note": {"type": "string"},
-                        },
-                        "required": ["name", "gender"],
-                    },
-                },
+                "cast": {"type": "array", "items": CAST_SCHEMA},
             },
         },
     },
     "required": ["translations"],
+}
+
+# What a survey window answers with. `beats` is required and nothing else is, for
+# exactly the reason `translations` is: one line per page is a count, and a beat a
+# place out describes the wrong page with nothing downstream able to tell. The
+# rest is worth having and costs nothing when a window has none of it.
+#
+# A bare list of lines counted against the pages, rather than each beat carrying
+# the page number it is for. Numbered, a page the model passed over would leave a
+# gap instead of shifting the rest — but it moves the failure rather than removing
+# it, since a model that numbers its answer from one when the window started at
+# seventeen loses the whole window, and there is no honest way to tell that from a
+# chapter that really does start there. The count is the contract `translations`
+# has proved here, it fails loudly, and one shape for both is one thing to know.
+SURVEY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "beats": {"type": "array", "items": {"type": "string"}},
+        "synopsis": {"type": "string"},
+        "register": {"type": "string"},
+        "terms": {"type": "array", "items": TERM_SCHEMA},
+        "cast": {"type": "array", "items": CAST_SCHEMA},
+    },
+    "required": ["beats"],
 }
 
 # How many terms are worth putting in front of a page. A chapter's recurring cast
@@ -150,6 +185,40 @@ SCENE_LIMIT = 600
 # this is said again on every page of a folder run; past a dozen it is a crowd
 # nobody is tracking, and the names that matter came first.
 CAST_LIMIT = 12
+
+# What a survey asks for, and how much of what it answers is kept.
+#
+# A window is several pages of raw lettering with what the earlier ones came to in
+# front of it, where CONTEXT above is sized for one page. What the bigger window
+# costs is KV cache for the length of the survey and nothing at all after it — a
+# handful of calls per chapter rather than one per page.
+#
+# PREDICT is reused rather than tightened: a whole bible is a paragraph, a line
+# per page and two short lists, which is well inside it, and the number is a
+# backstop against looping rather than a budget.
+SURVEY_CONTEXT = 16384
+
+# Twice SCENE_LIMIT. The scene is a position in a chapter and this is the chapter,
+# which is worth more room — but it rides on every page of a run, so not much more.
+SYNOPSIS_LIMIT = 1200
+
+# How it is written, not an essay on how it is written.
+REGISTER_LIMIT = 200
+
+# One line for one page.
+BEAT_LIMIT = 160
+
+# A backstop on how long a chapter can be rather than a design point: past this
+# something has gone wrong with what is being called a chapter.
+BEATS_LIMIT = 400
+
+# How many pages either side of the one being translated are put in front of it.
+# What the whole chapter knows reaches a page through the synopsis and the cast;
+# the beats are the flow around it, and forty of them at BEAT_LIMIT would crowd
+# out the page they are there to help. More behind than ahead: behind is what the
+# reader has read, and ahead is only there to stop a line contradicting what it is
+# in the middle of setting up.
+BEATS_BEFORE, BEATS_AFTER = 6, 2
 
 # What is known about someone, and what is not.
 MALE, FEMALE, UNKNOWN = "male", "female", "unknown"
@@ -256,6 +325,86 @@ BUDGET_NOTE = (
     "than running over. It is a ceiling and not a target: short is fine."
 )
 
+# The survey's own briefing, and the caller's to replace the way SYSTEM_DEFAULT
+# is. A chapter read in order cannot know what a later page reveals, and in manga
+# that is exactly where the pronouns, the honorifics and the names are settled —
+# so the whole of it is read once, before any of it is translated.
+SURVEY_DEFAULT = (
+    "You are reading a chapter of a {source} comic before it is translated into "
+    "{target}. You are given the lettering of several pages, in the order it is "
+    "read, one page after another. There are no pictures: a page is what is said "
+    "on it and nothing more, so say what can be told from that and do not invent "
+    "the rest. You are not translating here — this is what the translator will be "
+    "handed before they start."
+)
+
+# Said on every survey whatever the prompt is, and for the reason TERMS_NOTE is:
+# the prompt above is the caller's to replace, and the shape of the answer is not.
+# It carries the wording about `unknown` that STORY_NOTE carries, and carries it
+# harder — a survey's cast is what every page of the chapter starts from, so a
+# gender guessed here is guessed once and read as fact forty times.
+SURVEY_NOTE = (
+    "Reply with a JSON object. `beats` is one line for each page you are given, in "
+    "the same order and the same number of them: what happens on that page, "
+    "plainly, and a page where nothing does still needs one. `synopsis` is the "
+    "chapter as far as you have read it, in a few sentences — what it is about, who "
+    "it is between, where it is going. `register` is how it is written: how formal, "
+    "whose voice it is told in, when and where it is set, anything that decides "
+    "wording. `terms` is every name, place, honorific or invented word that will "
+    "have to be rendered the same way each time, each with the wording you would "
+    "use for it in {target} and a few words of `note` on who or what it is where "
+    "that is what decides the wording. `cast` is everyone who speaks or is spoken "
+    "about, named as the pages name them, in the {source} they are written in — "
+    "先輩, 田中先生 — since that name is what says who is who. Somebody the pages "
+    "never name is named by what they are — 'the boy on the bicycle' — and never as "
+    "`unknown`, which is not a name. Answer `unknown` for the gender of anyone the "
+    "chapter has not actually shown to be one or the other: do not guess it from a "
+    "name, from a manner of speaking, or from how someone is addressed. A later "
+    "page settles it, and a guess made here is read as fact by every page of the "
+    "translation. Where you are given what the earlier pages came to, write the "
+    "synopsis, the register, the cast and the terms again with these pages in them "
+    "rather than starting over; the beats are only for the pages here."
+)
+
+# Said only where a chapter is actually given, the same as KINDS_NOTE — and the
+# note the whole survey stands or falls on.
+#
+# A model handed the end of a chapter will foreshadow it: a line that is plain in
+# the {source} comes back nudged towards what it later turns out to have meant,
+# which is a worse translation than the one made in ignorance and is invisible
+# without the original beside it. What holds is asking for a voice rather than for
+# a rule, which is how a model under a schema takes instruction at all. The last
+# two sentences are the craft of it — knowing the answer is not licence to give it.
+CHAPTER_NOTE = (
+    "You are shown the whole chapter, the pages after this one included, so that a "
+    "word can be chosen knowing where it leads — which pronoun someone takes, which "
+    "of two readings a name has, how much weight a line is carrying. Translate only "
+    "the lines you are given, and say no more than they say: a line must not be made "
+    "to hint at anything the reader has not reached. Where the {source} is vague and "
+    "the chapter settles what it meant, render it as the chapter settles it. Where "
+    "the {source} is vague on purpose, leave it vague."
+)
+
+SYNOPSIS_HEADING = "What this chapter is, whole — the pages after this one included:"
+SO_FAR_HEADING = "What the pages up to here came to. Write it again with these in it:"
+REGISTER_HEADING = "How it is written:"
+BEATS_HEADING = "The chapter page by page. The page you are translating is marked →:"
+
+# What is put back in front of a model that lost count. The count is the one thing
+# it cannot see from the request, so it is told the number rather than only asked
+# again — and told that leaving something out is not one of the ways to answer.
+MISCOUNTED = (
+    "That was {got} translations for {wanted} lines. Answer again with exactly "
+    "{wanted}, one for each numbered line, in the same order. A line you would "
+    "leave as it is still needs one: give it back as it stands rather than "
+    "dropping it."
+)
+MISBEATEN = (
+    "That was {got} beats for {wanted} pages. Answer again with exactly {wanted}, "
+    "one for each page, in the same order. A page where nothing happens still needs "
+    "one: say so rather than dropping it."
+)
+
 
 @dataclass(frozen=True)
 class Line:
@@ -269,6 +418,25 @@ class Line:
     text: str
     kind: str = ""
     budget: int | None = None
+
+
+@dataclass(frozen=True)
+class Chapter:
+    """What a survey made of a chapter, and what each of its pages is translated
+    against.
+
+    `beats` is one line per page and positionally aligned with them, which is why
+    a window that miscounts hands back none rather than storing them a page out.
+    `cast` and `terms` are the shapes a page's own answer uses, so what the survey
+    worked out goes into the same cast and the same glossary the pages fill in —
+    and nothing downstream has to know which of the two found a name first.
+    """
+
+    beats: list[str] = field(default_factory=list)
+    synopsis: str = ""
+    register: str = ""
+    cast: list[dict] = field(default_factory=list)
+    terms: list[dict] = field(default_factory=list)
 
 
 class Unreachable(RuntimeError):
@@ -352,7 +520,7 @@ def as_json(text: str):
         return None
 
 
-def answered(message: dict) -> dict | None:
+def answered(message: dict, key: str = "translations") -> dict | None:
     """The whole answer out of one reply, translations and terms together.
 
     Ollama files a thinking model's reasoning under `thinking` and its answer
@@ -360,12 +528,13 @@ def answered(message: dict) -> dict | None:
     some builds put the whole answer under `thinking`. The answer is whichever
     field holds the JSON.
 
-    What makes a reply an answer is still the translations: a page that came back
-    with terms and nothing to letter is not one.
+    What makes a reply an answer is still the list that was counted: a page that
+    came back with terms and nothing to letter is not one, and neither is a survey
+    window that named the cast and said nothing about the pages.
     """
-    for field in ("content", "thinking"):
-        found = as_json(message.get(field) or "")
-        if isinstance(found, dict) and isinstance(found.get("translations"), list):
+    for where in ("content", "thinking"):
+        found = as_json(message.get(where) or "")
+        if isinstance(found, dict) and isinstance(found.get(key), list):
             return found
     return None
 
@@ -447,6 +616,31 @@ def storied(reply: dict | None) -> dict:
     scene = str(said.get("scene") or "").strip()[:SCENE_LIMIT]
     cast = peopled(said.get("cast"))
     return {"scene": scene, "cast": cast} if (scene or cast) else {}
+
+
+def surveyed(reply: dict | None) -> Chapter:
+    """What a survey window made of the chapter, its beats aside.
+
+    Lenient the way :func:`storied` is and for the same reason — a model's answer
+    rather than a caller's request. The beats are read by :func:`beaten` instead,
+    because they are the one part of this with a count to hold.
+    """
+    if not reply:
+        return Chapter()
+    return Chapter(
+        synopsis=str(reply.get("synopsis") or "").strip()[:SYNOPSIS_LIMIT],
+        register=str(reply.get("register") or "").strip()[:REGISTER_LIMIT],
+        cast=peopled(reply.get("cast")),
+        terms=noted(reply),
+    )
+
+
+def beaten(reply: dict | None, wanted: int) -> list[str] | None:
+    """One beat for each page sent, or None where the window lost count."""
+    got = counted(reply, wanted, "beats")
+    if got is None:
+        return None
+    return [beat.strip()[:BEAT_LIMIT] for beat in got]
 
 
 def briefing(
@@ -532,16 +726,100 @@ def previously(story: dict | None) -> str:
     if not isinstance(story, dict):
         return ""
     scene = str(story.get("scene") or "").strip()[:SCENE_LIMIT]
-    cast = [
-        described(person)
-        for person in (story.get("cast") or [])[:CAST_LIMIT]
-        if isinstance(person, dict) and str(person.get("name") or "").strip()
-    ]
+    cast = described_cast(story)
     parts = []
     if scene:
         parts.append(f"{PREVIOUSLY_HEADING}\n{scene}")
     if cast:
         parts.append(CAST_HEADING + "\n" + "\n".join(cast))
+    return "\n\n".join(parts)
+
+
+def described_cast(chapter: dict) -> list[str]:
+    """The cast of a chapter as lines, whoever is at least a name."""
+    return [
+        described(person)
+        for person in (chapter.get("cast") or [])[:CAST_LIMIT]
+        if isinstance(person, dict) and str(person.get("name") or "").strip()
+    ]
+
+
+def chaptered(chapter: dict | None, page: int = 0) -> str:
+    """The chapter in front of one of its pages: what it is, how it reads, where
+    this page falls in it.
+
+    The beats are windowed rather than sent whole. What the chapter knows that
+    this page cannot reaches it through the synopsis and the cast, both of which
+    were written having read all of it; the beats are the flow either side, and a
+    chapter of them would crowd out the page they are there to help.
+    """
+    if not isinstance(chapter, dict):
+        return ""
+    parts = []
+    synopsis = str(chapter.get("synopsis") or "").strip()[:SYNOPSIS_LIMIT]
+    if synopsis:
+        parts.append(f"{SYNOPSIS_HEADING}\n{synopsis}")
+    register = str(chapter.get("register") or "").strip()[:REGISTER_LIMIT]
+    if register:
+        parts.append(f"{REGISTER_HEADING}\n{register}")
+
+    beats = chapter.get("beats")
+    if isinstance(beats, list):
+        said = [str(beat or "").strip()[:BEAT_LIMIT] for beat in beats[:BEATS_LIMIT]]
+        lines = "\n".join(
+            f"{'→' if at == page else ' '} {at + 1}. {said[at]}"
+            for at in range(max(0, page - BEATS_BEFORE), min(len(said), page + BEATS_AFTER + 1))
+            if said[at]
+        )
+        if lines:
+            parts.append(f"{BEATS_HEADING}\n{lines}")
+    return "\n\n".join(parts)
+
+
+def placed(chapter: dict | None, page: int = 0) -> str:
+    """Where in the chapter this page is, said under it rather than above it.
+
+    The same finding :func:`asking` records: a standing instruction reads as a
+    description of the job, and a line under the text reads as being about the
+    text. How far the reader has got is a fact about this page, so it goes where
+    the page is — and it is the fact that stops a model translating page three
+    with page forty's ending in its mouth.
+    """
+    if not isinstance(chapter, dict):
+        return ""
+    beats = chapter.get("beats")
+    if not isinstance(beats, list) or not any(str(beat or "").strip() for beat in beats):
+        return ""
+    return (
+        f"This is page {page + 1} of {len(beats)}. Translate it as the reader "
+        "reaches it: they have read this far and no further, whatever you know "
+        "from the pages after it."
+    )
+
+
+def gathered(chapter: dict | None) -> str:
+    """What the pages read so far came to, in front of the next window of them.
+
+    The beats already written are not put back: this window writes beats for its
+    own pages, and the earlier ones are not improved by being read again — where
+    the synopsis, the register, the cast and the terms are exactly what a later
+    page might correct, and so are handed over to be written again.
+    """
+    if not isinstance(chapter, dict):
+        return ""
+    parts = []
+    synopsis = str(chapter.get("synopsis") or "").strip()[:SYNOPSIS_LIMIT]
+    if synopsis:
+        parts.append(f"{SO_FAR_HEADING}\n{synopsis}")
+    register = str(chapter.get("register") or "").strip()[:REGISTER_LIMIT]
+    if register:
+        parts.append(f"{REGISTER_HEADING}\n{register}")
+    cast = described_cast(chapter)
+    if cast:
+        parts.append(CAST_HEADING + "\n" + "\n".join(cast))
+    terms = settled(chapter.get("terms"))
+    if terms:
+        parts.append(terms)
     return "\n\n".join(parts)
 
 
@@ -553,12 +831,17 @@ def told(
     kinds: bool = False,
     budgets: bool = False,
     story: dict | None = None,
+    chapter: dict | None = None,
+    page: int = 0,
 ) -> str:
     """The whole system message: the prompt, the notes that apply, what is known.
 
     The notes come before the chapter, and the chapter before the page: what to
-    do, then what has happened, then what is on the page.
+    do, then what has happened, then what is on the page. A surveyed chapter goes
+    in ahead of the story so far, being the wider of the two — what the chapter is,
+    then where it had got to by this page.
     """
+    surveyed = chaptered(chapter, page)
     return "\n\n".join(
         part
         for part in (
@@ -569,6 +852,10 @@ def told(
             filled(STORY_NOTE, target, source),
             KINDS_NOTE if kinds else "",
             BUDGET_NOTE if budgets else "",
+            # Only where there is a chapter to be careful with — a warning about
+            # giving away what is coming is a warning about nothing without it.
+            filled(CHAPTER_NOTE, target, source) if surveyed else "",
+            surveyed,
             previously(story),
             settled(glossary),
         )
@@ -594,6 +881,8 @@ def request_for(
     source: str = SOURCE_DEFAULT,
     glossary: list[dict] | None = None,
     story: dict | None = None,
+    chapter: dict | None = None,
+    page: int = 0,
 ) -> dict:
     return {
         "model": model,
@@ -625,6 +914,8 @@ def request_for(
                     any(line.kind for line in lines),
                     any(line.budget for line in lines),
                     story,
+                    chapter,
+                    page,
                 ),
             },
             {
@@ -636,6 +927,7 @@ def request_for(
                             marked(number, line)
                             for number, line in enumerate(lines, 1)
                         ),
+                        placed(chapter, page),
                         asking(story),
                     )
                     if part
@@ -645,35 +937,35 @@ def request_for(
     }
 
 
-def counted(reply: dict | None, wanted: int) -> list[str] | None:
-    """The translations out of an answer, if it came back with one for every line."""
-    got = reply.get("translations") if reply else None
+def counted(
+    reply: dict | None, wanted: int, key: str = "translations"
+) -> list[str] | None:
+    """One list out of an answer, if it came back with one entry for every line.
+
+    The same test for a page's translations and a survey's beats: both are
+    positional with what was sent, and one of either a place out is worse than
+    none at all, since nothing downstream can tell.
+    """
+    got = reply.get(key) if reply else None
     if not isinstance(got, list) or len(got) != wanted:
         return None
     return [str(line) for line in got]
 
 
-def corrected(body: dict, said: dict, got: int, wanted: int) -> dict:
-    """The same page again, with the miscounted answer and what was wrong with it.
+def corrected(body: dict, said: dict, complaint: str) -> dict:
+    """The same request again, with the miscounted answer and what was wrong with it.
 
     Shown its own reply rather than only asked again: what it got wrong was the
-    count, which it cannot see from the request alone. The page stays in front of
-    it either way, which is the whole difference between this and :func:`one`.
+    count, which it cannot see from the request alone. What it was counting stays
+    in front of it either way, which is the whole difference between this and
+    :func:`one`.
     """
     return {
         **body,
         "messages": [
             *body["messages"],
             {"role": "assistant", "content": text_of(said)},
-            {
-                "role": "user",
-                "content": (
-                    f"That was {got} translations for {wanted} lines. Answer again "
-                    f"with exactly {wanted}, one for each numbered line, in the same "
-                    "order. A line you would leave as it is still needs one: give "
-                    "it back as it stands rather than dropping it."
-                ),
-            },
+            {"role": "user", "content": complaint},
         ],
     }
 
@@ -687,9 +979,13 @@ def one(
     source: str = SOURCE_DEFAULT,
     glossary: list[dict] | None = None,
     story: dict | None = None,
+    chapter: dict | None = None,
+    page: int = 0,
 ) -> str:
     """One line on its own, for a page that came back miscounted twice."""
-    body = request_for([line], model, target, system, source, glossary, story)
+    body = request_for(
+        [line], model, target, system, source, glossary, story, chapter, page
+    )
     sent = ask("/api/chat", body, host=host)
     message = sent["message"]
     reply = answered(message)
@@ -751,13 +1047,17 @@ def translate(
     kinds: list[str] | None = None,
     budgets: list[int] | None = None,
     story: dict | None = None,
+    chapter: dict | None = None,
+    page: int = 0,
 ) -> Translation:
     """One translation per text in the order given, and what the page named.
 
     `kinds` and `budgets` are positional with `texts` where they are sent at all:
     what the detector made of each block, and how much room its translation has.
     `story` is where the chapter had got to before this page, and comes back
-    rewritten with this page in it.
+    rewritten with this page in it. `chapter` is what a survey made of the whole
+    of it beforehand, and `page` is which of its pages this is — it does not come
+    back, being about the chapter rather than about this page.
 
     An empty text stays empty and is never sent: there is nothing to translate,
     and a blank line only gives the model something to miscount.
@@ -779,7 +1079,9 @@ def translate(
         return Translation(done, [])
 
     lines, where = asked_once(wanted)
-    body = request_for(lines, model, target, system, source, glossary, story)
+    body = request_for(
+        lines, model, target, system, source, glossary, story, chapter, page
+    )
     said = ask("/api/chat", body, host=host)["message"]
     reply = answered(said)
     got = counted(reply, len(lines))
@@ -793,7 +1095,9 @@ def translate(
         # and a page asked again is still a page — every line still read against
         # the ones around it, which is what the fallback below gives up.
         gave = len(reply["translations"]) if reply else 0
-        asked_again = corrected(body, said, gave, len(lines))
+        asked_again = corrected(
+            body, said, MISCOUNTED.format(got=gave, wanted=len(lines))
+        )
         again = answered(ask("/api/chat", asked_again, host=host)["message"])
         got = counted(again, len(lines))
         terms = terms or noted(again)
@@ -803,10 +1107,116 @@ def translate(
         # Twice. Asked one line at a time it cannot miscount, though every line
         # loses the rest of the page it was to be read against.
         got = [
-            one(line, model, target, host, system, source, glossary, story)
+            one(line, model, target, host, system, source, glossary, story, chapter, page)
             for line in lines
         ]
 
     for (at, _), which in zip(wanted, where):
         done[at] = str(got[which]).strip()
     return Translation(done, terms, after)
+
+
+def paged(pages: list[list[str]], first: int = 0) -> str:
+    """A windowful as it goes over: each page numbered, its lettering under it.
+
+    A page with nothing on it is still named, and still wants a beat. Dropping it
+    would put every beat after it a page out, which is the one thing the count is
+    there to stop.
+    """
+    return "\n\n".join(
+        "\n".join(
+            [f"Page {first + at + 1}:"]
+            + [line.strip() for line in page if line.strip()]
+        )
+        for at, page in enumerate(pages)
+    )
+
+
+def survey_request_for(
+    pages: list[list[str]],
+    model: str,
+    target: str,
+    system: str | None = None,
+    source: str = SOURCE_DEFAULT,
+    chapter: dict | None = None,
+    first: int = 0,
+) -> dict:
+    return {
+        "model": model,
+        "stream": False,
+        "think": False,
+        "options": {
+            "temperature": 0.2,
+            "num_ctx": SURVEY_CONTEXT,
+            "repeat_penalty": 1.0,
+            "num_predict": PREDICT,
+        },
+        "format": SURVEY_SCHEMA,
+        "messages": [
+            {
+                "role": "system",
+                "content": "\n\n".join(
+                    part
+                    for part in (
+                        filled(system or SURVEY_DEFAULT, target, source),
+                        filled(SURVEY_NOTE, target, source),
+                        gathered(chapter),
+                    )
+                    if part
+                ),
+            },
+            {"role": "user", "content": paged(pages, first)},
+        ],
+    }
+
+
+def survey(
+    pages: list[list[str]],
+    model: str,
+    target: str = TARGET_DEFAULT,
+    host=None,
+    system: str | None = None,
+    source: str = SOURCE_DEFAULT,
+    chapter: dict | None = None,
+    first: int = 0,
+) -> Chapter:
+    """One windowful of a chapter, read before any of it is translated.
+
+    This is what makes a chapter translatable in order. A page translated as the
+    run reaches it cannot know what a later one reveals — who 先輩 turns out to
+    be, which of two readings a name has, what a line was setting up — and in
+    manga that is most of what decides the wording. Read first and the whole
+    chapter is in front of every page of it.
+
+    Windowed because a chapter of raw lettering does not fit a context window: the
+    caller sends a few pages at a time and hands what came back in with the next
+    lot. That the early windows had not read the end does not matter, since none
+    of it is translated until all of it has been read.
+
+    The beats are counted the way the translations are. A window that miscounts is
+    shown its own answer and asked again, and a second miscount hands back no beats
+    rather than beats a page out — what it did say about the chapter is kept either
+    way, naming a character having nothing to do with counting pages.
+    """
+    if not pages:
+        return Chapter()
+
+    body = survey_request_for(pages, model, target, system, source, chapter, first)
+    said = ask("/api/chat", body, host=host)["message"]
+    reply = answered(said, "beats")
+    beats = beaten(reply, len(pages))
+    found = surveyed(reply)
+
+    if beats is None:
+        gave = len(reply["beats"]) if reply else 0
+        asked_again = corrected(
+            body, said, MISBEATEN.format(got=gave, wanted=len(pages))
+        )
+        again = answered(ask("/api/chat", asked_again, host=host)["message"], "beats")
+        beats = beaten(again, len(pages))
+        # The spoiled answer first, the same way a miscounted page keeps its terms:
+        # being asked to count again is not being asked to look again.
+        if not (found.synopsis or found.register or found.cast or found.terms):
+            found = surveyed(again)
+
+    return replace(found, beats=beats or [])

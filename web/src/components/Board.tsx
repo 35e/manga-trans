@@ -95,6 +95,7 @@ const LABELS: Record<Stage, string> = {
   tracing: 'Tracing…',
   cleaning: 'Cleaning…',
   translating: 'Translating…',
+  surveying: 'Reading the chapter…',
 }
 
 /** The page, its overlays, and the tools for whichever step is being worked on. */

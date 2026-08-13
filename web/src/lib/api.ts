@@ -70,6 +70,7 @@ export type Stage =
   | 'tracing'
   | 'cleaning'
   | 'translating'
+  | 'surveying'
 
 /** What the board is being used for: looking, hiding, or lettering. */
 export type BoardMode = 'inspect' | 'mask' | 'translate'
@@ -256,6 +257,31 @@ export type CastMember = {
 export type Story = { scene: string; cast: CastMember[] }
 
 /**
+ * A chapter read whole before a word of it is translated.
+ *
+ * {@link Story} is built forwards and so page three never knows what page forty
+ * reveals — which in manga is exactly where the pronouns, the honorifics and the
+ * names are settled. This is read first, out of the Japanese every page has
+ * already been read for, and then every page is translated against all of it.
+ *
+ * `cast` and `terms` are {@link CastMember} and {@link Term} unchanged, so a
+ * finished survey seeds the chapter's own story and glossary through the rules
+ * those already have rather than through rules of its own.
+ *
+ * `beats` is one line per page, indexed by the page's place in its folder — the
+ * order a folder run goes through it — so a page knows which line is about
+ * itself. A folder whose pages have changed since therefore has a bible that no
+ * longer lines up, and it must not be translated against.
+ */
+export type Bible = {
+  synopsis: string
+  register: string
+  beats: string[]
+  cast: CastMember[]
+  terms: Term[]
+}
+
+/**
  * One line on its way over: what it says, and the two things about it the model
  * cannot see for itself — whether it is spoken, and how much room a translation
  * of it has. Both are optional; a line is never refused for running over.
@@ -277,18 +303,30 @@ export type Untranslated = { text: string; kind?: Kind; budget?: number }
  * request rather than a second one: over a folder of forty pages a second would
  * be forty more calls.
  */
+export type Against = {
+  system?: string | null
+  source?: string | null
+  glossary?: Term[] | null
+  previously?: Story | null
+  /**
+   * The chapter read whole, where it has been. Sent whole: the API windows the
+   * beats around the page itself, so a caller hands over what it holds.
+   */
+  chapter?: Bible | null
+  /** Which page of the chapter this is, counting from zero, for those beats. */
+  page?: number | null
+}
+
 export async function translate(
   lines: Untranslated[],
   model: string,
   target: string,
-  system?: string | null,
-  source?: string | null,
-  glossary?: Term[] | null,
-  previously?: Story | null,
+  against: Against = {},
 ): Promise<{ texts: string[]; terms: Term[]; story: Story }> {
   if (lines.length === 0) {
     return { texts: [], terms: [], story: { scene: '', cast: [] } }
   }
+  const { system, source, glossary, previously, chapter, page } = against
 
   const body = new FormData()
   body.append('texts', JSON.stringify(lines.map((line) => line.text)))
@@ -303,6 +341,12 @@ export async function translate(
   // asked to correct, so it has to see all of it.
   if (previously && (previously.scene !== '' || previously.cast.length > 0)) {
     body.append('previously', JSON.stringify(previously))
+  }
+  // Likewise whole, and the page with it — a chapter with no page to place in it
+  // would put every beat in front of the wrong one.
+  if (chapter) {
+    body.append('chapter', JSON.stringify(chapter))
+    body.append('page', String(page ?? 0))
   }
   // Sent whole or not at all, and the API refuses a list that is not one per
   // line: a marker that has slipped a place describes the wrong line.
@@ -326,6 +370,48 @@ export async function translate(
       scene: answer.story?.scene ?? '',
       cast: answer.story?.cast ?? [],
     },
+  }
+}
+
+/**
+ * One window of a chapter's Japanese, read before any of it is translated.
+ *
+ * A chapter does not fit in a context window, so it goes over a few pages at a
+ * time: hand back what came out as `chapter` with the next few, and `first`
+ * saying where the window starts. The last window is the one that has read the
+ * lot, and its answer is the one to keep.
+ *
+ * A page with nothing written on it is sent as an empty list rather than left
+ * out — the beats come back one per page and are placed by where the page sits,
+ * so a page dropped here is every later beat one place wrong.
+ *
+ * No `system` on purpose. The prompt this dashboard holds is a *translation*
+ * prompt, and a survey briefed to translate translates its window instead of
+ * reading it. The API still takes one, for a caller with a survey prompt of its
+ * own.
+ */
+export async function survey(
+  pages: string[][],
+  model: string,
+  target: string,
+  against: { source?: string | null; chapter?: Bible | null; first?: number } = {},
+): Promise<Bible> {
+  const body = new FormData()
+  body.append('pages', JSON.stringify(pages))
+  body.append('model', model)
+  body.append('target', target)
+  if (against.source) body.append('source', against.source)
+  if (against.chapter) body.append('chapter', JSON.stringify(against.chapter))
+  if (against.first) body.append('first', String(against.first))
+
+  const response = await reach('/api/survey', { method: 'POST', body })
+  const answer = (await response.json()) as { chapter?: Partial<Bible> }
+  return {
+    synopsis: answer.chapter?.synopsis ?? '',
+    register: answer.chapter?.register ?? '',
+    beats: answer.chapter?.beats ?? [],
+    cast: answer.chapter?.cast ?? [],
+    terms: answer.chapter?.terms ?? [],
   }
 }
 

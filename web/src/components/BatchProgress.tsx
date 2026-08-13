@@ -12,6 +12,7 @@ const LABELS: Record<Stage, string> = {
   tracing: 'Tracing',
   cleaning: 'Cleaning',
   translating: 'Translating',
+  surveying: 'Reading the chapter',
 }
 
 type Props = {
@@ -60,6 +61,9 @@ export function BatchProgress({
       <div className="flex items-center justify-between gap-2">
         <p className="min-w-0 truncate text-[11px] font-medium text-ink">
           {run.label}
+          {/* Which of the two runs this is: a folder is read and then lettered,
+              and the bar has to say which of them it is showing. */}
+          <span className="ml-1 font-normal text-faint">· {run.phase}</span>
         </p>
         {run.finished ? (
           <IconButton label="Dismiss" onClick={onDismiss} className="-my-1 size-5">
@@ -109,6 +113,13 @@ export function BatchProgress({
               >
                 {run.page.name}
               </button>
+            </>
+          ) : run.note ? (
+            // Work on the whole chapter rather than on any one page, so there is
+            // no page to name — the note says what it is doing instead.
+            <>
+              <Spinner className="mr-1 inline size-2.5 align-[-1px]" />
+              {run.note}
             </>
           ) : run.finished ? (
             <>

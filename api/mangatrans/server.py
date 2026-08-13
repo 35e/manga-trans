@@ -132,34 +132,36 @@ def terms_in(glossary: list | None) -> list[dict] | None:
     return terms
 
 
-def story_in():
-    """Where the chapter had got to, as the caller has it.
-
-    Strict where `ollama.storied` is lenient, the same way `terms_in` is: that
-    reads a model's answer, this reads a caller's request. `settled` is the
-    caller's own — a fact set by hand rather than worked out from a page — and is
-    carried through so the prompt can say so.
-    """
-    raw = request.form.get("previously")
+def object_in(field: str, shape: str) -> dict | None:
+    """A JSON object sent in the form field ``field``, or None if none was."""
+    raw = request.form.get(field)
     if raw is None:
         return None
     try:
         said = json.loads(raw)
     except ValueError as exc:
-        raise BadRequest(f"'previously' is not valid JSON: {exc}") from exc
+        raise BadRequest(f"'{field}' is not valid JSON: {exc}") from exc
     if not isinstance(said, dict):
-        raise BadRequest("'previously' must be a JSON object of {scene, cast}")
+        raise BadRequest(f"'{field}' must be a JSON object of {shape}")
+    return said
 
-    cast = said.get("cast") or []
+
+def people_in(cast, field: str) -> list[dict]:
+    """A cast as it arrives, refused rather than half-read if it is malformed.
+
+    Shared by the story a caller carries page to page and the one a survey worked
+    out: they are the same shape on purpose, so that what a survey found and what
+    a page named end up in the one cast.
+    """
     if not isinstance(cast, list):
-        raise BadRequest("'previously.cast' must be a list")
+        raise BadRequest(f"'{field}.cast' must be a list")
     people = []
     for person in cast:
         if not isinstance(person, dict):
-            raise BadRequest("every one of 'previously.cast' must be an object")
+            raise BadRequest(f"every one of '{field}.cast' must be an object")
         name = str(person.get("name") or "").strip()
         if not name:
-            raise BadRequest("every one of 'previously.cast' needs a name")
+            raise BadRequest(f"every one of '{field}.cast' needs a name")
         gender = person.get("gender", ollama.UNKNOWN)
         if gender not in ollama.GENDERS:
             raise BadRequest(
@@ -180,10 +182,76 @@ def story_in():
                 "settled": settled,
             }
         )
+    return people[: ollama.CAST_LIMIT]
+
+
+def story_in():
+    """Where the chapter had got to, as the caller has it.
+
+    Strict where `ollama.storied` is lenient, the same way `terms_in` is: that
+    reads a model's answer, this reads a caller's request. `settled` is the
+    caller's own — a fact set by hand rather than worked out from a page — and is
+    carried through so the prompt can say so.
+    """
+    said = object_in("previously", "{scene, cast}")
+    if said is None:
+        return None
     return {
         "scene": str(said.get("scene") or "").strip()[: ollama.SCENE_LIMIT],
-        "cast": people[: ollama.CAST_LIMIT],
+        "cast": people_in(said.get("cast") or [], "previously"),
     }
+
+
+def chapter_in():
+    """What a survey made of the whole chapter, as the caller has it.
+
+    Strict for the same reason `story_in` is. `beats` is one line per page and
+    positional with them, so it is carried whole and cut only at the far end — a
+    beat dropped out of the middle would describe the wrong page from there on.
+    """
+    said = object_in("chapter", "{synopsis, register, beats, cast, terms}")
+    if said is None:
+        return None
+    beats = said.get("beats") or []
+    if not isinstance(beats, list):
+        raise BadRequest("'chapter.beats' must be a list, one line per page")
+    return {
+        "synopsis": str(said.get("synopsis") or "").strip()[: ollama.SYNOPSIS_LIMIT],
+        "register": str(said.get("register") or "").strip()[: ollama.REGISTER_LIMIT],
+        "beats": [
+            str(beat or "").strip()[: ollama.BEAT_LIMIT]
+            for beat in beats[: ollama.BEATS_LIMIT]
+        ],
+        "cast": people_in(said.get("cast") or [], "chapter"),
+        "terms": terms_in(said.get("terms") or []) or [],
+    }
+
+
+def pages_in() -> list[list[str]]:
+    """A chapter's lettering to survey: one list of lines per page, in order.
+
+    A page with nothing on it is kept rather than dropped. The answer is one beat
+    per page given, and a page missing from the middle puts every beat after it
+    one out.
+    """
+    pages = sent("pages")
+    read = []
+    for page in pages:
+        if not isinstance(page, list):
+            raise BadRequest("'pages' must be a list of pages, each a list of lines")
+        read.append([str(line) for line in page])
+    return read
+
+
+def whole_in(field: str) -> int:
+    """A whole number sent in a form field, or 0 where none was."""
+    raw = request.form.get(field, "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError as exc:
+        raise BadRequest(f"'{field}' must be a whole number") from exc
 
 
 def beside(field: str, texts: list[str]) -> list | None:
@@ -383,9 +451,10 @@ def create_app(
         """What the model is told to do, unless a caller says otherwise.
 
         Handed out so a front end can show it, let it be edited, and send the
-        edit back — nothing is kept here.
+        edit back — nothing is kept here. `survey` is the other one: what a model
+        reading a whole chapter before any of it is translated is told to do.
         """
-        return jsonify(prompt=ollama.SYSTEM_DEFAULT)
+        return jsonify(prompt=ollama.SYSTEM_DEFAULT, survey=ollama.SURVEY_DEFAULT)
 
     @app.post("/api/translate")
     def translate():
@@ -423,6 +492,13 @@ def create_app(
         the way in and the model is told it is not to be changed — which is how a
         caller says what it already knows. Nothing is kept here: the caller carries
         the story from page to page, the same as the glossary.
+
+        `chapter` is the other half of that, and the one that reaches forwards:
+        what /api/survey made of the whole chapter before any of it was
+        translated, with `page` saying which of its pages this is. Where `story`
+        is what the pages before this one came to, `chapter` is what all of them
+        do — so a line can be worded knowing what it turns out to have meant. It
+        does not come back, being about the chapter rather than about this page.
         """
         texts = [str(text) for text in sent("texts")]
         model = request.form.get("model", "").strip()
@@ -434,6 +510,7 @@ def create_app(
         glossary = terms_in(maybe_sent("glossary"))
         kinds, budgets = kinds_in(texts), budgets_in(texts)
         story = story_in()
+        chapter, page = chapter_in(), whole_in("page")
         try:
             done = ollama.translate(
                 texts,
@@ -445,8 +522,67 @@ def create_app(
                 kinds=kinds,
                 budgets=budgets,
                 story=story,
+                chapter=chapter,
+                page=page,
             )
             return jsonify(texts=done.texts, terms=done.terms, story=done.story)
+        except ollama.Unreachable as exc:
+            raise ServiceUnavailable(str(exc)) from exc
+
+    @app.post("/api/survey")
+    def survey():
+        """What a chapter is, read before any of it is translated.
+
+        The one call here that is about a chapter rather than a page, and the
+        reason it exists: a page translated as a run reaches it cannot know what a
+        later page reveals — who someone turns out to be, which of two readings a
+        name has, what a line was setting up — and that is most of what decides
+        the wording. Send the lettering of the whole chapter through this first and
+        every page can be translated against all of it.
+
+        `pages` is one list of lines per page, in reading order, as /api/read gave
+        them. A page with nothing on it still counts: the answer is one `beat` per
+        page and they are positional, so a page left out puts every beat after it
+        one place wrong.
+
+        A chapter of raw lettering does not fit a context window, so this takes a
+        windowful at a time: send a few pages, send what came back as `chapter`
+        with the next few, and `first` saying which page the window starts at. That
+        the early windows had not read the end does not matter — nothing is
+        translated until all of it has been read, and the synopsis, the register,
+        the cast and the terms are written again each time with the new pages in
+        them.
+
+        `cast` and `terms` come back in the shapes /api/translate uses, so what
+        this found goes straight out as that endpoint's `previously` and
+        `glossary`. Nothing is kept here either.
+        """
+        pages = pages_in()
+        model = request.form.get("model", "").strip()
+        if not model:
+            raise BadRequest("nothing to survey with (form field 'model')")
+        target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
+        source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
+        system = request.form.get("system", "").strip() or None
+        try:
+            found = ollama.survey(
+                pages,
+                model,
+                target,
+                system=system,
+                source=source,
+                chapter=chapter_in(),
+                first=whole_in("first"),
+            )
+            return jsonify(
+                chapter={
+                    "synopsis": found.synopsis,
+                    "register": found.register,
+                    "beats": found.beats,
+                    "cast": found.cast,
+                    "terms": found.terms,
+                }
+            )
         except ollama.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 

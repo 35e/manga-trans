@@ -136,7 +136,11 @@ this path rather than adding a pass.
   much room it has (`Line`), and the answer comes back as a `Translation` — the
   lines, the terms, and where the chapter has got to. Prompts are never stored:
   callers send `system` each time, and the chapter's settled terms and story the
-  same way, as `glossary` and `previously`.
+  same way, as `glossary` and `previously`. `survey` is the other half: a
+  windowful of a chapter's raw lettering read *before* any of it is translated,
+  answering with a `Chapter` — a synopsis, how it is written, a beat per page, and
+  the cast and terms in the shapes a page's own answer uses. That comes back in on
+  every page as `chapter`.
 - `inpaint.py` / `render.py` — hiding and lettering. `render.marked()` turns
   boxes + mask into one greyscale page (white hidden), `render.hidden()` picks
   fill.
@@ -155,6 +159,9 @@ through `lib/`.
 - `lib/story.ts` — every rule about which of two answers about a chapter's cast
   wins. In `lib/` rather than in `useStory` for the same reason the block edits
   are: it is the whole of what decides whether a chapter's facts are right.
+- `lib/bible.ts` — the same, for what a survey made of a chapter: how one
+  window's answer is folded into the running one, and `fits`, which is whether the
+  beats still line up with the folder they were read from.
 - `lib/fit.ts` (measuring and wrapping), `lib/order.ts` (reading order),
   `lib/mask.ts` (the brushed mask), `lib/compose.ts` (the canvas letterer),
   `lib/zip.ts` (a chapter in and back out), `lib/chapter.ts` (which version of a
@@ -171,8 +178,8 @@ through `lib/`.
   control.
 - Hooks own one concern each: `useImageLibrary`, `useBatch`, `useMasks`,
   `useLetterMasks`, `useObjectUrls`, `useOllama`, `usePrompt`, `useLanguage`,
-  `useGlossary`, `useStory`, `useBoardView`, `useBoardKeys`, `useBoxDrag`,
-  `useFileDrop`, `useLetteringFont`.
+  `useGlossary`, `useStory`, `useChapter`, `useBoardView`, `useBoardKeys`,
+  `useBoxDrag`, `useFileDrop`, `useLetteringFont`.
 
 ## Invariants worth knowing before editing
 
@@ -291,16 +298,65 @@ back in front of it with the counts, since the count is the one thing it cannot 
 from the request. Terms are kept from whichever answer named any (`terms or
 noted(again)`) — being asked for a count again is not being asked for names.
 
-**A chapter carries two things, and they are kept opposite ways round.** The
+**A chapter is read before it is translated, and that is what makes page three
+translatable.** The glossary and the story are both built *forwards*, so page
+three is translated with no idea what page forty reveals — and in manga that is
+precisely where the pronouns, the honorifics and the name reveals are settled.
+`/api/survey` sweeps the whole chapter's already-read Japanese first, a window of
+`SURVEY_PAGES` at a time with the running answer handed back in, and only then is
+anything translated. The early windows not having read the end does not matter:
+nothing is lettered until all of it has been read.
+
+**A model shown the ending writes towards it, and `ollama.CHAPTER_NOTE` is the
+whole of what stops it.** Page three otherwise comes back heavy with a
+significance it has not earned, a line left vague comes back settled, and people
+address each other as what they will turn out to be — which is worse than not
+having read the chapter, being wrong in a way that reads as deliberate. The note
+draws one line: use the chapter for who someone *is*, which is a pronoun and a
+form of address and is the entire reason it was read, and not for what *happens*,
+which is the reader's to reach. It is appended by `told` only where a chapter is
+actually given, the same rule `KINDS_NOTE` follows. `ollama.placed` says how far
+the reader has got **under the page** rather than in the briefing, which is the
+same measured finding `ollama.asking` rests on.
+
+**The beats are indexed by a page's place in its folder.** One line per page,
+positional — so `App.placeOf` and the list a folder run works through must agree,
+and `lib/bible.fits` refuses a bible whose beat count no longer matches the
+folder. A page added or deleted since the sweep leaves every beat after it
+describing the wrong page, silently; there the honest thing is to translate
+against no chapter at all, which is what `translatePage` does and what the rail
+says. The API keeps a count contract on the way in for the same reason
+(`ollama.beaten`): a window that miscounts twice hands back **no** beats rather
+than beats a page out.
+
+**A survey's terms are seeded once, at the end of the sweep — never window by
+window.** `useGlossary` keeps the first rendering of a term and never moves it, so
+folding each window in as it arrived would freeze the readings of the windows that
+had not yet read the ending, which is the one thing the sweep was for. Inside
+`lib/bible.folded` the rule is the opposite way round and last wins: nothing has
+been translated yet, so there is no page to stay consistent with and a window that
+has read further genuinely knows better.
+
+**A chapter carries three things, and they are kept three different ways round.**
+The bible is *replaced* per window and the **last** window wins, being the one
+that has read the chapter. And then the two that ride page to page: the
 glossary accumulates and the **first** rendering of a term wins (`useGlossary`);
 the story's `scene` is **replaced** and the **last** page wins (`useStory`, via
 `lib/story.ts`). Consistency is what a name wants and a story is the thing that
 moves — and replacing rather than appending is what stops it growing with the
 chapter, so the model is handed the last one and asked to write it again with the
 new page in it (`STORY_NOTE`). Everything is capped on the way in and out
-(`SCENE_LIMIT`, `CAST_LIMIT`, `NOTE_LIMIT`, `GLOSSARY_LIMIT`): they ride on
-*every* page of a folder run. An empty answer leaves what was held — a model that
-said nothing is not news that nothing happened.
+(`SCENE_LIMIT`, `CAST_LIMIT`, `NOTE_LIMIT`, `GLOSSARY_LIMIT`, and for the bible
+`SYNOPSIS_LIMIT`, `REGISTER_LIMIT`, `BEAT_LIMIT`, `BEATS_LIMIT`): they ride on
+*every* page of a folder run, which is also why `CONTEXT` went from 8192 to 12288
+when the survey went in. An empty answer leaves what was held — a model that said
+nothing is not news that nothing happened.
+
+**A survey's cast is seeded unsettled, and that is deliberate.** `settled` means
+"set by hand", which is what `described` tells the model, so the sweep must not
+claim it: a page that shows otherwise can still correct what the survey worked
+out, the survey having read text with no pictures. Hand corrections stay
+immovable through both runs, which is what the gap between the two buttons is for.
 
 **`unknown` is a real answer about the cast, and the schema is what makes it
 cheap.** A chapter says who someone is when it is ready to, often pages after the
@@ -377,20 +433,35 @@ rather than anything that might be there next time. The painter is handed *in* t
 stays the caller's business.
 
 **A folder run goes one page at a time, and the page in hand is the page named.**
-`useBatch` sends one page through `App.pipeline` and waits. Sending five at once
-buys nothing — `Detector` and `Reader` hold a lock each, so they queue at the API
+`useBatch` sends one page through a step and waits. Sending five at once buys
+nothing — `Detector` and `Reader` hold a lock each, so they queue at the API
 regardless — and coming back in no particular order leaves the progress bar with
 nothing true to say. Which is also why board actions are shut while a run is going
 (`Board`'s `runningFolder`): a second page in the air would have the bar naming
 whatever was asked for last.
 
-`pipeline` therefore takes the page rather than reading the active one, and moves
-the step tabs and clears the selection **only** for the page on the board — a run
-must not drag the view about under someone reading another page. It hands back why
-it gave up rather than only leaving it in the banner (`App.lastFailure`, set by
+**A folder is run twice, and the step is an argument rather than the hook's.**
+`App.examine` finds, reads and cleans a page; `App.render` translates and letters
+one. Between them the chapter itself is read, which is why `useBatch.start` also
+takes an `after` — work on the whole chapter rather than on any one page, run
+inside the same run so there is one card, one **Stop** and one thing that is true.
+Two `useBatch` instances would give two of each and `going.current` would not stop
+them overlapping.
+
+Both steps take the page rather than reading the active one, and move the step
+tabs and clear the selection **only** for the page on the board — a run must not
+drag the view about under someone reading another page. Both hand back why they
+gave up rather than only leaving it in the banner (`App.lastFailure`, set by
 `during`), because a run has to say which page that was. Not every empty answer is
 a refusal: `translatePage` also comes back false for a page whose every block was
 left alone, so the reason is what decides, not the boolean.
+
+`render` examines a page nobody has examined yet, so pressing **Translate
+chapter** alone is still the whole of what one button used to be. It takes that
+analysis **from the step that found it** (`App.prepared` hands back the analysis
+as well as the failure) rather than reading it back out of `analysesNow`, which
+the step has only asked React to hold; a page examined by the *previous* run is
+read through `analysesNow`, that run being one this closure never saw.
 
 **A tracing is dropped as soon as its clean lands, unless its page is on the
 board.** It is a page-sized `ImageBitmap` worked out from the page and so can be

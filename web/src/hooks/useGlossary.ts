@@ -44,6 +44,28 @@ export function useGlossary() {
     })
   }, [])
 
+  /**
+   * A term's wording put right by hand.
+   *
+   * No `settled` mark and none needed: a term already held is never overwritten,
+   * so a hand-set one is immovable by the same rule that makes the first
+   * rendering win. Worth most in the gap between reading a chapter and
+   * translating it, where a name put right is put right on every page rather
+   * than on the pages after the one that noticed.
+   */
+  const correct = useCallback((folder: string, source: string, target: string) => {
+    setTerms((current) => {
+      const held = current[folder]
+      if (!held) return current
+      return {
+        ...current,
+        [folder]: held.map((term) =>
+          term.source === source ? { ...term, target: target.trim() } : term,
+        ),
+      }
+    })
+  }, [])
+
   const forget = useCallback((folder: string) => {
     setTerms((current) => {
       if (!(folder in current)) return current
@@ -55,5 +77,5 @@ export function useGlossary() {
 
   const clear = useCallback(() => setTerms({}), [])
 
-  return { terms, now, learn, forget, clear }
+  return { terms, now, learn, correct, forget, clear }
 }

@@ -130,6 +130,7 @@ port can call it.
 | `GET` | `/api/languages` | → the languages a page can be read in |
 | `GET` | `/api/models` | → the models Ollama has to translate with |
 | `GET` | `/api/prompt` | → what the model is told, unless told otherwise |
+| `POST` | `/api/survey` | `pages`, `model` → what the chapter is, read before any of it is translated |
 | `POST` | `/api/translate` | `texts`, `model` → the same lines in another language, and the terms it named |
 | `POST` | `/api/clean` | `image`, `boxes` and/or `mask` → the page with them taken out |
 | `POST` | `/api/render` | `image`, `regions` → the same, with text set in them |
@@ -294,6 +295,46 @@ model. It translates nothing: what the text should say instead is still for the
 caller to decide. `language` is which reader stands up — see above — and only
 the one asked for ever does.
 
+**`/api/survey`** is the one call here about a chapter rather than a page, and it
+is the answer to the thing a page-at-a-time run cannot do for itself. A chapter is
+translated in order, so page three is translated long before page forty has been
+read — and page forty is usually where a chapter gets round to saying who someone
+is. Send the whole chapter's lettering through this first and every page can be
+translated against all of it.
+
+`pages` is a JSON list of lists: one list of lines per page, in reading order, as
+`/api/read` gave them. A page with nothing on it is an empty list rather than a
+page left out — the answer is one `beat` per page and they are positional, so a
+page dropped on the way in puts every beat after it one place wrong.
+
+A chapter of raw lettering does not fit a context window, so this takes a
+windowful at a time. Send a few pages; send what came back as `chapter` with the
+next few, and `first` saying which page the window starts at. That the early
+windows had not read the end does not matter, because nothing is translated until
+all of it has been read: the synopsis, the register, the cast and the terms are
+written again each time with the new pages in them, so the last window is the one
+that has read the lot and its answer is the one to keep. There is no separate
+consolidation pass — the last window already is one.
+
+`chapter` comes back as `{synopsis, register, beats, cast, terms}`. `synopsis` is
+the chapter whole, `register` is how it is written — how formal, whose voice, when
+and where it is set — and `beats` is one line per page of *this* window, so a
+caller lays them down at `first`. `cast` and `terms` are the same shapes
+`/api/translate` answers with, deliberately: what a survey worked out and what a
+page named go into the one cast and the one glossary, and nothing downstream has
+to know which found a name first. Everything is capped — a synopsis to 1200
+characters, a register to 200, a beat to 160, the cast to twelve and the terms to
+forty — and cut rather than refused, since these ride in front of every page of the
+run and there is no second chance to ask.
+
+The beats are counted the way the translations are, and a window that miscounts is
+shown its own answer and asked again. A second miscount hands back *no* beats
+rather than beats a page out: a beat in the wrong place describes the wrong page,
+and nothing downstream can tell that it does. What the window said about the
+chapter is kept either way — naming a character has nothing to do with counting
+pages. Nothing is kept here: the caller carries the chapter from window to window,
+and back in on `/api/translate`.
+
 **`/api/translate`** is the one thing here that works on words alone — no image
 goes with it. `texts` is a JSON list, `model` is one of the names `/api/models`
 gives back, `target` is the language to translate into (English unless said) and
@@ -321,9 +362,12 @@ refused rather than lined up wrong.
 
 What the model is told is the caller's too: send `system`, with `{target}` and
 `{source}` wherever the languages should go, and `GET /api/prompt` hands back the
-default to start from. Nothing is kept — every request carries its own — so a front end
-that wants its own prompt remembers it and sends it each time, which is what the
-dashboard's settings do.
+default to start from — as `prompt`, alongside `survey`, which is the other one
+and the default `/api/survey` uses. Nothing is kept — every request carries its
+own — so a front end that wants its own prompt remembers it and sends it each
+time, which is what the dashboard's settings do. Note that the two are not
+interchangeable: a survey briefed to translate translates its window instead of
+reading it, which is why the dashboard sends its prompt to one and not the other.
 
 `terms` comes back beside `texts`: the names, places, honorifics and coinages
 this page introduced, each with the wording just used for it. Send them back as
@@ -366,6 +410,30 @@ Send `"settled": ["gender"]` on an entry and the model is told that one is not
 its to change. That is how a caller says what it already knows — someone reading
 the chapter usually knows the protagonist's gender long before the pages spell it
 out.
+
+`chapter` is the other half of that, and the half that reaches forwards: what
+`/api/survey` made of the whole chapter before any of it was translated, with
+`page` saying which of its pages this is, counting from zero. Where `story` is
+what the pages *before* this one came to, `chapter` is what all of them do — so a
+word can be chosen knowing what it turns out to have meant. It does not come
+back, being about the chapter rather than about this page. Send the bible whole:
+the API windows the beats around the page itself, six behind and two ahead, so a
+caller hands over what it holds and does not have to know how much of it is worth
+the room. A bible's `cast` and `terms` are ignored here — they ride as
+`previously` and `glossary`, which is where the rules about which of two answers
+wins live, and two versions of one cast in front of a model read as a
+contradiction.
+
+The risk in that is worth stating plainly, because it is the whole reason the
+pre-pass needs care: **a model shown the ending writes towards it.** Page three
+comes back heavy with a significance page three has not earned, a line the author
+left vague comes back settled, and characters address each other as what they will
+turn out to be. So a note goes over with the chapter drawing the line — use it for
+who people *are*, since a pronoun and a form of address are exactly what it was
+read for, and not for what *happens*, which is the reader's to reach — and the page
+is told under its own text how far the reader has got. That last part is the same
+finding the `unknown` question above rests on: a standing instruction reads as a
+description of the job, and a line under the page reads as being about the page.
 
 The same line twice on one page is asked about once and lettered twice: a page of
 `……` is one question, and two identical balloons coming back worded differently is
@@ -534,25 +602,47 @@ hand-made folder is kept when its last page is deleted, having been made empty i
 the first place, and the first archive dropped into one tells it what to come back
 out as.
 
-**Clean & translate all**, inside an opened folder, puts every page in it through
-the whole of the above — detect, read, hide, letter — one page at a time, since
-the API holds one detector and one reader behind a lock each and pages sent
-together only queue there anyway. The bar above the rail says which page is in
-hand and what is being done to it, and stays where it is when the folder is
-closed; clicking the page's name puts that page on the board. **Stop** stops after
-the page in hand, a request already sent being left to land. A page that falls over
-is named with the reason it gave and the rest carry on. A folder that has been
-lettered already asks once before doing it over, since a line moved or rewritten
-by hand cannot be got back.
+A folder is run in two steps, because a chapter is worth reading before it is
+translated.
 
-A run builds the folder's **chapter terms** as it goes: each page hands back the
-names, places and coinages it introduced, and every page after it is translated
-against them, so a character keeps one spelling across pages the model never sees
-together. They are listed under the folder's buttons — the first page to name
-someone settles it for the rest of the chapter, and there would otherwise be
-nothing saying why a later page came out as it did. **Forget** starts the list
-over; pages already lettered are left as they are. The list belongs to the folder,
-is capped at forty, and like everything else here is gone when the tab is.
+**Clean & read chapter**, inside an opened folder, puts every page through detect,
+read and hide — one page at a time, since the API holds one detector and one
+reader behind a lock each and pages sent together only queue there anyway — and
+then reads the chapter itself out of what those pages said, a few pages at a time.
+The bar above the rail says which of the two steps is running, which page is in
+hand and what is being done to it, and stays where it is when the folder is closed;
+clicking the page's name puts that page on the board. **Stop** stops after the page
+in hand, a request already sent being left to land. A page that falls over is named
+with the reason it gave and the rest carry on.
+
+**Translate chapter** then letters every page against the whole of it. Pressed
+without having read the chapter it still works, and is exactly what one button
+used to be: each page knowing only the pages before it. Either button asks once
+before doing a folder that has already been lettered, since a line moved or
+rewritten by hand cannot be got back.
+
+The gap between the two is the point of splitting them. What the chapter turned
+out to be is shown under the folder's buttons and can be put right there — the
+synopsis, how it is written, the cast and what each name is being rendered as — and
+a name corrected *there* is corrected on every page, where the same correction made
+afterwards is a chapter already lettered wrong. The page-by-page list is shown too,
+and is the one part that is not editable: a beat is what the sweep saw on a page,
+and editing one is a claim about a page nobody read again.
+
+Delete or add a page after reading the chapter and the beats no longer line up with
+the folder — they are indexed by where a page sits in it — so the rail says so and
+translating falls back to knowing only what came before, rather than translating
+each page against its neighbour's summary.
+
+A run also builds the folder's **chapter terms**: the survey's names, places and
+coinages seed the list, and each page adds whatever it introduces, so a character
+keeps one spelling across pages the model never sees together. The first rendering
+of a term wins and is never overwritten — which is why the survey's list is handed
+over whole at the end of the sweep rather than window by window, since folding each
+window in as it arrived would freeze the guesses of the windows that had not yet
+read the ending. **Forget** starts all of it over; pages already lettered are left
+as they are. It belongs to the folder, is capped at forty, and like everything else
+here is gone when the tab is.
 
 **Download chapter**, beside it and on the card the run leaves behind, hands the
 whole folder back as one archive — the way it arrived. A chapter dropped in as

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { BatchRun } from '../hooks/useBatch'
 import type { LibraryNotice } from '../hooks/useImageLibrary'
-import type { CastMember, Fact, Stage, Story, Term } from '../lib/api'
+import type { Bible, CastMember, Fact, Stage, Story, Term } from '../lib/api'
+import { fits, isUnread } from '../lib/bible'
 import type { GalleryFolder, GalleryImage } from '../lib/images'
 import { formatBytes, plural } from '../lib/images'
 import { isEmpty } from '../lib/story'
@@ -23,8 +24,13 @@ type Props = {
   terms: Term[]
   /** Where the open folder's chapter has got to, as its last page left it. */
   story: Story | null
+  /** What the open folder's chapter turned out to be, read whole beforehand. */
+  bible: Bible | null
   /** A fact about one of the cast, put right by hand. */
   onCorrect: (name: string, fact: Fact, value: string) => void
+  /** The chapter's own account of itself, put right before it is translated. */
+  onCorrectChapter: (field: 'synopsis' | 'register', value: string) => void
+  onCorrectTerm: (source: string, target: string) => void
   onForgetTerms: () => void
   activeId: string | null
   onOpen: (id: string) => void
@@ -39,7 +45,10 @@ type Props = {
   /** Running a whole folder: what is happening, and how to start and stop it. */
   batch: BatchRun | null
   batchStage: Stage | null
-  onRunFolder: (folder: GalleryFolder) => void
+  /** Read the folder: every page found and cleaned, then the chapter itself. */
+  onSurveyFolder: (folder: GalleryFolder) => void
+  /** And letter it, every page against the whole chapter. */
+  onTranslateFolder: (folder: GalleryFolder) => void
   onStopBatch: () => void
   onDismissBatch: () => void
   /** Whether a model has been picked, without which a run only cleans. */
@@ -63,7 +72,10 @@ export function Sidebar({
   onNewFolder,
   terms,
   story,
+  bible,
   onCorrect,
+  onCorrectChapter,
+  onCorrectTerm,
   onForgetTerms,
   activeId,
   onOpen,
@@ -77,7 +89,8 @@ export function Sidebar({
   onClearAll,
   batch,
   batchStage,
-  onRunFolder,
+  onSurveyFolder,
+  onTranslateFolder,
   onStopBatch,
   onDismissBatch,
   canTranslate,
@@ -153,14 +166,18 @@ export function Sidebar({
           lettered={counted.filter((image) => lettered.includes(image.id)).length}
           done={counted.filter((image) => workedOn.includes(image.id)).length}
           onBack={() => onOpenFolder(null)}
-          onRun={() => onRunFolder(folder)}
+          onSurvey={() => onSurveyFolder(folder)}
+          onTranslate={() => onTranslateFolder(folder)}
           onDownload={() => onDownloadFolder(folder)}
           running={batch !== null && !batch.finished}
           packing={packing}
           canTranslate={canTranslate}
           terms={terms}
           story={story}
+          bible={bible}
           onCorrect={onCorrect}
+          onCorrectChapter={onCorrectChapter}
+          onCorrectTerm={onCorrectTerm}
           onForgetTerms={onForgetTerms}
         />
       )}
@@ -260,9 +277,17 @@ function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
 }
 
 /**
- * The head of an opened folder: the way back out, and the one button that runs
- * the whole chapter through. Armed first when there is lettering in the folder
- * already, since a run does every page over and hand work is not recoverable.
+ * The head of an opened folder: the way back out, and the two buttons that run
+ * the whole chapter through.
+ *
+ * Two rather than one because a chapter is read before it is translated: the
+ * first finds and cleans every page and then reads the chapter out of what they
+ * say, and the second letters them against it. The gap between them is where the
+ * chapter can be corrected — a wrong name settled by hand there is a wrong name
+ * on none of the pages rather than on all of them.
+ *
+ * Each is armed first where there is lettering in the folder already, since a run
+ * does every page over and hand work is not recoverable.
  */
 function FolderBar({
   folder,
@@ -270,14 +295,18 @@ function FolderBar({
   lettered,
   done,
   onBack,
-  onRun,
+  onSurvey,
+  onTranslate,
   onDownload,
   running,
   packing,
   canTranslate,
   terms,
   story,
+  bible,
   onCorrect,
+  onCorrectChapter,
+  onCorrectTerm,
   onForgetTerms,
 }: {
   folder: GalleryFolder
@@ -286,17 +315,29 @@ function FolderBar({
   /** Pages that have been cleaned or lettered, so there is something to save. */
   done: number
   onBack: () => void
-  onRun: () => void
+  onSurvey: () => void
+  onTranslate: () => void
   onDownload: () => void
   running: boolean
   packing: { done: number; total: number } | null
   canTranslate: boolean
   terms: Term[]
   story: Story | null
+  bible: Bible | null
   onCorrect: (name: string, fact: Fact, value: string) => void
+  onCorrectChapter: (field: 'synopsis' | 'register', value: string) => void
+  onCorrectTerm: (source: string, target: string) => void
   onForgetTerms: () => void
 }) {
   const [armed, setArmed] = useState(false)
+  const [armedTranslate, setArmedTranslate] = useState(false)
+
+  // Whether the chapter that was read still describes this folder. The beats are
+  // indexed by a page's place in it, so a page added or deleted since leaves
+  // every beat after it against the wrong page — silently, which is why it is
+  // said here and why translating drops the chapter rather than using it.
+  const read = !isUnread(bible)
+  const stale = read && !fits(bible, pages.length)
 
   useEffect(() => {
     if (!armed) return
@@ -304,9 +345,18 @@ function FolderBar({
     return () => clearTimeout(timer)
   }, [armed])
 
+  useEffect(() => {
+    if (!armedTranslate) return
+    const timer = setTimeout(() => setArmedTranslate(false), 4000)
+    return () => clearTimeout(timer)
+  }, [armedTranslate])
+
   // Nothing to lose, so nothing to ask about.
   useEffect(() => {
-    if (lettered === 0) setArmed(false)
+    if (lettered === 0) {
+      setArmed(false)
+      setArmedTranslate(false)
+    }
   }, [lettered])
 
   return (
@@ -335,7 +385,7 @@ function FolderBar({
           if (!armed && lettered > 0) setArmed(true)
           else {
             setArmed(false)
-            onRun()
+            onSurvey()
           }
         }}
         onBlur={() => setArmed(false)}
@@ -344,15 +394,55 @@ function FolderBar({
         title={
           running
             ? 'A folder is already being run'
-            : `Detect, clean and letter all ${plural(pages.length, 'page')}`
+            : canTranslate
+              ? `Find and hide the words on all ${plural(pages.length, 'page')}, then read the chapter whole`
+              : `Find and hide the words on all ${plural(pages.length, 'page')}`
         }
       >
         {armed
           ? `Do ${plural(lettered, 'lettered page')} again?`
           : canTranslate
-            ? 'Clean & translate all'
+            ? 'Clean & read chapter'
             : 'Clean all'}
       </Button>
+
+      {canTranslate && (
+        <Button
+          variant={armedTranslate ? 'primary' : 'outline'}
+          onClick={() => {
+            if (!armedTranslate && lettered > 0) setArmedTranslate(true)
+            else {
+              setArmedTranslate(false)
+              onTranslate()
+            }
+          }}
+          onBlur={() => setArmedTranslate(false)}
+          disabled={running || pages.length === 0}
+          className="mt-1.5 w-full"
+          title={
+            running
+              ? 'A folder is already being run'
+              : stale
+                ? 'The pages have changed since the chapter was read — each page will know only the pages before it'
+                : read
+                  ? 'Every page translated knowing the whole chapter'
+                  : 'No chapter read yet — each page will know only the pages before it'
+          }
+        >
+          {armedTranslate
+            ? `Do ${plural(lettered, 'lettered page')} again?`
+            : 'Translate chapter'}
+        </Button>
+      )}
+
+      {stale && (
+        <p className="mt-1.5 leading-snug">
+          <Note>
+            the pages have changed since the chapter was read — read it again, or
+            each page is translated knowing only the ones before it
+          </Note>
+        </p>
+      )}
 
       {/* Every page goes in, at the best state it reached — so this is offered as
           soon as any one of them has been worked on, not only once the whole
@@ -388,11 +478,14 @@ function FolderBar({
         </p>
       )}
 
-      {(terms.length > 0 || !isEmpty(story)) && (
+      {(terms.length > 0 || !isEmpty(story) || read) && (
         <Chapter
           terms={terms}
           story={story}
+          bible={bible}
           onCorrect={onCorrect}
+          onCorrectChapter={onCorrectChapter}
+          onCorrectTerm={onCorrectTerm}
           onForget={onForgetTerms}
         />
       )}
@@ -419,22 +512,35 @@ function FolderBar({
 function Chapter({
   terms,
   story,
+  bible,
   onCorrect,
+  onCorrectChapter,
+  onCorrectTerm,
   onForget,
 }: {
   terms: Term[]
   story: Story | null
+  bible: Bible | null
   onCorrect: (name: string, fact: Fact, value: string) => void
+  onCorrectChapter: (field: 'synopsis' | 'register', value: string) => void
+  onCorrectTerm: (source: string, target: string) => void
   onForget: () => void
 }) {
+  const [showBeats, setShowBeats] = useState(false)
+  const read = !isUnread(bible)
+
   return (
     <div className="mt-2 border-t border-line pt-2">
       <div className="flex items-center justify-between gap-2">
         <p
           className="text-[11px] font-medium text-faint"
-          title="What this chapter has been translated with so far: where the story has got to, who is in it, and the names and coinages already settled. Every page in the folder is translated against them"
+          title={
+            read
+              ? 'This chapter read whole before any of it was translated, and what the pages have added since. Every page in the folder is translated against all of it'
+              : 'What this chapter has been translated with so far: where the story has got to, who is in it, and the names and coinages already settled. Every page in the folder is translated against them'
+          }
         >
-          Chapter so far
+          {read ? 'Chapter' : 'Chapter so far'}
         </p>
         <button
           type="button"
@@ -445,6 +551,55 @@ function Chapter({
           Forget
         </button>
       </div>
+
+      {/* Correctable, and this is where correcting is worth most: a name put
+          right here is put right on every page, where put right afterwards it is
+          a chapter already lettered wrong. */}
+      {bible && bible.synopsis !== '' && (
+        <Writing
+          value={bible.synopsis}
+          rows={3}
+          label="What the chapter is"
+          onSettle={(value) => onCorrectChapter('synopsis', value)}
+        />
+      )}
+      {bible && bible.register !== '' && (
+        <Writing
+          value={bible.register}
+          rows={2}
+          label="How it is written"
+          onSettle={(value) => onCorrectChapter('register', value)}
+        />
+      )}
+
+      {/* Read-only: a beat is what the sweep saw on a page, and a hand-edited one
+          is a claim about a page nobody read again. */}
+      {bible && bible.beats.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowBeats((was) => !was)}
+            className={`mt-1.5 w-full rounded-md px-1 py-0.5 text-left text-[11px] text-faint transition-colors hover:bg-surface hover:text-ink ${FOCUS}`}
+          >
+            {showBeats ? '▾' : '▸'} Page by page ({bible.beats.length})
+          </button>
+          {showBeats && (
+            <ol className="mt-0.5 max-h-32 space-y-0.5 overflow-y-auto">
+              {bible.beats.map((beat, at) => (
+                <li
+                  key={at}
+                  title={beat}
+                  className="flex items-baseline gap-1 text-[11px] leading-snug"
+                >
+                  <span className="shrink-0 text-faint tabular-nums">{at + 1}.</span>
+                  <span className="min-w-0 flex-1 truncate text-muted">{beat}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </>
+      )}
+
       {story && story.scene !== '' && (
         <p
           className="mt-1 max-h-16 overflow-y-auto text-[11px] leading-snug text-muted italic"
@@ -462,24 +617,136 @@ function Chapter({
       )}
       <ul className="mt-1 max-h-24 overflow-y-auto">
         {terms.map((term) => (
-          <li
-            key={term.source}
-            // What it is, where the page that named it said: too long for the row
-            // and the row is one line on purpose.
-            title={
-              term.note ? `${term.source} → ${term.target} — ${term.note}` : undefined
-            }
-            className="flex items-baseline gap-1 text-[11px] leading-snug"
-          >
-            <span className="min-w-0 shrink truncate text-muted">{term.source}</span>
-            <span className="shrink-0 text-faint" aria-hidden>
-              →
-            </span>
-            <span className="min-w-0 flex-1 truncate text-ink">{term.target}</span>
-          </li>
+          <TermRow key={term.source} term={term} onCorrect={onCorrectTerm} />
         ))}
       </ul>
     </div>
+  )
+}
+
+/**
+ * One settled term, its wording open to being put right.
+ *
+ * The source is the key and stays as it is; only what it is rendered as can be
+ * changed, and changing it changes every page not yet lettered — which is why
+ * this is worth having in the gap between reading a chapter and translating it.
+ */
+function TermRow({
+  term,
+  onCorrect,
+}: {
+  term: Term
+  onCorrect: (source: string, target: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [target, setTarget] = useState(term.target)
+
+  const settle = () => {
+    setEditing(false)
+    if (target.trim() && target !== term.target) onCorrect(term.source, target)
+    else setTarget(term.target)
+  }
+
+  return (
+    <li
+      // What it is, where the page that named it said: too long for the row and
+      // the row is one line on purpose.
+      title={term.note ? `${term.source} → ${term.target} — ${term.note}` : undefined}
+      className="flex items-baseline gap-1 text-[11px] leading-snug"
+    >
+      <span className="min-w-0 shrink truncate text-muted">{term.source}</span>
+      <span className="shrink-0 text-faint" aria-hidden>
+        →
+      </span>
+      {editing ? (
+        <TextInput
+          value={target}
+          autoFocus
+          onChange={(event) => setTarget(event.target.value)}
+          onBlur={settle}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') settle()
+            if (event.key === 'Escape') {
+              setTarget(term.target)
+              setEditing(false)
+            }
+          }}
+          className="min-w-0 flex-1"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Say it another way — every page not yet lettered follows"
+          className={`min-w-0 flex-1 truncate text-left text-ink hover:text-accent ${FOCUS}`}
+        >
+          {term.target}
+        </button>
+      )}
+    </li>
+  )
+}
+
+/**
+ * A piece of what the chapter is, open to being written again by hand.
+ *
+ * Click to edit, Escape to leave it as it was, blur or Enter to settle — the same
+ * idiom as a cast member's note. Correcting it here is worth more than anywhere
+ * else: it rides in front of every page of the chapter, so a wrong reading fixed
+ * before the run is a wrong reading on none of the pages.
+ */
+function Writing({
+  value,
+  rows,
+  label,
+  onSettle,
+}: {
+  value: string
+  rows: number
+  label: string
+  onSettle: (value: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+
+  const settle = () => {
+    setEditing(false)
+    if (draft.trim() && draft !== value) onSettle(draft)
+    else setDraft(value)
+  }
+
+  if (editing) {
+    return (
+      <textarea
+        value={draft}
+        rows={rows}
+        autoFocus
+        aria-label={label}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={settle}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            setDraft(value)
+            setEditing(false)
+          }
+        }}
+        className={`mt-1 w-full resize-none rounded-md border border-line bg-surface px-1.5 py-1 text-[11px] leading-snug text-ink ${FOCUS}`}
+      />
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setDraft(value)
+        setEditing(true)
+      }}
+      title={`${label} — click to put it right`}
+      className={`mt-1 block max-h-20 w-full overflow-y-auto rounded-md px-1 py-0.5 text-left text-[11px] leading-snug text-muted italic transition-colors hover:bg-surface hover:text-ink ${FOCUS}`}
+    >
+      {value}
+    </button>
   )
 }
 

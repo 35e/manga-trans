@@ -7,6 +7,7 @@ import { TranslationsPanel } from './components/TranslationsPanel'
 import { GearIcon } from './components/icons'
 import { IconButton } from './components/ui'
 import { useBatch } from './hooks/useBatch'
+import { useChapter } from './hooks/useChapter'
 import { useFileDrop } from './hooks/useFileDrop'
 import { useGlossary } from './hooks/useGlossary'
 import { useImageLibrary } from './hooks/useImageLibrary'
@@ -27,8 +28,10 @@ import {
   letterMask,
   read,
   said,
+  survey,
   translate,
 } from './lib/api'
+import { SURVEY_PAGES, asStory, fits } from './lib/bible'
 import { archiveName, finished } from './lib/chapter'
 import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, ready } from './lib/fit'
@@ -113,6 +116,7 @@ function App() {
     terms: chapterTerms,
     now: termsNow,
     learn: learnTerms,
+    correct: correctTerm,
     forget: forgetTerms,
     clear: clearTerms,
   } = useGlossary()
@@ -124,6 +128,14 @@ function App() {
     forget: forgetStory,
     clear: clearStories,
   } = useStory()
+  const {
+    bibles: chapterBibles,
+    now: bibleNow,
+    learn: learnBible,
+    correct: correctBible,
+    forget: forgetBible,
+    clear: clearBibles,
+  } = useChapter()
   const { prompt, setPrompt, builtIn: builtInPrompt } = usePrompt()
 
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -196,6 +208,30 @@ function App() {
   const imagesNow = useRef(images)
   imagesNow.current = images
   const held = useCallback((id: string) => imagesNow.current.some((it) => it.id === id), [])
+
+  /**
+   * Which page of its chapter a page is, and how many there are.
+   *
+   * The bible's beats are indexed by this, so it has to be worked out the one way
+   * a folder run works through a folder — the same filter in the same order, or a
+   * page is translated against the beat for its neighbour.
+   */
+  const pagesOf = useCallback(
+    (folder: string) => imagesNow.current.filter((it) => it.folder === folder),
+    [],
+  )
+  const placeOf = useCallback(
+    (page: GalleryImage): number | null => {
+      if (!page.folder) return null
+      const at = pagesOf(page.folder).findIndex((it) => it.id === page.id)
+      return at === -1 ? null : at
+    },
+    [pagesOf],
+  )
+  const pagesIn = useCallback(
+    (folder: string) => pagesOf(folder).length,
+    [pagesOf],
+  )
 
   useEffect(() => {
     if (!activeId) return
@@ -641,15 +677,20 @@ function App() {
             budget: region ? lines.budgetFor(region, text) : undefined,
           }
         })
-        return translate(
-          sending,
-          ollama.model,
-          ollama.target,
-          prompt,
-          source.language?.name,
-          chapter ? termsNow.current[chapter] : null,
-          chapter ? storyNow.current[chapter] : null,
-        )
+        // The bible only where it still describes this folder: the beats are
+        // indexed by a page's place in it, so a page added or deleted since the
+        // sweep leaves every beat after it against the wrong page.
+        const read = chapter ? bibleNow.current[chapter] : null
+        const of = chapter ? placeOf(page) : null
+        const surveyed = chapter && of !== null && fits(read, pagesIn(chapter))
+        return translate(sending, ollama.model, ollama.target, {
+          system: prompt,
+          source: source.language?.name,
+          glossary: chapter ? termsNow.current[chapter] : null,
+          previously: chapter ? storyNow.current[chapter] : null,
+          chapter: surveyed ? read : null,
+          page: surveyed ? of : null,
+        })
       })
       if (!got) return false
 
@@ -676,6 +717,9 @@ function App() {
       learnTerms,
       storyNow,
       learnStory,
+      bibleNow,
+      placeOf,
+      pagesIn,
     ],
   )
 
@@ -699,27 +743,31 @@ function App() {
   }, [active, analyses, translatePage])
 
   /**
-   * The usual way through one page, in one go: find the words, hide them, letter
-   * it. Each step feeds the next.
+   * Everything a page needs before it can be translated: find the words, read
+   * them, hide them.
    *
    * It takes the page rather than reading the active one because a folder run puts
    * every page in a folder through this same way, and hands back why it gave up
    * rather than only leaving it in the banner, because a run has to say which page
    * that was.
    */
-  const pipeline = useCallback(
-    async (page: GalleryImage): Promise<string | null> => {
+  const prepared = useCallback(
+    async (
+      page: GalleryImage,
+    ): Promise<{ found: Analysis | null; why: string | null }> => {
       // Deleted since the run picked up its list. Nothing to do and nothing wrong.
-      if (!held(page.id)) return null
+      if (!held(page.id)) return { found: null, why: null }
 
       const found = await detectAndRead(page)
-      if (!found) return lastFailure.current ?? 'the text could not be found'
+      if (!found) {
+        return { found: null, why: lastFailure.current ?? 'the text could not be found' }
+      }
 
       const marks = await marksFor(page, found)
       if (marks) {
         lastFailure.current = null
         if (!(await cleanPage(page, marks))) {
-          return lastFailure.current ?? 'the page could not be cleaned'
+          return { found, why: lastFailure.current ?? 'the page could not be cleaned' }
         }
       }
 
@@ -728,8 +776,41 @@ function App() {
       // The page on the board keeps its own, since that is the one being brushed.
       if (!onBoard(page.id)) traced.drop(page.id)
       else setMode('translate')
+      return { found, why: null }
+    },
+    [detectAndRead, marksFor, cleanPage, traced, onBoard, held],
+  )
 
-      if (ollama.model && found.texts?.some((text) => text.trim())) {
+  /** That, as a folder run wants it: why it gave up, or null when it came out. */
+  const examine = useCallback(
+    async (page: GalleryImage) => (await prepared(page)).why,
+    [prepared],
+  )
+
+  /**
+   * Letter it: the page translated against everything the chapter knows, which
+   * after a survey is the whole chapter and before one is only the pages before
+   * it.
+   *
+   * A page nobody has examined is examined first, so this on its own is still the
+   * whole of what one button used to do — and it is taken straight from the step
+   * that found it rather than read back out of state, which the step has only
+   * asked React to hold. A page examined by the run before this one is read
+   * through `analysesNow`, that run being a different one this closure never saw.
+   */
+  const render = useCallback(
+    async (page: GalleryImage): Promise<string | null> => {
+      if (!held(page.id)) return null
+
+      let found: Analysis | null = analysesNow.current[page.id] ?? null
+      if (!found?.texts) {
+        const done = await prepared(page)
+        if (done.why) return done.why
+        found = done.found
+      }
+      if (!found?.texts) return lastFailure.current ?? 'the text could not be found'
+
+      if (ollama.model && found.texts.some((text) => text.trim())) {
         lastFailure.current = null
         await translatePage(page, found)
         // Not every empty answer is a refusal: a page whose every block was left
@@ -738,39 +819,112 @@ function App() {
       }
       return null
     },
-    [
-      detectAndRead,
-      marksFor,
-      cleanPage,
-      translatePage,
-      traced,
-      onBoard,
-      held,
-      ollama.model,
-    ],
+    [prepared, translatePage, held, ollama.model],
   )
 
   /** "Do all three": that, for the page on the board. */
   const runAll = useCallback(() => {
-    if (active) void pipeline(active)
-  }, [active, pipeline])
+    if (active) void render(active)
+  }, [active, render])
 
   const {
     run: batch,
     start: startBatch,
     stop: stopBatch,
     dismiss: dismissBatch,
-  } = useBatch(pipeline)
+  } = useBatch()
 
-  /** Every page in a folder, in the order the archive put them. */
-  const runFolder = useCallback(
+  /**
+   * The whole chapter's Japanese read before a word of it is translated, a
+   * windowful of pages at a time with what the earlier ones came to handed back
+   * in each time — so the last window is the one that has read the lot.
+   *
+   * A page with nothing on it is still sent, as an empty list: the beats come
+   * back one per page and are laid down by where the page sits, so a page left
+   * out is every later beat one place wrong.
+   */
+  const surveyChapter = useCallback(
+    async (
+      folder: GalleryFolder,
+      pages: GalleryImage[],
+      say: (note: string | null) => void,
+    ): Promise<string | null> => {
+      if (!ollama.model) return null
+
+      const written = pages.map((page) => {
+        const found = analysesNow.current[page.id]
+        if (!found?.texts) return []
+        const skip = new Set(found.excluded)
+        return found.texts.filter((text, at) => text.trim() && !skip.has(at))
+      })
+      if (!written.some((page) => page.length > 0)) return null
+
+      for (let first = 0; first < written.length; first += SURVEY_PAGES) {
+        const window = written.slice(first, first + SURVEY_PAGES)
+        const last = Math.min(first + window.length, written.length)
+        say(`reading pages ${first + 1}–${last} of ${written.length}`)
+        lastFailure.current = null
+        const said = await during(pages[first].id, 'surveying', () =>
+          survey(window, ollama.model as string, ollama.target, {
+            source: source.language?.name,
+            chapter: bibleNow.current[folder.id] ?? null,
+            first,
+          }),
+        )
+        if (!said) return lastFailure.current ?? 'the chapter could not be read'
+        learnBible(folder.id, said, first)
+      }
+
+      // Seeded once and at the end, never window by window. The glossary keeps the
+      // first rendering of a term and never moves it, so it has to be handed what
+      // the whole sweep settled on — folding each window in as it arrived would
+      // freeze the guesses of the windows that had not yet read the ending, which
+      // is the one thing this was all for.
+      const read = bibleNow.current[folder.id]
+      if (read) {
+        learnTerms(folder.id, read.terms)
+        learnStory(folder.id, asStory(read))
+      }
+      return null
+    },
+    [
+      during,
+      ollama.model,
+      ollama.target,
+      source.language?.name,
+      bibleNow,
+      learnBible,
+      learnTerms,
+      learnStory,
+    ],
+  )
+
+  /**
+   * Read the folder: every page found, read and cleaned, and then the chapter
+   * itself read whole out of what they said. One run rather than two, so there is
+   * one card and one Stop — reading the chapter is part of reading it.
+   */
+  const surveyFolder = useCallback(
+    (folder: GalleryFolder) => {
+      const pages = images.filter((image) => image.folder === folder.id)
+      void startBatch(folder, pages, 'Cleaning & reading', examine, (say) =>
+        surveyChapter(folder, pages, say),
+      )
+    },
+    [startBatch, images, examine, surveyChapter],
+  )
+
+  /** And then letter it, every page against the whole chapter. */
+  const translateFolder = useCallback(
     (folder: GalleryFolder) => {
       void startBatch(
         folder,
         images.filter((image) => image.folder === folder.id),
+        'Translating',
+        render,
       )
     },
-    [startBatch, images],
+    [startBatch, images, render],
   )
 
   const removeFolder = useCallback(
@@ -779,9 +933,19 @@ function App() {
       for (const image of images) if (image.folder === id) forget(image.id)
       forgetTerms(id)
       forgetStory(id)
+      forgetBible(id)
       dropFolder(id)
     },
-    [batch?.folder, stopBatch, images, forget, forgetTerms, forgetStory, dropFolder],
+    [
+      batch?.folder,
+      stopBatch,
+      images,
+      forget,
+      forgetTerms,
+      forgetStory,
+      forgetBible,
+      dropFolder,
+    ],
   )
 
   const clearAll = useCallback(() => {
@@ -792,10 +956,20 @@ function App() {
     traced.clear()
     clearTerms()
     clearStories()
+    clearBibles()
     setLettering({})
     setAnalyses({})
     setActiveId(null)
-  }, [stopBatch, clear, clearMasks, clearCleaned, traced, clearTerms, clearStories])
+  }, [
+    stopBatch,
+    clear,
+    clearMasks,
+    clearCleaned,
+    traced,
+    clearTerms,
+    clearStories,
+    clearBibles,
+  ])
 
   const changeLettering = useCallback(
     (index: number, patch: Partial<Lettering>) => {
@@ -962,13 +1136,21 @@ function App() {
           onNewFolder={newFolder}
           terms={openFolder ? (chapterTerms[openFolder] ?? []) : []}
           story={openFolder ? (chapterStories[openFolder] ?? null) : null}
+          bible={openFolder ? (chapterBibles[openFolder] ?? null) : null}
           onCorrect={(name, fact, value) =>
             openFolder && correctStory(openFolder, name, fact, value)
+          }
+          onCorrectChapter={(field, value) =>
+            openFolder && correctBible(openFolder, field, value)
+          }
+          onCorrectTerm={(source, target) =>
+            openFolder && correctTerm(openFolder, source, target)
           }
           onForgetTerms={() => {
             if (!openFolder) return
             forgetTerms(openFolder)
             forgetStory(openFolder)
+            forgetBible(openFolder)
           }}
           activeId={active?.id ?? null}
           onOpen={setActiveId}
@@ -984,7 +1166,8 @@ function App() {
           // The bar names the page it is working on, so it wants that page's
           // stage rather than the board's — which is only ever the active page's.
           batchStage={working && working.id === batch?.page?.id ? working.stage : null}
-          onRunFolder={runFolder}
+          onSurveyFolder={surveyFolder}
+          onTranslateFolder={translateFolder}
           onStopBatch={stopBatch}
           onDismissBatch={dismissBatch}
           canTranslate={Boolean(ollama.model)}
