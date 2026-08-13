@@ -5,8 +5,7 @@ import { Button, Divider, Field, Note, Segmented, Select, Toolbar } from './ui'
 type Props = {
   brush: Brush
   onBrush: (brush: Brush) => void
-  /** Mark the whole box around every block, or the lettering inside them. */
-  onMarkBlocks: () => void
+  /** Mark the lettering inside every block the detector found. */
   onMarkLetters: () => void
   canMark: boolean
   tracing: boolean
@@ -24,11 +23,10 @@ const SPREADS = [0, 2, 4, 6, 8, 12, 16]
 
 const SIZES = { min: 4, max: 160 }
 
-/** The brush, and the two shortcuts worth having beside it. */
+/** The brush, and the shortcuts worth having beside it. */
 export function MaskTools({
   brush,
   onBrush,
-  onMarkBlocks,
   onMarkLetters,
   canMark,
   tracing,
@@ -112,13 +110,6 @@ export function MaskTools({
             ))}
           </Select>
         </Field>
-        <Button
-          onClick={onMarkBlocks}
-          disabled={!canMark}
-          title="Mark the whole box around every block the detector found"
-        >
-          Blocks
-        </Button>
         <Button onClick={onClear} disabled={!canClear}>
           Clear mask
         </Button>

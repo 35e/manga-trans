@@ -159,11 +159,11 @@ export function Board({
   traceNow.current = masking.onTrace
 
   /** Mark every block that is not being left alone, tracing first if need be. */
-  const markBlocks = async (traced: boolean) => {
+  const markBlocks = async () => {
     const found = analysisNow.current
     if (!mask || !found) return
-    const letters = traced ? (lettersNow.current ?? (await traceNow.current())) : null
-    if (traced && !letters) return
+    const letters = lettersNow.current ?? (await traceNow.current())
+    if (!letters) return
     mark(mask, toClean(found), letters)
     edited()
   }
@@ -288,8 +288,7 @@ export function Board({
         <MaskTools
           brush={brush}
           onBrush={setBrush}
-          onMarkBlocks={() => void markBlocks(false)}
-          onMarkLetters={() => void markBlocks(true)}
+          onMarkLetters={() => void markBlocks()}
           canMark={canMark}
           tracing={stage === 'tracing'}
           onClear={() => {

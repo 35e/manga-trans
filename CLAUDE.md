@@ -254,8 +254,8 @@ exports white-on-black for exactly this reason.
 
 **A block is marked into a mask by the lettering in it, never by its box.**
 `mask.mark` falls back to stamping the whole rectangle when it is handed no
-tracing, and that fallback is for the "Blocks" button and for a tracing that
-failed — not for the ordinary path. So anything marking a block after the mask
+tracing, and that fallback is for a tracing that failed — not for the ordinary
+path. So anything marking a block after the mask
 has been seeded goes through `App.markLetters`, which asks for the tracing if it
 is not already held: a spread changed since, or a page whose tracing was dropped
 at the end of a folder run, otherwise leaves a block put back by hand or one
