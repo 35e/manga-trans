@@ -5,8 +5,8 @@ export type Brush = { radius: number; erase: boolean }
 
 /**
  * Mark these boxes for hiding: the lettering inside them once it has been
- * traced, and the whole box until then. The boxes are only the fallback — the
- * point of tracing is to hide the words and leave the art they sit on.
+ * traced, and the whole box until then. **The boxes are only the fallback**, for
+ * a tracing that failed — see `App.markLetters`.
  */
 export function mark(mask: Mask, boxes: Box[], letters: ImageBitmap | null) {
   if (boxes.length === 0) return
@@ -17,13 +17,7 @@ export function mark(mask: Mask, boxes: Box[], letters: ImageBitmap | null) {
 /** How the mask shows on the board: enough to read through, enough to see. */
 const TINT = 'rgba(79, 70, 229, 0.45)'
 
-/**
- * What is to be painted out, held at the page's own resolution.
- *
- * White on transparent, which is what the API asks for. Boxes can only say "all
- * of this rectangle"; this can say "this bubble except that corner", which is
- * the whole point of brushing it by hand.
- */
+/** What is to be painted out: white on transparent, at the page's resolution. */
 export class Mask {
   readonly width: number
   readonly height: number
@@ -66,11 +60,8 @@ export class Mask {
   }
 
   /**
-   * Mark the lettering itself rather than the boxes around it.
-   *
-   * `source` is the mask the API traced — white on clear, page-sized — drawn
-   * only inside `boxes`, so a block left alone stays out of it and stray ink the
-   * detector never boxed does not creep in.
+   * Mark the lettering itself rather than the boxes around it. The traced mask
+   * is drawn only inside `boxes`, so a block left alone stays out of it.
    */
   letters(source: CanvasImageSource, boxes: Box[]) {
     const drawable = boxes.filter(([x0, y0, x1, y1]) => x1 > x0 && y1 > y0)

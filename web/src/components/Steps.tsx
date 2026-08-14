@@ -18,10 +18,8 @@ type Props = {
 }
 
 /**
- * The way through a page — find the words, hide them, letter it — as three steps
- * saying which are done. Not a wizard: any of them can be gone to at any time.
- * They are here because the order is what is not obvious, and because a page
- * half done should look half done.
+ * The way through a page as three steps saying which are done. Not a wizard: any
+ * of them can be gone to at any time.
  */
 export function Steps({ steps, current, onPick }: Props) {
   return (

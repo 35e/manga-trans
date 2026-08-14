@@ -1,23 +1,13 @@
-/**
- * An archive that was dropped in, as a folder of its pages. Named after the
- * archive so re-dropping one fills the same folder in again rather than putting a
- * second one beside it.
- */
+/** An archive that was dropped in, as a folder of its pages. */
 export type GalleryFolder = {
   id: string
   name: string
   addedAt: number
-  /**
-   * What the archive was called when it was dropped in, extension and all. The
-   * folder is named after its stem, so without this there is nothing left to say
-   * whether the chapter arrived as a `.zip` or a `.cbz` — and a finished chapter
-   * should leave as whatever it came as.
-   */
+  /** The only record of whether the chapter arrived as a `.zip` or a `.cbz`. */
   archive?: string
   /**
-   * Made by hand rather than by an archive, and so kept when it is emptied: it
-   * was made empty in the first place. Held rather than read off a missing
-   * `archive`, which the first zip dropped into one fills in.
+   * Made by hand, and so kept when it is emptied. Held rather than read off a
+   * missing `archive`, which the first zip dropped into one fills in.
    */
   manual?: true
 }
@@ -38,8 +28,7 @@ export type GalleryImage = {
 
 /**
  * Same name, size and mtime, in the same folder: the same file dropped twice.
- * Scoped by folder because two chapters both hold a `001.png`, and those are two
- * pages rather than one.
+ * Scoped by folder, because two chapters both hold a `001.png`.
  */
 export function fingerprint(file: File, folder = '') {
   return `${folder}:${file.name}:${file.size}:${file.lastModified}`
@@ -54,10 +43,7 @@ export function isImage(file: File) {
   return file.type.startsWith('image/')
 }
 
-/**
- * A file wrapped in a gallery entry, once the browser has decoded it far enough
- * to know its size. One it cannot decode resolves to null, its URL released.
- */
+/** A file as a gallery entry, or null where the browser cannot decode it. */
 export function loadImage(file: File, folder?: string): Promise<GalleryImage | null> {
   const url = URL.createObjectURL(file)
 

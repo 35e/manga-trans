@@ -4,16 +4,6 @@ import type { GalleryFolder, GalleryImage } from './images'
 import { stem } from './images'
 import type { Packed } from './zip'
 
-/**
- * A finished chapter, put back into the archive it came out of.
- *
- * Every page goes in, at the best state it reached: lettered where it was
- * translated, cleaned where it was only cleaned, and untouched where it was
- * neither. A chapter with a gap in it is not a chapter — a page that fell over
- * is still a page of the story, and leaving it out renumbers everything after
- * it.
- */
-
 /** How a page ended up, which is what decides what goes into the archive. */
 export type Reached = 'lettered' | 'cleaned' | 'original'
 
@@ -23,12 +13,8 @@ async function bytesOf(blob: Blob): Promise<Uint8Array> {
 }
 
 /**
- * The best version of one page, named for the archive.
- *
- * A page that was drawn on is a PNG, whatever it arrived as, so its name says
- * PNG. A page that was not is passed through exactly as it came — the same bytes
- * under the same name, since re-encoding a JPEG nobody touched would cost
- * quality for nothing.
+ * The best version of one page, named for the archive. Anything drawn on is a
+ * PNG; anything untouched is passed through byte for byte under its own name.
  */
 export async function finished(
   page: GalleryImage,
@@ -75,12 +61,8 @@ function slug(said: string): string {
 }
 
 /**
- * What the finished chapter is called: the archive's own name, said to be this
- * rather than the original, and kept as whatever kind of archive it arrived as.
- *
- * `.cbz` and `.zip` are the same format under two names, and which one a reader
- * picks up can depend on the extension — so a chapter that came in as one goes
- * back out as one.
+ * What the finished chapter is called, kept as whatever kind of archive it
+ * arrived as: which one a reader picks up can depend on the extension.
  */
 export function archiveName(
   folder: GalleryFolder,

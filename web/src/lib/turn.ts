@@ -1,11 +1,6 @@
 /**
- * The arithmetic of a box whose contents are turned.
- *
- * A turned line is drawn rotated about the middle of its box, by the board with
- * a CSS transform and by the canvas with `rotate`. The box itself stays square
- * to the page, so wrapping and fitting measure what they always did; only what
- * sits in it turns. This is what pulling such a box by an edge has to correct
- * for, kept out of the pointer handling, which has enough to do.
+ * The arithmetic of a box whose contents are turned. The box itself stays square
+ * to the page; only what sits in it turns.
  */
 
 import type { Box } from './api'
@@ -16,10 +11,8 @@ function turned(degrees: number) {
 }
 
 /**
- * A drag across the screen, read along the box's own axes.
- *
- * The handles are drawn turned along with what is in the box, so pulling the
- * one on the right has to mean "wider" whichever way that now points.
+ * A drag across the screen, read along the box's own axes: the handles turn with
+ * the box, so pulling the right one means "wider" whichever way it now points.
  */
 export function alongBox(angle: number, dx: number, dy: number) {
   if (!angle) return { dx, dy }
@@ -30,11 +23,9 @@ export function alongBox(angle: number, dx: number, dy: number) {
 /**
  * A pulled box, put back so the edge that was not pulled stays where it looks.
  *
- * Growing a box moves its middle, which is what the turn is about, so the far
- * edge swings away and the box appears to slide as it is stretched. Writing a
- * drawn point as `c + R(p − c)`, the shift that holds the untouched edge still
- * is `(I − R)(c − c′)` — the two middles alone, so one correction serves every
- * handle.
+ * Writing a drawn point as `c + R(p − c)`, the shift that holds the untouched
+ * edge still is `(I − R)(c − c′)` — the two middles alone, so one correction
+ * serves every handle.
  */
 export function anchored(angle: number, was: Box, now: Box): Box {
   if (!angle) return now

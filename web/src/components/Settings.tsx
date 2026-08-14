@@ -13,10 +13,7 @@ type Props = {
   models: string[]
 }
 
-/**
- * Settings, such as they are: what the model is told, and what it is being told
- * it by. Kept in this browser rather than in the API, which stores nothing.
- */
+/** What the model is told, and what by. Kept in this browser, not in the API. */
 export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }: Props) {
   const [draft, setDraft] = useState(prompt ?? fallback ?? '')
 

@@ -11,10 +11,8 @@ type Props = {
 }
 
 /**
- * The whole page as a drawing surface, for a block the detector missed.
- *
- * Laid over the blocks rather than under them: while one is being drawn, a
- * pointer down anywhere means the start of it.
+ * The whole page as a drawing surface, for a block the detector missed. Laid
+ * *over* the blocks: while one is being drawn, a pointer down anywhere starts it.
  */
 export function DrawRegion({ page, onAdd }: Props) {
   const from = useRef<Point | null>(null)

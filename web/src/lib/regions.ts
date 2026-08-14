@@ -1,11 +1,8 @@
 /**
- * Editing the blocks on a page, as transforms on one `Analysis`.
- *
- * `detection.regions`, `texts` and `excluded` are indexed by the same block
- * position, so nothing may insert, move or split a block without carrying all
- * three — which is why every such move lives here. Anything asynchronous must
- * use {@link withReading} instead of an index: the list may have been reordered
- * while the request was in flight.
+ * Editing the blocks on a page. `detection.regions`, `texts` and `excluded` are
+ * indexed by the same position, so nothing may insert, move or split a block
+ * without carrying all three — which is why every such move lives here.
+ * Anything asynchronous uses {@link withReading} instead of an index.
  */
 
 import type { Analysis, Box, Region } from './api'
@@ -74,10 +71,8 @@ export function toggledExcluded(analysis: Analysis, index: number): Analysis {
 }
 
 /**
- * One block that turned out to be two, cut in two. The first half keeps the
- * original's place and text until it has been read again; `added` goes in after
- * it. Two bubbles means two balloons, so whichever one the block as a whole was
- * said to be in was wrong for at least one half.
+ * One block that turned out to be two, cut in two. Both lose their balloon: the
+ * one the whole block was said to be in was wrong for at least one half.
  */
 export function split(
   analysis: Analysis,
@@ -125,11 +120,8 @@ export function withReading(
 }
 
 /**
- * The room each of those blocks is in, by name rather than by position.
- *
- * By name because the list may have moved under the request: blocks that went
- * missing while the answer was in the air are skipped, and blocks that were not
- * asked about are left alone.
+ * The room each of those blocks is in, by name rather than by position: the list
+ * may have moved under the request.
  */
 export function withRooms(
   analysis: Analysis,

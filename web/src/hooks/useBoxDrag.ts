@@ -34,9 +34,8 @@ const TURN_STEP_HELD = 15
 export type BoxDrag = ReturnType<typeof useBoxDrag>
 
 /**
- * Dragging a box about the page and pulling it by its edges, for everything laid
- * over the page: the blocks the detector found, and the lettering set over them.
- * A drag arrives in screen pixels and is handed back in page pixels.
+ * Dragging a box about the page and pulling it by its edges. A drag arrives in
+ * screen pixels and is handed back in page pixels.
  */
 export function useBoxDrag({
   box,
@@ -89,7 +88,7 @@ export function useBoxDrag({
     const width = bx1 - bx0
     const height = by1 - by0
     // Clamping where it lands rather than its edges is what keeps the size:
-    // pushed against the edge of the page it stops, it does not squash.
+    // against the edge of the page it stops rather than squashing.
     const left = Math.min(Math.max(0, bx0 + drag.dx), page.width - width)
     const top = Math.min(Math.max(0, by0 + drag.dy), page.height - height)
     onBox(settle([left, top, left + width, top + height]))
@@ -112,11 +111,8 @@ export function useBoxDrag({
   }
 
   /**
-   * Turn what is in the box: the handle follows the pointer round the middle.
-   *
-   * The middle is read off the element every time rather than kept from where
-   * the drag began, which it can be because turning about the middle is the one
-   * thing that cannot move it.
+   * Turn what is in the box. The middle is read off the element every time,
+   * which it can be: turning about the middle is the one thing that cannot move it.
    */
   const spin = (event: React.PointerEvent<HTMLElement>) => {
     if (!onAngle || !from.current) return
@@ -143,8 +139,7 @@ export function useBoxDrag({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
-    // Only a drag that went somewhere is worth telling anyone about: a click
-    // lands here too, having moved nothing.
+    // A click lands here too, having moved nothing.
     if (start && dragged.current) onSettled?.(start.box)
   }
 

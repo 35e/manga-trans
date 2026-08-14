@@ -14,12 +14,7 @@ type Props = {
   onRemoveFolder: (id: string) => void
 }
 
-/**
- * The rail: every page dropped in, small, the one on the board picked out.
- *
- * An archive is a folder here rather than fifty more thumbnails, and the pages
- * inside one are only shown once it has been opened.
- */
+/** The rail: every page dropped in, small, the one on the board picked out. */
 export function Gallery({
   images,
   folders,
@@ -75,10 +70,8 @@ export function Gallery({
 }
 
 /**
- * One archive, shown as its first page under a stack.
- *
- * A double-click opens it, as a folder anywhere else does — and so does a single
- * click, since a card that ignores one reads as broken and a touch has no double.
+ * One archive, shown as its first page under a stack. A single click opens it as
+ * well as a double: a card that ignores one reads as broken, and touch has no double.
  */
 function Folder({
   folder,
@@ -140,9 +133,8 @@ function Folder({
 }
 
 /**
- * One page in the rail. The picture sits in a box of its own inside the card's
- * border rather than against it, or a page of the wrong shape rides over the
- * rounded corners; the two radii are concentric so the corner reads as one curve.
+ * One page in the rail. The picture sits in a box inside the card's border, and
+ * the two radii are concentric so the corner reads as one curve.
  */
 function Thumb({
   image,

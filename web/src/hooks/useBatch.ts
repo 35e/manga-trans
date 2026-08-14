@@ -23,24 +23,17 @@ export type BatchRun = {
 }
 
 /**
- * A whole folder run one page at a time.
+ * A whole folder run one page at a time, so the page in hand is the page named.
  *
- * One at a time and not all at once: the API holds one detector and one reader
- * behind a lock each, so pages sent together queue there anyway — and queued
- * there they arrive in no particular order, which leaves a progress bar with
- * nothing true to say. This way the page in hand is always the page named.
- *
- * `step` hands back why a page fell over, or null when it came out. A run is
- * never taken down by one page: a throw is caught and counted like any refusal.
- * It is an argument rather than the hook's, because a folder is run twice — once
- * to read it and once to letter it — and the two want different steps under one
- * card, one Stop and one thing that is true.
+ * `step` hands back why a page fell over, or null when it came out; a run is
+ * never taken down by one page. It is an argument rather than the hook's,
+ * because a folder is run twice and the two want one card and one Stop.
  */
 export function useBatch() {
   const [run, setRun] = useState<BatchRun | null>(null)
 
-  // Whether to carry on is read between pages rather than depended on: a request
-  // already in the air is left to land. Stopping is therefore "after this one".
+  // Read between pages, not depended on: a request already in the air is left
+  // to land, so stopping means "after this one".
   const stopping = useRef(false)
   const going = useRef(false)
 
@@ -51,11 +44,8 @@ export function useBatch() {
       phase: string,
       step: (page: GalleryImage) => Promise<string | null>,
       /**
-       * Work on the whole chapter rather than on any one page, run at the end of
-       * this one. Inside the run rather than after it so there is one card and
-       * one Stop: reading the chapter is part of reading it, not a second job.
-       * It says what it is doing through `say` and gives up the same way a page
-       * does.
+       * Work on the whole chapter rather than any one page, run at the end of
+       * this one and inside it, so there is one card and one Stop.
        */
       after?: (say: (note: string | null) => void) => Promise<string | null>,
     ) => {
@@ -125,9 +115,8 @@ export function useBatch() {
   )
 
   /**
-   * Carry on no further. Also how a run is called off by its folder being deleted
-   * or the gallery emptied — the page in hand is still let land, so the run winds
-   * down the one way rather than being torn out from under itself.
+   * Carry on no further, and how a deleted folder calls its run off. The page in
+   * hand is still let land.
    */
   const stop = useCallback(() => {
     stopping.current = true

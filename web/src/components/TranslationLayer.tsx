@@ -82,10 +82,9 @@ function Line({
   })
   const [x0, y0, x1, y1] = set.box
 
-  // Broken here rather than by the browser: only this knows to leave a hyphen
-  // behind, and the page is drawn from the same call.
-  // Until the face is in there is nothing worth measuring against — the breaks
-  // would be the fallback's, not this font's — so it stays one line until then.
+  // Broken here rather than by the browser, from the same call the canvas
+  // letterer draws from — and only once the face is in, or the breaks would be
+  // the fallback's.
   const fontIn = useLetteringFont()
   const lines = useMemo(
     () => (fontIn ? linesFor(set.text, x1 - x0, set.size) : [set.text.trim()]),

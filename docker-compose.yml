@@ -1,31 +1,19 @@
-# The whole thing: the API with its models baked in, and the dashboard served
-# beside it on one origin.
-#
-#   podman compose up --build      (docker compose takes the same)
-#   http://localhost:8080
-#
-# Nothing here reaches the network once built. Translation is the one exception,
-# and it does not go out either: Ollama runs on your own machine.
+# The whole thing on one origin: podman compose up --build, localhost:8080.
 
 services:
   api:
     build:
       context: ./api
-      # --build-arg PREFETCH_MODEL=false leaves the weights to be fetched on
-      # first use instead of baked in. Faster to build, and no longer offline.
       args:
         PREFETCH_MODEL: "true"
-    # Published so the API can be curled directly. The dashboard does not use
-    # this — it goes through nginx on the same origin as itself.
+    # Published so the API can be curled directly; the dashboard goes through
+    # nginx on the same origin as itself.
     ports:
       - "8000:8000"
     environment:
-      # Same-origin through nginx, so no browser ever calls this across origins.
-      # Left open all the same for anything curling port 8000 above.
+      # Left open for anything curling port 8000 above.
       MANGA_TRANS_ORIGIN: "*"
-    # Ollama runs on the machine, not in here. Podman answers
-    # host.containers.internal by itself; Docker needs telling, and
-    # `ollama.answering()` tries both names in turn so either one works.
+    # Docker needs telling; Podman answers host.containers.internal by itself.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     init: true

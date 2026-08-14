@@ -9,8 +9,7 @@ type Props = {
   /** Translate the page over again, against the blocks as they stand now. */
   onTranslate: () => void
   canTranslate: boolean
-  /** Whether there is anything set on the page yet: until there is, the button
-   * on the header is the one that translates, and a second would only confuse. */
+  /** Whether there is anything set on the page yet. */
   lettered: boolean
   note: string | null
 }

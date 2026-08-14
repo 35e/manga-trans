@@ -27,9 +27,8 @@ export function TranslationsPanel({
   const list = useRef<HTMLUListElement>(null)
   const set = lettering.filter(Boolean).length
 
-  // Where the cursor was left, which is where a split would be made. Kept after
-  // the box loses focus on purpose: pressing Split takes the focus away, and a
-  // cursor forgotten at that moment is a button that can never be pressed.
+  // Kept after the box loses focus on purpose: pressing Split takes the focus
+  // away, and a cursor forgotten then is a button that can never be pressed.
   const [caret, setCaret] = useState<{ line: number; at: number } | null>(null)
 
   useEffect(() => {

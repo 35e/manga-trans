@@ -1,12 +1,6 @@
 import type { ReactNode } from 'react'
 
-/**
- * The handful of controls the whole app is built from.
- *
- * They are here so that a button in the mask toolbar and a button in the header
- * are the same button — the interface has one of each thing, not one per place
- * it happens to appear.
- */
+/** The handful of controls the whole app is built from. */
 
 export const FOCUS =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
@@ -15,8 +9,7 @@ type Variant = 'primary' | 'outline' | 'ghost' | 'danger'
 type Size = 'sm' | 'md'
 
 // Every variant carries a border, transparent where it is not drawn: without it
-// the outlined one is two pixels taller than the rest and a row of buttons does
-// not line up.
+// the outlined one is two pixels taller and a row of buttons does not line up.
 const VARIANTS: Record<Variant, string> = {
   primary: 'border border-transparent bg-accent text-white hover:bg-accent-lit',
   outline: 'border border-line text-muted hover:border-line hover:bg-raised hover:text-ink',
@@ -76,10 +69,7 @@ export type Choice<T extends string> = {
   title?: string
 }
 
-/**
- * One of a few, shown as a row of pills. Used for every either-or in the app:
- * draw or erase, art or white, the page as it came in or as it was cleaned.
- */
+/** One of a few, shown as a row of pills. */
 export function Segmented<T extends string>({
   value,
   onChange,

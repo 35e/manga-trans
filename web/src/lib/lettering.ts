@@ -1,8 +1,6 @@
 /**
- * The translated lines on a page, as transforms on one `(Lettering | null)[]`.
- *
- * Held one per block and in step with `analysis.detection.regions`, so anything
- * that moves a block moves these with it — see `lib/regions.ts`.
+ * The translated lines on a page, held one per block and in step with
+ * `analysis.detection.regions` — see `lib/regions.ts`.
  */
 
 import type { Analysis, Box, Lettering, Region } from './api'
@@ -14,9 +12,6 @@ export type Lines = (Lettering | null)[]
 /**
  * Where a translation of this block goes: the balloon it was written in, and the
  * block itself when none was found.
- *
- * Japanese runs down the page, so `box` is a column forty pixels across and
- * English set in it wraps to about a letter a line.
  */
 export function roomFor(region: Pick<Region, 'box' | 'bubble'>): Box {
   return region.bubble ?? region.box
@@ -43,22 +38,13 @@ export function sizeFor(
 
 /**
  * Below this a budget is not worth sending: two or three words is not a length a
- * line can be written to, it is a length that comes out as a telegram. A block
- * whose room measures this small has no balloon to letter into — `roomFor` fell
- * back to the column the Japanese was set in — and it is going to be set smaller
- * whatever comes back, which is the honest answer there and not the model's to
- * give.
+ * line can be written to, it is one that comes out as a telegram.
  */
 const BUDGET_MIN = 12
 
 /**
  * About how many characters a translation of this block has room for, at the
  * size the rest of the page is lettered at, or 0 for "not worth saying".
- *
- * The same two measurements {@link sizeFor} works from, asked in the other
- * direction: not "how small must this be set to fit" but "how long may it be
- * before it has to be". Worth asking before the line is written rather than
- * after, since afterwards the only answer left is to set it smaller.
  */
 export function budgetFor(
   region: Pick<Region, 'box' | 'bubble'>,
@@ -75,11 +61,7 @@ export function budgetFor(
   return fits < BUDGET_MIN ? 0 : fits
 }
 
-/**
- * That size for the block at `index`, read off the page's own analysis, or null
- * where there is no such block — which leaves the line exactly as it was rather
- * than resizing it against nothing.
- */
+/** That size for the block at `index`, or null where there is no such block. */
 function sizeAt(
   analysis: Analysis,
   index: number,
@@ -130,11 +112,8 @@ export function laidOut(
 
 
 /**
- * One line cut in two, in step with the block being cut.
- *
- * Both halves are held to the size of the block *before* the cut: the page is
- * lettered at one size, and half a block holds half the characters in half the
- * room, which says nothing new about it.
+ * One line cut in two, in step with the block being cut. Both halves are held to
+ * the size of the block *before* the cut.
  */
 export function split(
   lines: Lines,

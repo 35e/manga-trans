@@ -44,11 +44,7 @@ class Box:
         return Box(self.x0 - by, self.y0 - by, self.x1 + by, self.y1 + by)
 
     def covers(self, other: Box) -> float:
-        """How much of the smaller of the two boxes lies inside the other, 0 to 1.
-
-        Not the usual intersection over union, which reads low for a small box
-        wholly inside a large one — and that is exactly the pair worth catching.
-        """
+        """How much of the smaller of the two boxes lies inside the other, 0 to 1."""
         wide = min(self.x1, other.x1) - max(self.x0, other.x0)
         tall = min(self.y1, other.y1) - max(self.y0, other.y0)
         smaller = min(self.w * self.h, other.w * other.h)

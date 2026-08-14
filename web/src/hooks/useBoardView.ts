@@ -18,11 +18,7 @@ const STEP = 1.25
 /** Breathing room left around the page, in screen pixels. */
 const PAD = 28
 
-/**
- * What the bar floating at the foot of the board takes up. Kept out of the room
- * the page is fitted and centred in, so the bar never lies over the page it is
- * there to work on.
- */
+/** What the floating bar takes up, kept out of the room the page is fitted in. */
 const BAR = 56
 
 /** Past this the page is drawn pixel for pixel, which is the point of going in. */
@@ -36,8 +32,7 @@ type Size = { width: number; height: number }
 export type BoardView = {
   /** The size the page is drawn at, or null when there is no page. */
   page: Size | null
-  /** The mat the page is laid on: the board's own box, or the page and its
-   *  margins when those are the larger — which is what makes it scroll. */
+  /** The mat the page is laid on, which is what makes the board scroll. */
   content: Size
   /** Where on the mat the page's top left corner goes. */
   origin: { x: number; y: number }
@@ -59,19 +54,15 @@ export type BoardView = {
 
 /**
  * The page on the board: how large it is drawn, and how it is moved about.
- *
- * `surface` is a scroll box, so panning is the browser's own. What is added here
- * is the zoom, and the arithmetic that keeps whatever was under the pointer
- * under it afterwards. The page sits centred on a mat of `content` size, which
- * is what gives it margins at any zoom.
+ * `surface` is a scroll box, so panning is the browser's own; what is added here
+ * is the zoom, and the arithmetic that keeps the point under the pointer still.
  */
 export function useBoardView(
   surface: React.RefObject<HTMLDivElement | null>,
   image: GalleryImage | null,
 ): BoardView {
   const [box, setBox] = useState<Size>({ width: 0, height: 0 })
-  // Null while the page is following the board's size rather than being held at
-  // a zoom of its own, which is what "fitted" means.
+  // Null while the page follows the board's size, which is what "fitted" means.
   const [zoom, setZoom] = useState<number | null>(null)
   const [panning, setPanning] = useState(false)
 
@@ -81,20 +72,19 @@ export function useBoardView(
   useEffect(() => {
     const element = surface.current
     if (!element) return
-    // ResizeObserver reports the box once on observe, so there is no separate
-    // first measurement — and none taken a different way.
+    // ResizeObserver reports the box once on observe, so no separate first
+    // measurement is needed — and none taken a different way.
     const observer = new ResizeObserver(([entry]) => setBox(entry.contentRect))
     observer.observe(element)
     return () => observer.disconnect()
   }, [surface])
 
-  // A different page arrives at its fitted size, whatever the last one was left
-  // at: the zoom belonged to that page, not to the board.
+  // The zoom belonged to that page, not to the board.
   const id = image?.id
   useEffect(() => setZoom(null), [id])
 
-  // Nothing is drawn until the board has been measured: laying the page out
-  // against a board of no size would put it up at full size for a frame first.
+  // Nothing is drawn until the board has been measured, or the page goes up at
+  // full size for a frame first.
   const measured = box.width > 0 && box.height > 0
   const showing = measured && width > 0 && height > 0
 
@@ -111,11 +101,9 @@ export function useBoardView(
 
   const scale = zoom ?? fitScale
 
-  // Held by identity as well as by value: what is laid over the page redraws
-  // when this changes, and it must not change on every render for nothing.
-  //
-  // Floored, so a page at its fitted size can never round its way past the
-  // board and put scrollbars up — which would shrink the board, and refit.
+  // Held by identity as well as by value, and **floored**: a page that rounds
+  // its way past the board puts scrollbars up, which shrinks the board and
+  // refits, forever.
   const page = useMemo(
     () =>
       showing
@@ -133,9 +121,8 @@ export function useBoardView(
   )
 
   /**
-   * Where the page sits on the mat: across the middle, and centred in what is
-   * left above the floating bar. Worked out here and nowhere else, because the
-   * zoom keeps a point still by measuring against it.
+   * Where the page sits on the mat. Worked out here and nowhere else, because
+   * the zoom keeps a point still by measuring against it.
    */
   const origin = useMemo(
     () => ({
@@ -151,9 +138,8 @@ export function useBoardView(
   now.current = { scale, origin, page }
 
   /**
-   * What was under the pointer when the zoom began, in the page's own pixels,
-   * with where on the board it was. Applied once the new size has been laid
-   * out, which is what keeps that point still.
+   * What was under the pointer when the zoom began, applied once the new size
+   * has been laid out.
    */
   const anchor = useRef<{ x: number; y: number; left: number; top: number } | null>(
     null,
@@ -181,8 +167,7 @@ export function useBoardView(
 
       if (element && drawn) {
         const rect = element.getBoundingClientRect()
-        // The middle of the board when no point was given: pressing a button is
-        // not aimed at anything, so it goes in on what is already in the middle.
+        // The middle of the board when no point was given.
         const left = (clientX ?? rect.left + rect.width / 2) - rect.left
         const top = (clientY ?? rect.top + rect.height / 2) - rect.top
         anchor.current = {
@@ -197,8 +182,8 @@ export function useBoardView(
     [surface],
   )
 
-  // Ctrl or command with the wheel, which is also what a trackpad pinch arrives
-  // as. A plain wheel is left alone: that is the board scrolling, as it should.
+  // Ctrl or command with the wheel, which is also how a trackpad pinch arrives.
+  // A plain wheel is left alone: that is the board scrolling.
   useEffect(() => {
     const element = surface.current
     if (!element) return
@@ -239,9 +224,8 @@ export function useBoardView(
   }, [])
 
   /**
-   * Panning with the middle button, or with space held. Caught on the way down
-   * rather than on the way up, so that a pan over the page never reaches the
-   * brush or a block and starts drawing one instead.
+   * Panning with the middle button, or with space held. Caught in the **capture**
+   * phase, so a pan over the page never reaches the brush and starts drawing.
    */
   useEffect(() => {
     const element = surface.current

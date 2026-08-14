@@ -2,9 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-`README.md` documents every endpoint, its form fields and its behaviour, plus the
-full environment-variable table. Read it before changing anything in the API's
-surface — it is kept accurate and should stay that way.
+It holds only what must not be broken. **`DOCS.md` is the reasoning under it** —
+how each module works, what was tried instead, and the measurements behind the
+thresholds. `README.md` documents every endpoint, its form fields and its
+behaviour, plus the environment-variable table; read it before changing anything
+in the API's surface, and keep it accurate.
 
 ## Commands
 
@@ -53,586 +55,307 @@ anywhere — every request carries the page it works on, and the browser is the
 only place a page, its blocks, its mask or its translations live.
 
 The API deliberately never renders end-to-end. Detection is imperfect, so
-`/api/detect` (where the text is), `/api/bubbles` (what room it was written in),
-`/api/read` (what it says), `/api/clean` (hide it) and `/api/render` (set new
-text) are separate calls taking boxes back in, which is what lets the dashboard
-show the detection, have it corrected by hand, and only then act on it.
+`/api/detect`, `/api/bubbles`, `/api/read`, `/api/clean` and `/api/render` are
+separate calls taking boxes back in, which is what lets the dashboard show the
+detection, have it corrected by hand, and only then act on it.
+
+`DOCS.md` has the module map for both halves. In brief: `api/mangatrans/server.py`
+is the whole HTTP surface and the rest are libraries it composes; `web/src/App.tsx`
+owns the state and the orchestration, and every edit to a page goes through
+`web/src/lib/`.
 
 Under `docker-compose.yml` the two are served on **one origin**: nginx hands out
 the built dashboard and proxies `/api` through to the API container, so
-`VITE_API_URL` builds as `''` and no browser ever makes a cross-origin call.
-`MANGA_TRANS_ORIGIN` and the CORS headers still exist for anything talking to
-port 8000 directly. Keep `lib/api.ts`'s fallback (`?? 'http://localhost:8000'`)
-nullish-coalescing rather than `||`, or the empty base collapses back to the
-absolute one and same-origin stops working. nginx needs `client_max_body_size`
-raised past its 1 MB default, and its proxy timeouts raised past 60 s: a page and
-its mask together run to tens of megabytes, and reading one takes seconds.
+`VITE_API_URL` builds as `''`. Keep `lib/api.ts`'s fallback
+(`?? 'http://localhost:8000'`) nullish-coalescing rather than `||`, or the empty
+base collapses back to the absolute one and same-origin stops working.
 
-**nginx must re-resolve the API, and that is why its config is a template.**
-Written `proxy_pass http://api:8000`, nginx looks the name up once as it loads
-and keeps that address for the life of the process. The API container gets a new
-address every time it is recreated — a crash, a `compose up`, a restart — so from
-then on nginx holds a dead one and answers **everything** with 502, long after
-the API is back and healthy; measured, 10.89.0.4 to 10.89.0.183 across one
-restart, and every call 502 until nginx itself was restarted. A name held in a
-variable (`set $upstream`) is looked up per request instead, which needs a
-`resolver`, which is why `default.conf.template` goes to `/etc/nginx/templates/`
-and the image's entrypoint fills `${NGINX_LOCAL_RESOLVERS}` in from the
-container's own `/etc/resolv.conf`. That entrypoint script returns early unless
-`NGINX_ENTRYPOINT_LOCAL_RESOLVERS` is set, and `NGINX_ENVSUBST_FILTER` keeps
-envsubst off nginx's own `$host` and `$remote_addr`. A `proxy_pass` with a
-variable in it does not pass the path on by itself, hence the explicit
-`$request_uri`. Do not "simplify" this back to a plain hostname.
-
-### API (`api/mangatrans/`)
-
-`server.py` is the whole HTTP surface; the rest are libraries it composes.
-Models load lazily behind a lock on first use and are shared thereafter — an API
-only ever asked to detect never stands the OCR reader (and torch) up at all.
-`Regions`, `Letters`, `Reader` and `Lama` each hold their own lock because
-neither an OpenCV net, an onnxruntime session nor torch generation is reentrant.
-
-**`Regions.run` and `Letters.run` each keep the last page's pass** behind that
-same lock. The ink pass is ~2.5 s and everything downstream of it is under a
-millisecond, so the dashboard's ordinary flow — `/api/detect` then
-`/api/letters`, then `/api/letters` again on every change of spread — is one pass
-of each rather than several. Keep any new work that needs the segmentation on
-this path rather than adding a pass.
-
-- `detect.py` — two models, for two different questions.
-  `Regions` is comic-text-and-bubble-detector, an RT-DETRv2 on onnxruntime:
-  one pass, three classes (`bubble`, `text_bubble`, `text_free`), ~0.2 s. Its
-  export carries RT-DETR's own postprocessing, so it answers with `labels`,
-  `boxes` and `scores` — already corner-to-corner and already in the page's
-  pixels — rather than logits to threshold. The two text classes are kept apart
-  as `Block.kind` (`speech`/`free`, `detect.KINDS`) and carried all the way to
-  the translator; everything else on the page treats them alike. It takes `orig_target_sizes` as
-  **(width, height)**; the other way round returns the same balloons transposed.
-  `Letters` is comic-text-detector, kept for its segmentation head *alone* — the
-  per-pixel ink map behind `/api/letters`, which is what lets a clean take the
-  words off the art. Its block head is not used.
-- `split.py` — **not in the pipeline.** Kept, with its tests, until real chapters
-  confirm the region detector never runs two balloons together; see its docstring.
-- `bubble.py` — the room inside the balloon a block was written in, as the
-  largest rectangle in it *around that block*. Pure OpenCV on the greyscale page,
-  no model of its own: threshold inside the balloon the detector found, paint the
-  block in (or vertical Japanese cuts the ground in two), fill the holes, erode a
-  margin, then search out from the block on a 128-pixel grid (`holding`). `None`
-  is a real answer. `rooms()` then cuts one balloon into a cell per block where
-  several blocks share it. `/api/detect` includes it because it is nearly free
-  there.
-- `languages.py` — the one table of what a page can be written in: which reader
-  reads it, which way round it is read, whether its script stacks into columns
-  and whether its words are spaced. Both ends look languages up here, the
-  dashboard through `/api/languages` rather than by holding a copy.
-- `read.py` — manga-ocr for Japanese, PP-OCR (RapidOCR on onnxruntime) for
-  everything else, behind one `Reader` that stands up only the language it is
-  asked for. **The only thing that imports torch, and it does so inside
-  `Reader.load()`.** Keep that import deferred, keep `rapidocr` deferred the same
-  way inside `Ppocr.load()`, and keep both out of every other module.
-- `ollama.py` — the whole page goes over in one request, held to a JSON schema;
-  a miscounted page is shown its answer and asked again, and only a second
-  miscount falls back to one line at a time. Each line carries what it is and how
-  much room it has (`Line`), and the answer comes back as a `Translation` — the
-  lines, the terms, and where the chapter has got to. Prompts are never stored:
-  callers send `system` each time, and the chapter's settled terms and story the
-  same way, as `glossary` and `previously`. `survey` is the other half: a
-  windowful of a chapter's raw lettering read *before* any of it is translated,
-  answering with a `Chapter` — a synopsis, how it is written, a beat per page, and
-  the cast and terms in the shapes a page's own answer uses. That comes back in on
-  every page as `chapter`.
-- `inpaint.py` / `render.py` — hiding and lettering. `render.marked()` turns
-  boxes + mask into one greyscale page (white hidden), `render.hidden()` picks
-  fill.
-- `geometry.py` — `Box`, x1/y1 exclusive, corners normalised on construction.
-
-### Web (`web/src/`)
-
-`App.tsx` owns the state and the async orchestration, keyed by page id:
-`analyses` and `lettering` live there, masks, cleaned pages and traced bitmaps
-come from hooks. It holds no logic of its own — every edit to a page goes
-through `lib/`.
-
-- `lib/regions.ts` / `lib/lettering.ts` — **all** the per-block editing, as pure
-  transforms on one `Analysis` / one `Lines`. Add a block operation here, not in
-  a component.
-- `lib/story.ts` — every rule about which of two answers about a chapter's cast
-  wins. In `lib/` rather than in `useStory` for the same reason the block edits
-  are: it is the whole of what decides whether a chapter's facts are right.
-- `lib/bible.ts` — the same, for what a survey made of a chapter: how one
-  window's answer is folded into the running one, and `fits`, which is whether the
-  beats still line up with the folder they were read from.
-- `lib/fit.ts` (measuring and wrapping), `lib/order.ts` (reading order),
-  `lib/mask.ts` (the brushed mask), `lib/compose.ts` (the canvas letterer),
-  `lib/zip.ts` (a chapter in and back out), `lib/chapter.ts` (which version of a
-  page goes into the archive, and what the archive is called),
-  `lib/api.ts` (the client, and every shared type).
-- `components/Board.tsx` draws the page and switches tools by `mode`; the tool
-  rows are `InspectTools`, `MaskTools` and `TranslateTools`, and the overlays
-  over it are `RegionsLayer`, `DrawRegion`, `MaskCanvas`, `TranslationLayer` and
-  `ViewBar`, one per thing that can be done to a page.
-- `components/Sidebar.tsx` is the rail: it owns which folder is open, and holds
-  `Gallery` (folder cards, then pages), the folder's own bar and
-  `BatchProgress`.
-- `components/icons.tsx` holds every line icon; `components/ui.tsx` every
-  control.
-- Hooks own one concern each: `useImageLibrary`, `useBatch`, `useMasks`,
-  `useLetterMasks`, `useObjectUrls`, `useOllama`, `usePrompt`, `useLanguage`,
-  `useGlossary`, `useStory`, `useChapter`, `useBoardView`, `useBoardKeys`,
-  `useBoxDrag`, `useFileDrop`, `useLetteringFont`.
+**nginx must re-resolve the API per request, and that is why its config is a
+template.** A plain `proxy_pass http://api:8000` is looked up once at load, so
+after the API container is recreated nginx holds a dead address and 502s
+everything. Do not "simplify" `set $upstream` / `$request_uri` /
+`${NGINX_LOCAL_RESOLVERS}` back to a plain hostname.
 
 ## Invariants worth knowing before editing
 
 **Per-page arrays are positionally aligned.** `analysis.detection.regions`,
 `analysis.texts`, `analysis.excluded` (indices) and `lettering[pageId]` are all
-indexed by the same block position. Anything that inserts, moves or splits a
-block must carry every one of them plus `selected`. Do not write that by hand:
-`lib/regions.ts` and `lib/lettering.ts` are the only places that edit these, and
-they are paired — `blocks.inserted` goes with `lines.inserted`, `blocks.moved`
-with `lines.moved`, `blocks.split` with `lines.split`. Anything **asynchronous**
-must instead re-find its block by `region.id` when the answer comes back
-(`blocks.withReading`), because the list may have been reordered while the
-request was in flight.
+indexed by the same block position. `lib/regions.ts` and `lib/lettering.ts` are
+the only places that edit these, and they are paired — `blocks.inserted` with
+`lines.inserted`, `blocks.moved` with `lines.moved`, `blocks.split` with
+`lines.split`. Anything **asynchronous** must re-find its block by `region.id`
+(`blocks.withReading`), because the list may have been reordered in flight.
 
-**A block is not where the translation goes.** `region.box` is where the
-Japanese is; `region.bubble` is the room it was written in, and lettering uses
+**A block is not where the translation goes.** `region.box` is where the Japanese
+is; `region.bubble` is the room it was written in, and lettering uses
 `bubble ?? box` (`lines.roomFor`). Anything that changes a box by hand must drop
-the bubble with it — a stale one letters into the balloon the block came from —
-and ask `/api/bubbles` again if it is going to the API anyway. `blocks.withBox`
-already does the dropping. Size is capped at `originalSize` (`lib/fit.ts`): a
-balloon is drawn around its words, so filling one sets a short line four times
-too large.
+the bubble with it and ask `/api/bubbles` again — `blocks.withBox` does the
+dropping. Size is capped at `originalSize` (`lib/fit.ts`).
 
 **Reading order is defined twice and must agree.** Down the page, then across it
 the way the language is read — `(y0, -x1)` right to left, `(y0, x0)` left to
-right — in `detect.py` (`blocks.sort`, from `Detector.__call__`'s `rtl`) and in
-`lib/order.ts` (`key`, from the same flag). Both take it from
-`languages.Language.rtl`, the API directly and the dashboard through
-`useLanguage`. A hand-drawn block is inserted where that rule puts it, not
-appended, because the order is also the order the page is translated in as one
-conversation.
+right — in `detect.py` (`blocks.sort`) and in `lib/order.ts` (`key`), both from
+`languages.Language.rtl`. A hand-drawn block is inserted where that rule puts it,
+not appended: the order is also the order the page is translated in.
 
 **The language decides three things and nothing else.** Which reader stands up;
 which way the blocks are sorted; and what `/api/translate` is told the page is in
-(`source`, a word rather than a code — a caller may be translating something
-there is no reader for). Detection, the segmentation mask, the balloon-finding
-and the splitting are all language-blind and must stay that way: the detector was
-trained on comics rather than on a script, and `split.py` measures in characters,
-which holds for lines running down a page and across it alike.
+(`source`, a word rather than a code). Detection, the segmentation mask, the
+balloon-finding and the splitting are all language-blind and must stay that way.
 
-**PP-OCR reads across a page and nothing else**, so `read.pieces` takes a
-balloon apart before it goes over — into lines, or into columns each set out as a
-line by `read.unstacked`. Which way the lettering runs is measured off the ink of
-the block (`read.upright`, the shape of what was set) rather than taken from the
-language: a page of Korean carries a sound effect written down the side of it
-just as a page of Japanese does. The gaps look like the better signal — line
-spacing against character spacing — and are not: CJK is set solid both ways and
-the air between two columns is the letterer's taste. `read.inked` decides ink
-from ground at the *edge* of the crop rather than by taking the rarer of the two,
-which gets a heavy sound effect exactly backwards.
+**PP-OCR reads across a page and nothing else**, so `read.pieces` takes a balloon
+apart before it goes over. Which way the lettering runs is measured off the ink
+(`read.upright`) rather than taken from the language, and `read.inked` decides ink
+from ground at the *edge* of the crop rather than by taking the rarer of the two.
 
-**`rapidocr` asks for `opencv-python`, the GUI build.** It is the same cv2 as the
-headless one everything here uses, linked against a libGL no server has, and
-being installed second it wins. The Dockerfile drops it and lays the headless
-build back down afterwards; do not "simplify" those three lines into one `pip
-install`.
+**`rapidocr` asks for `opencv-python`, the GUI build**, and installed second it
+wins. The Dockerfile drops it and lays the headless build back down afterwards; do
+not "simplify" those three lines into one `pip install`.
 
-**onnxruntime hunts for a GPU as it loads**, and handed a card whose make it
-cannot read — which is every container on a Mac — says so at warning level, from
-C++, straight to the descriptor. There is no logger to turn down and no env var
-for it: the severity can only be raised from Python once the environment exists,
-by which time the line has been written. So `read.quieted()` catches fd 2 for the
-length of a reader's load and writes back everything that is *not* that line. Not
-a blanket silencer, and it must not become one: a reader that cannot find its
-weights says so the same way, and that has to get out.
+**onnxruntime hunts for a GPU as it loads** and complains from C++ straight to
+fd 2, so `read.quieted()` catches the descriptor for the length of a reader's load
+and writes back everything that is *not* that line. Not a blanket silencer, and it
+must not become one: a reader that cannot find its weights says so the same way.
 
-**Ollama runs on the machine, not in the container, and Docker and Podman
-disagree about what that machine is called** — `host.docker.internal` against
-`host.containers.internal`. Naming either one in the image leaves the other
-unresolvable, which shows up as a page that reads perfectly and then will not
-translate, so `ollama.answering()` tries each in turn and keeps the first that
-answers. Keep the host out of the Dockerfile. A miss is deliberately not
-remembered: Ollama is as often started after the dashboard as before it.
+**Ollama runs on the machine, not in the container, and Docker and Podman disagree
+about what that machine is called.** `ollama.answering()` tries each in turn and
+keeps the first that answers; keep the host out of the Dockerfile. A miss is
+deliberately not remembered.
 
 **There are two independent letterers.** `/api/render` sets text with PIL
-(`render.py`: binary search for the largest fitting size, greedy wrap). The
-dashboard's "Apply to image" sets it with canvas (`lib/compose.ts`), sharing
-`lib/fit.ts` with the on-board preview so what is arranged is what comes out —
-same font, sizes, wrapping and hyphenation. They are not expected to produce
-identical output; `/api/render` is for callers that are not this dashboard.
-`lib/fit.ts` must be awaited via `ready()` before measuring, or it measures the
-fallback font.
+(`render.py`); the dashboard's "Apply to image" sets it with canvas
+(`lib/compose.ts`), sharing `lib/fit.ts` with the on-board preview. They are not
+expected to produce identical output. `lib/fit.ts` must be awaited via `ready()`
+before measuring, or it measures the fallback font.
 
 **Masks.** Greyscale, page-sized, white hidden, greys partial. `server.mask_in`
-believes an alpha channel only when some of it is actually clear, since a
-browser canvas always exports one — do not "simplify" that check. `lib/mask.ts`
-exports white-on-black for exactly this reason.
+believes an alpha channel only when some of it is actually clear, since a browser
+canvas always exports one — do not "simplify" that check. `lib/mask.ts` exports
+white-on-black for exactly this reason.
 
 **A line is sent with what it is and how long it may be, and both are positional
-with `texts`.** `kinds` (`speech`/`free`, straight from `/api/detect`) and
-`budgets` (about how many characters fit where it will be lettered,
-`lettering.budgetFor` off `fit.roomInCharacters`) are the two things a caller has
-and the model cannot see. `ollama.translate` drops empty texts and renumbers what
-is left, so it must carry both along with them — a marker a place out describes
-the wrong line, and nothing downstream can tell. `server.beside` refuses a list
-that is not one per text for the same reason. Both are optional and neither is
-ever enforced: a line over its budget is still lettered, smaller. The notes
-explaining the markers (`KINDS_NOTE`, `BUDGET_NOTE`) are appended by `ollama.told`
-only when the lines actually carry them, and appended there rather than written
-into `SYSTEM_DEFAULT` for the same reason `TERMS_NOTE` is — the prompt is the
-caller's to replace.
+with `texts`.** `kinds` and `budgets` (`lettering.budgetFor`) are the two things a
+caller has and the model cannot see. `ollama.translate` drops empty texts and
+renumbers what is left, so it must carry both along with them. `server.beside`
+refuses a list that is not one per text for the same reason. Both are optional and
+neither is ever enforced. `KINDS_NOTE` and `BUDGET_NOTE` are appended by
+`ollama.told` only when the lines carry them, for the same reason `TERMS_NOTE` is:
+the prompt is the caller's to replace.
 
 **`KINDS_NOTE` has to insist on an answer for every line.** A model told a line is
-a sound effect is a model that may decide it needs no translating and answer for
-the other nineteen, which is the one failure the whole schema exists to prevent.
+a sound effect may decide it needs no translating and answer for the other
+nineteen, which is the one failure the whole schema exists to prevent.
 
 **The context window is asked for, not taken** (`ollama.CONTEXT`). Ollama's default
-is 4096 tokens and it truncates what it is handed silently, front first — the
-briefing and the glossary. The symptom is a page that comes back miscounted, which
-looks like a bad model rather than a full window.
+is 4096 tokens and it truncates silently, front first — the briefing and the
+glossary. The symptom is a page that comes back miscounted.
 
-**A miscounted page is asked again before it is taken apart.** The one-line-at-a-time
-pass cannot miscount and is the worst translation this produces: every line loses
-the page it was to be read against. `ollama.corrected` puts the model's own reply
-back in front of it with the counts, since the count is the one thing it cannot see
-from the request. Terms are kept from whichever answer named any (`terms or
-noted(again)`) — being asked for a count again is not being asked for names.
+**A miscounted page is asked again before it is taken apart.** `ollama.corrected`
+puts the model's own reply back in front of it with the counts. The
+one-line-at-a-time pass cannot miscount and is the worst translation this
+produces. Terms are kept from whichever answer named any (`terms or noted(again)`).
 
 **A chapter is read before it is translated, and that is what makes page three
-translatable.** The glossary and the story are both built *forwards*, so page
-three is translated with no idea what page forty reveals — and in manga that is
-precisely where the pronouns, the honorifics and the name reveals are settled.
-`/api/survey` sweeps the whole chapter's already-read Japanese first, a window of
+translatable.** `/api/survey` sweeps the whole chapter's already-read text first,
 `SURVEY_PAGES` at a time with the running answer handed back in, and only then is
-anything translated. The early windows not having read the end does not matter:
-nothing is lettered until all of it has been read.
+anything translated.
 
 **A model shown the ending writes towards it, and `ollama.CHAPTER_NOTE` is the
-whole of what stops it.** Page three otherwise comes back heavy with a
-significance it has not earned, a line left vague comes back settled, and people
-address each other as what they will turn out to be — which is worse than not
-having read the chapter, being wrong in a way that reads as deliberate. The note
-draws one line: use the chapter for who someone *is*, which is a pronoun and a
-form of address and is the entire reason it was read, and not for what *happens*,
-which is the reader's to reach. It is appended by `told` only where a chapter is
-actually given, the same rule `KINDS_NOTE` follows. `ollama.placed` says how far
-the reader has got **under the page** rather than in the briefing, which is the
-same measured finding `ollama.asking` rests on.
+whole of what stops it.** The note draws one line: use the chapter for who someone
+*is*, not for what *happens*. It is appended by `told` only where a chapter is
+given, and `ollama.placed` says how far the reader has got **under the page**
+rather than in the briefing.
 
 **The beats are indexed by a page's place in its folder.** One line per page,
 positional — so `App.placeOf` and the list a folder run works through must agree,
-and `lib/bible.fits` refuses a bible whose beat count no longer matches the
-folder. A page added or deleted since the sweep leaves every beat after it
-describing the wrong page, silently; there the honest thing is to translate
-against no chapter at all, which is what `translatePage` does and what the rail
-says. The API keeps a count contract on the way in for the same reason
-(`ollama.beaten`): a window that miscounts twice hands back **no** beats rather
-than beats a page out.
+and `lib/bible.fits` refuses a bible whose beat count no longer matches. Where it
+does not fit, translate against no chapter at all. The API keeps a count contract
+on the way in for the same reason (`ollama.beaten`): a window that miscounts twice
+hands back **no** beats rather than beats a page out.
 
 **A survey's terms are seeded once, at the end of the sweep — never window by
 window.** `useGlossary` keeps the first rendering of a term and never moves it, so
 folding each window in as it arrived would freeze the readings of the windows that
-had not yet read the ending, which is the one thing the sweep was for. Inside
-`lib/bible.folded` the rule is the opposite way round and last wins: nothing has
-been translated yet, so there is no page to stay consistent with and a window that
-has read further genuinely knows better.
+had not yet read the ending. Inside `lib/bible.folded` the rule is the opposite way
+round and last wins.
 
 **A chapter carries three things, and they are kept three different ways round.**
-The bible is *replaced* per window and the **last** window wins, being the one
-that has read the chapter. And then the two that ride page to page: the
-glossary accumulates and the **first** rendering of a term wins (`useGlossary`);
-the story's `scene` is **replaced** and the **last** page wins (`useStory`, via
-`lib/story.ts`). Consistency is what a name wants and a story is the thing that
-moves — and replacing rather than appending is what stops it growing with the
-chapter, so the model is handed the last one and asked to write it again with the
-new page in it (`STORY_NOTE`). Everything is capped on the way in and out
-(`SCENE_LIMIT`, `CAST_LIMIT`, `NOTE_LIMIT`, `GLOSSARY_LIMIT`, and for the bible
-`SYNOPSIS_LIMIT`, `REGISTER_LIMIT`, `BEAT_LIMIT`, `BEATS_LIMIT`): they ride on
-*every* page of a folder run, which is also why `CONTEXT` went from 8192 to 12288
-when the survey went in. An empty answer leaves what was held — a model that said
-nothing is not news that nothing happened.
+The bible is *replaced* per window and the **last** window wins. The glossary
+accumulates and the **first** rendering of a term wins (`useGlossary`). The story's
+`scene` is **replaced** and the **last** page wins (`useStory`, via `lib/story.ts`).
+Everything is capped on the way in and out (`SCENE_LIMIT`, `CAST_LIMIT`,
+`NOTE_LIMIT`, `GLOSSARY_LIMIT`, `SYNOPSIS_LIMIT`, `REGISTER_LIMIT`, `BEAT_LIMIT`,
+`BEATS_LIMIT`): it all rides on *every* page of a folder run. An empty answer
+leaves what was held.
 
-**A survey's cast is seeded unsettled, and that is deliberate.** `settled` means
-"set by hand", which is what `described` tells the model, so the sweep must not
-claim it: a page that shows otherwise can still correct what the survey worked
-out, the survey having read text with no pictures. Hand corrections stay
-immovable through both runs, which is what the gap between the two buttons is for.
+**A survey's cast is seeded unsettled.** `settled` means "set by hand", which is
+what `described` tells the model, so the sweep must not claim it. Hand corrections
+stay immovable through both runs.
 
 **`unknown` is a real answer about the cast, and the schema is what makes it
-cheap.** A chapter says who someone is when it is ready to, often pages after the
-first translation needed to know. Asked for prose, a model must pick a pronoun, so
-page one guesses, and the guess is read back as settled fact by every page after
-it. So `gender` is an enum of `male`/`female`/`unknown` and the merge rules
-(`lib/story.ts`) are asymmetric: **`unknown` never overwrites something known**
-(most pages show most characters not at all), any other known value replaces what
-was held (that is a page saying it saw something), and a fact in `settled` is not
-moved by either side. Same shape for `note`: empty never clears.
+cheap.** `gender` is an enum of `male`/`female`/`unknown`, and the merge rules
+(`lib/story.ts`) are asymmetric: **`unknown` never overwrites something known**,
+any other known value replaces what was held, and a fact in `settled` is not moved
+by either side. Same shape for `note`: empty never clears.
 
 **The cast is keyed on the name, so the name has to be the page's own.**
 `STORY_NOTE` asks for `先輩`, not "the senior": an English label drifts between
-pages ("Student", "The student") and every drift is a second person in a cast of
-twelve. `ollama.NOT_A_NAME` drops the placeholder a model reaches for when nobody
-is named — filed under "unknown", an unnamed character collides with the next one
-*and* turns the question below into `Still unknown: 先輩, unknown`.
+pages and every drift is a second person in a cast of twelve. `ollama.NOT_A_NAME`
+drops the placeholder a model reaches for when nobody is named.
 
 **Whoever is still unknown is asked about under the page, not in the briefing**
-(`ollama.asking`). Measured with gemma4:12b: told only in the system message to
-correct what it is given, the model translates 「先輩は僕の兄です」 — *senpai is my
-older brother* — faithfully, and hands the cast straight back with 先輩 still
-unknown. Moved to a line under the page naming who is waiting and what counts as
-evidence, it corrects. Standing instructions read as a description of the job; a
-question under the text reads as being about the text.
+(`ollama.asking`). Measured: standing instructions read as a description of the
+job, where a question under the text reads as being about the text.
 
-**The same line twice on one page is one question** (`ollama.asked_once`). Keyed on
-the words *and* the kind, since a shout over the art and the same word in a balloon
-are not the same thing; answered once and lettered into every block it came from;
-and where those blocks have different room the **tightest** budget is the one sent,
-because the one answer has to fit all of them. Two identical balloons worded
-differently is the commonest way a page reads as though nobody checked it, and
-fewer lines is also less to miscount. For the same reason `repeat_penalty` is 1.0
-against a default of 1.1 — a page repeats itself on purpose — and `num_predict`
-(`PREDICT`) is what bounds the looping that penalty was nominally there to stop.
+**The same line twice on one page is one question** (`ollama.asked_once`), keyed on
+the words *and* the kind, answered once, and lettered into every block it came
+from. Where those blocks have different room the **tightest** budget is sent. For
+the same reason `repeat_penalty` is 1.0 against a default of 1.1 — a page repeats
+itself on purpose — and `num_predict` (`PREDICT`) bounds the looping instead.
 
 **A chapter's glossary rides on the translate call, and the browser keeps it.**
-`terms` comes back beside `texts` and goes out again as `glossary` on the next
-page, so a folder run stays consistent without a second request per page — which
-over forty pages would be forty more. Four things about it are load-bearing:
-`terms` is **not** in `SCHEMA["required"]`, so a page that names nobody cannot
-break the count contract that the rest of the module exists to protect; a
-**miscounted** page still keeps the terms of its spoiled reply, since naming a
-character does not depend on counting lines and the one-at-a-time pass has no page
-left to find one in; the note asking for terms is appended by `ollama.told` rather
-than written into `SYSTEM_DEFAULT`, because the prompt is the caller's to replace
-and the glossary must not stop working when it is; and in `useGlossary` the
-**first** rendering of a term wins and is never overwritten, capped at `LIMIT` —
-consistency is the point, and a later answer is not better for being later.
+Four things about it are load-bearing: `terms` is **not** in `SCHEMA["required"]`,
+so a page that names nobody cannot break the count contract; a **miscounted** page
+still keeps the terms of its spoiled reply; the note asking for terms is appended
+by `ollama.told` rather than written into `SYSTEM_DEFAULT`; and in `useGlossary`
+the **first** rendering of a term wins and is never overwritten, capped at `LIMIT`.
 
 **A folder made by hand outlives its pages.** `useImageLibrary.remove` deletes an
-archive's folder when its last page goes, and must not do that to a `manual` one:
-it was made empty and is meant to be filled. That flag is held rather than read
-off a missing `archive`, because the first zip dropped into such a folder fills
-`archive` in — matched by name, which is also why `makeFolder` refuses a name
-already taken rather than making it unique. Loose pages dropped while a folder is
-open land in it; an archive still makes its own.
+archive's folder when its last page goes, and must not do that to a `manual` one.
+That flag is held rather than read off a missing `archive`, because the first zip
+dropped into such a folder fills `archive` in — matched by name, which is also why
+`makeFolder` refuses a name already taken rather than making it unique.
 
 **A block is marked into a mask by the lettering in it, never by its box.**
-`mask.mark` falls back to stamping the whole rectangle when it is handed no
-tracing, and that fallback is for a tracing that failed — not for the ordinary
-path. So anything marking a block after the mask
-has been seeded goes through `App.markLetters`, which asks for the tracing if it
-is not already held: a spread changed since, or a page whose tracing was dropped
-at the end of a folder run, otherwise leaves a block put back by hand or one
-drawn where the detector missed one cleaning out the whole square that was drawn.
+`mask.mark` falls back to stamping the whole rectangle only for a tracing that
+failed. Anything marking a block after the mask has been seeded goes through
+`App.markLetters`, which asks for the tracing if it is not already held.
 
 **`fill` defaults differ by endpoint**: `art` for `/api/clean`, `white` for
-`/api/render`. `art` is LaMa, `telea` is the same idea without a model, and
-`art` falls back to `telea` when LaMa's weights cannot be loaded — `server.optionally`
-remembers the miss rather than retrying per request, because it is a missing file
-rather than anything that might be there next time. The painter is handed *in* to
-`render.hidden`, the same way the detector and the reader are, so standing it up
-stays the caller's business.
+`/api/render`. `art` falls back to `telea` when LaMa's weights cannot be loaded —
+`server.optionally` remembers the miss rather than retrying per request. The
+painter is handed *in* to `render.hidden`.
 
 **A folder run goes one page at a time, and the page in hand is the page named.**
-`useBatch` sends one page through a step and waits. Sending five at once buys
-nothing — `Detector` and `Reader` hold a lock each, so they queue at the API
-regardless — and coming back in no particular order leaves the progress bar with
-nothing true to say. Which is also why board actions are shut while a run is going
-(`Board`'s `runningFolder`): a second page in the air would have the bar naming
-whatever was asked for last.
+`useBatch` sends one page through a step and waits: `Detector` and `Reader` hold a
+lock each, so pages sent together queue at the API regardless and come back in no
+particular order. Board actions are shut while a run is going (`Board`'s
+`runningFolder`) for the same reason.
 
 **A folder is run twice, and the step is an argument rather than the hook's.**
 `App.examine` finds, reads and cleans a page; `App.render` translates and letters
-one. Between them the chapter itself is read, which is why `useBatch.start` also
-takes an `after` — work on the whole chapter rather than on any one page, run
-inside the same run so there is one card, one **Stop** and one thing that is true.
-Two `useBatch` instances would give two of each and `going.current` would not stop
-them overlapping.
-
-Both steps take the page rather than reading the active one, and move the step
-tabs and clear the selection **only** for the page on the board — a run must not
-drag the view about under someone reading another page. Both hand back why they
-gave up rather than only leaving it in the banner (`App.lastFailure`, set by
-`during`), because a run has to say which page that was. Not every empty answer is
-a refusal: `translatePage` also comes back false for a page whose every block was
-left alone, so the reason is what decides, not the boolean.
-
-`render` examines a page nobody has examined yet, so pressing **Translate
-chapter** alone is still the whole of what one button used to be. It takes that
-analysis **from the step that found it** (`App.prepared` hands back the analysis
-as well as the failure) rather than reading it back out of `analysesNow`, which
-the step has only asked React to hold; a page examined by the *previous* run is
-read through `analysesNow`, that run being one this closure never saw.
+one. Between them the chapter is read, which is why `useBatch.start` also takes an
+`after` — run inside the same run so there is one card, one **Stop** and one thing
+that is true. Both steps take the page rather than reading the active one, and move
+the step tabs and clear the selection **only** for the page on the board. Both hand
+back why they gave up (`App.lastFailure`), because a run has to say which page that
+was; not every empty answer is a refusal, so the reason decides rather than the
+boolean. `App.render` takes its analysis **from the step that found it** rather
+than reading it back out of state.
 
 **A tracing is dropped as soon as its clean lands, unless its page is on the
-board.** It is a page-sized `ImageBitmap` worked out from the page and so can be
-had again; fifty pages run through would otherwise hold fifty of them alongside
-fifty masks and fifty cleaned pages. The page being brushed keeps its own, that
-being the one that will want it again.
+board.** Traced masks are cached per `(pageId, spread)` (`useLetterMasks`) and the
+`ImageBitmap`s are explicitly `close()`d on removal; that hook writes its ref
+before its state so a tracing can be marked into a mask the moment it arrives.
 
 **A chapter is packed on the click, not during the run.** `App.downloadFolder`
-draws every page afresh out of `lettering` and `cleanedPages`, which is what lets
-it be pressed after a whole run, after one stopped part way, or an hour later,
-and pressed again — and it means a run itself holds nothing extra. Pages go
-through **one at a time**: each is composed at the page's own resolution, and
-forty of those in flight together is forty page-sized canvases for no gain, since
-the work is the same either way.
+draws every page afresh out of `lettering` and `cleanedPages`, one at a time.
 
 **Every page goes into the archive, at whatever state it reached**
 (`chapter.finished`): lettered, else cleaned, else the original bytes under the
-original name. A page that will not compose falls back to its original rather
-than being skipped — a chapter with a gap in it is not a chapter, and dropping a
-page renumbers every page after it. Anything drawn on is a PNG and says so;
-anything untouched is passed through byte for byte, since re-encoding a JPEG
-nobody touched costs quality for nothing.
+original name. A page that will not compose falls back to its original rather than
+being skipped — dropping a page renumbers every page after it. Anything drawn on is
+a PNG; anything untouched is passed through byte for byte.
 
-**Nothing in the archive is compressed** (`zip.pack`, `level: 0`). Every entry is
-already a PNG or a JPEG: deflating one a second time takes seconds over a chapter
-and gives back about a percent. `pack` also numbers a repeated name rather than
-letting it overwrite — pages are told apart by name *and* size *and* date, so one
-folder really can hold two files called `001.png`, and a record keyed by name
-would silently ship one of them.
+**Nothing in the archive is compressed** (`zip.pack`, `level: 0`). `pack` also
+numbers a repeated name rather than letting it overwrite — pages are told apart by
+name *and* size *and* date, so one folder really can hold two files called
+`001.png`.
 
-**`GalleryFolder.archive` is the only record of what a chapter arrived as.** The
-folder is named after the archive's *stem*, so without it nothing says whether it
-was a `.zip` or a `.cbz`, and `archiveName` could not hand back the kind that came
-in. `folderFor` still matches on the stem, so re-dropping fills the same folder
-and the extension that named it first is the one that sticks.
-
-**A folder is named after its archive, and dedupe is scoped to the folder.**
-Re-dropping an archive fills the same folder rather than making a second one, which
-is what makes `fingerprint(file, folder)` right both ways round: the same zip twice
-is the same five pages, but two chapters each holding a `001.png` hold two pages.
-
-**Traced masks are cached per `(pageId, spread)`** (`useLetterMasks`), and the
-`ImageBitmap`s are explicitly `close()`d on removal — a different `grow`/`spread`
-is a different tracing, not the same one again. That hook writes its ref before
-its state so a tracing can be marked into a mask the moment it arrives.
+**`GalleryFolder.archive` is the only record of what a chapter arrived as**, the
+folder being named after the archive's *stem*. `folderFor` still matches on the
+stem, so re-dropping fills the same folder and the extension that named it first is
+the one that sticks. Dedupe is scoped to the folder (`fingerprint(file, folder)`).
 
 **Dockerfile layer order is load-bearing.** Only `__init__.py`, `geometry.py`,
-`languages.py`, `detect.py`, `read.py` and `inpaint.py` are copied before the
-model prefetch step; editing any of those six invalidates ~810 MB of baked
-weights and forces a re-download on the next build. Everything else is copied
-after. `languages.py` is in that set because `read.ensure_readers` needs it to
-know what to fetch, and `inpaint.py` because it fetches LaMa's — both honest
-enough, since adding a language or a fill is adding weights.
+`languages.py`, `detect.py`, `read.py` and `inpaint.py` are copied before the model
+prefetch step; editing any of those six invalidates ~810 MB of baked weights.
+Everything else is copied after. This is also why `bubble.cropped` lives in
+`bubble.py` rather than on `Box`.
 
-Keep the heavy imports deferred to first use for the same reason they always
-were: `onnxruntime` inside `Regions.__init__` and `Lama.__init__`, torch inside
-`Reader.load()`, `rapidocr` inside `Ppocr.load()`, `huggingface_hub` inside the
-`ensure_*` functions. A top-level import of any of them puts the cost on every
-request, including the ones that never touch that model.
+Keep the heavy imports deferred to first use: `onnxruntime` inside
+`Regions.__init__` and `Lama.__init__`, torch inside `Reader.load()`, `rapidocr`
+inside `Ppocr.load()`, `huggingface_hub` inside the `ensure_*` functions.
 
-**Debian's package index stalls in a container that carries small files fine** —
-a VM on a Mac, most proxies — because it is ~12 MB in one response, and apt
-reports the stall as a mirror failure. `/etc/apt/apt.conf.d/99robust` in the
-Dockerfile sets retries *and* turns HTTP pipelining off; retries alone do not fix
-it, since the retry hits the same stall. `detect.ensure_model` retries its 95 MB
-GitHub download for the same reason, and waits between tries: five attempts in a
-row all land in the same bad few seconds and buy nothing.
+**Debian's package index stalls in a container that carries small files fine**, and
+apt reports the stall as a mirror failure. `/etc/apt/apt.conf.d/99robust` sets
+retries *and* turns HTTP pipelining off; retries alone do not fix it.
+`detect.ensure_model` retries its 95 MB GitHub download for the same reason, and
+waits between tries.
 
-**A merged block is wrong for everything downstream** — it is read as one string,
-translated as one line, and lettered into one balloon. That is what `split.py`
-was for, and what boxing by *region* rather than by lettering now prevents: the
-model is asked where the balloons are at the same time as where the words are, so
-two balloons are two answers. If real pages show it merging after all, the fix
-belongs in the detector or back in `split.py`, not in the dashboard.
+**A merged block is wrong for everything downstream** — read as one string,
+translated as one line, lettered into one balloon. Boxing by *region* rather than
+by lettering is what prevents it. If real pages show it merging after all, the fix
+belongs in the detector or back in `split.py`, not in the dashboard. `split.py` is
+kept, out of the pipeline, until that is settled.
 
 **Order in `Regions.__call__` is load-bearing**: decode, then split the classes,
 then `suppressed`, then pad (`PAD`), then sort. Padding before `suppressed` could
-make two neighbours look like one; sorting before padding is harmless but sorting
-before the classes are split is not, since balloons and blocks are ordered
-separately and only the blocks are read.
+make two neighbours look like one.
 
-**Duplicates still have to be dropped.** RT-DETR matches one query to one object
-and needs no NMS, but it does sometimes put two boxes over the same lettering.
-`detect.suppressed` drops the less sure of any pair covering the same words, and
-runs per class — a balloon and the text filling it cover each other almost
-entirely and are not duplicates of one another.
+**Duplicates still have to be dropped.** RT-DETR needs no NMS but does sometimes put
+two boxes over the same lettering. `detect.suppressed` runs per class — a balloon
+and the text filling it cover each other almost entirely and are not duplicates.
 
-**A room always holds the block it is for.** `bubble.holding` searches out from
-the block rather than for the largest rectangle in the balloon, so an answer is
-the words plus whatever room is around them and never a rectangle somewhere else.
-Without that, the largest rectangle is in the wrong part of the balloon as often
-as the right one: a balloon with a tail, or one drawn round two lines with the
-words in one of them. Everything downstream leans on this — the sharing out below
-only crops, `lines.roomFor` letters into whatever comes back, and there is
-nothing else on the page saying where the words belong.
+**A room always holds the block it is for.** `bubble.holding` searches out from the
+block rather than for the largest rectangle in the balloon. Everything downstream
+leans on this.
 
-**The balloon's own box is not the room.** A balloon is an oval and a line set to
-the corners of its bounding box runs outside the outline, so `bubble.inside`
-thresholds the interior *within* the detected box and measures the largest
-rectangle in that. The block is painted in first (`shrunk`), or a column of
-Japanese down the middle cuts the ground in two and the answer is the gap beside
-the words. Light ground first, then inverted, for a shout set white on black.
+**The balloon's own box is not the room.** `bubble.inside` thresholds the interior
+*within* the detected box. The block is painted in first (`shrunk`), or a column of
+vertical text down the middle cuts the ground in two. Light ground first, then
+inverted, for a shout set white on black.
 
 **Blocks are grouped by the balloon they are in, not by whether their answers
-collide.** That collision test existed because a balloon was flooded out from the
-words and one balloon came back as a different rectangle from each block in it —
-measured, two blocks in one balloon agreed only 0.54. The detector now says which
-balloon is which, so `bubble.assigned` asks the far simpler question: which
-balloon holds this block (`HELD`), smallest first so a shout drawn inside a
-thought wins over the one around it. A block no balloon holds keeps its own box.
-
-Where several blocks share one balloon, `bubble.divided` cuts a cell apiece and
-each answer is cropped to its own. That division **recurses** — cut at the widest
-blank on whichever axis it is widest, then each side again — because blocks set
-two across and two down are not in a row, and one line of cuts gives the two on
-the right a left and a right half of a balloon they are stacked inside. Every
-block keeps *its own* answer cropped, never a share of a neighbour's: handing the
-group one balloon and cutting that up puts a translation on the far side of the
-page from its Japanese. A cropped answer that no longer holds its block is
-refused; that only happens where the blocks themselves overlap, and there the box
-is the honest answer.
+collide** (`bubble.assigned`, `HELD`, smallest first so a shout inside a thought
+wins). Where several share one balloon, `bubble.divided` cuts a cell apiece, and
+that division **recurses**. Every block keeps *its own* answer cropped, never a
+share of a neighbour's. A cropped answer that no longer holds its block is refused.
 
 **Cleaning is LaMa, and the seam is not.** `inpaint.fill` grows the hole by `EDGE`
-for *sampling* only and then alpha-composites the result back through the
-caller's ungrown, greyscale mask, so a soft brushed edge blends rather than steps
-and the rim of half-ink just outside a letter is never read as art. That is
-independent of which painter made the pixels, and it stays that way. A page
-marked all over short-circuits to white **before** the painter: there is nothing
-left to make a fill out of, and a model handed a page that is entirely hole does
-not say so, it invents one. LaMa is run on crops around each mark rather than on
-the page (`inpaint.patches`) — a page is mostly art that is staying — and marks
-closer than `APART` go through together, or the context around one letter holds
-the next as material to copy it from. Its input must be a whole multiple of
-`BLOCK`; a size that is not fails inside the graph rather than being padded.
+for *sampling* only and then alpha-composites through the caller's ungrown mask.
+That is independent of which painter made the pixels. A page marked all over
+short-circuits to white **before** the painter. LaMa runs on crops
+(`inpaint.patches`), and marks closer than `APART` go through together. Its input
+must be a whole multiple of `BLOCK`.
 
-**A crop over `inpaint.LARGEST` is worked out smaller and stretched back**, and
-this is what keeps the API alive rather than what makes it quick. LaMa's cost is
-in its Fourier layers, which hold whole feature maps: measured, a 0.6 MP crop
-peaks near 2.2 GB and a 1.5 MP one near 3.9 GB, so a balloon on an A4 page
-scanned at 300 dpi (8.7 MP — an ordinary chapter) asks for something like 9 GB
-and the kernel kills the process. There is no exception to catch and nothing in
-the API's own log; the container simply goes and a front end sees a **502**, and
-`restart: unless-stopped` brings it back so cleanly that `RestartCount` is still
-0. If a big page ever 502s again, look for `oom-kill` in `podman machine ssh
-sudo dmesg` before anything else. Working smaller costs almost nothing: only the
-marked pixels are kept, lettering is thin, and the fill is the tone and lines
-around it rather than any detail of its own.
+**A crop over `inpaint.LARGEST` is worked out smaller and stretched back**, and this
+is what keeps the API alive rather than what makes it quick: over it, the kernel
+kills the process, there is no exception to catch, and a front end sees a **502**.
+If a big page ever 502s again, look for `oom-kill` in `podman machine ssh sudo
+dmesg` before anything else.
 
-**`grow` is in the detector's pixels, not the page's** (`detect.GROW`,
-`page_mask`). The mask is worked out on a 1024-square canvas and stretched, so
-its edge is only accurate to a canvas pixel — one page pixel on a small page,
-three and a half on a 300 dpi scan. Held in page pixels the same `grow` is three
-canvas pixels of allowance on one and barely one on the other: measured, 100% of
-the lettering covered at 1000x1400 against 94.5% at 2480x3508, which comes out as
-the feet of every letter still on the page after a clean. Anything else measured
-against the mask belongs in the same units.
+**`grow` is in the detector's pixels, not the page's** (`detect.GROW`, `page_mask`).
+The mask is worked out on a 1024-square canvas and stretched, so its edge is only
+accurate to a canvas pixel. Anything else measured against the mask belongs in the
+same units.
 
-**An answer from `/api/bubbles` depends on which other boxes were asked about**,
-so anything whose answer will be lettered with must send *every* box on the page,
-not just the ones that changed. A box asked about alone is handed the whole
-balloon — correct in isolation, and on top of its neighbours in practice. This is
-why `reread` in `App.tsx` reads only the changed blocks (the slow half) but asks
-for balloons for all of them, and applies the result to every region by id.
+**An answer from `/api/bubbles` depends on which other boxes were asked about**, so
+anything whose answer will be lettered with must send *every* box on the page. This
+is why `reread` in `App.tsx` reads only the changed blocks but asks for balloons for
+all of them, and applies the result to every region by id.
 
 ## Style
 
-Comments are for *why*, and they are short. A module or function gets a line or
-two saying what it is for and what would go wrong done the obvious way; anything
-longer has to be earning it — the non-obvious threshold, the ordering that
-matters, the alternative that was tried. Do not restate the code, and do not
-explain the domain here: that is what this file is for. Names carry the rest.
+Comments are minimal. A module or function gets one line saying what it is for,
+where the name does not carry it, and a line or two more only where a reader who
+did not know would change the line — an ordering that matters, a library's
+misbehaviour, a threshold with a trap in it, the derivation of an expression that
+is otherwise unreadable.
+
+Everything longer goes in `DOCS.md`: how a module works, what was tried instead,
+the measurements behind a constant. Do not explain the domain in a comment, and do
+not restate the code. Names carry the rest.
 
 Python tests are named as statements of behaviour
-(`test_the_far_edge_is_exclusive`).
+(`test_the_far_edge_is_exclusive`), which is why they need no docstring.

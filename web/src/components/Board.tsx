@@ -37,7 +37,7 @@ export type Masking = {
   /** The traced lettering for this page, once it has been asked for. */
   letters: ImageBitmap | null
   onTrace: () => Promise<ImageBitmap | null>
-  /** How far past the ink a tracing reaches, in page pixels. */
+  /** How far past the ink a tracing reaches, in the detector's pixels. */
   spread: number
   onSpread: (spread: number) => void
   fill: Fill
@@ -73,9 +73,8 @@ type Props = {
   mode: BoardMode
   onMode: (mode: BoardMode) => void
   /**
-   * A folder is being run through. The page it is on is not necessarily this one,
-   * but everything here goes to the same API, and a second page in the air would
-   * leave the run's progress saying whatever was asked for last.
+   * A folder is being run through, so board actions are shut: a second page in
+   * the air would leave the run's progress saying whatever was asked for last.
    */
   runningFolder: boolean
   /** Whether the board is showing the cleaned page or the one that came in. */
@@ -125,8 +124,7 @@ export function Board({
   const [brush, setBrush] = useState<Brush>({ radius: 16, erase: false })
   const [showBoxes, setShowBoxes] = useState(true)
   const [adding, setAdding] = useState(false)
-  // Brushing draws straight onto the canvas; this is only so the buttons that
-  // care whether anything is marked catch up when a stroke ends.
+  // Only so the buttons that care whether anything is marked catch up.
   const [, setEdits] = useState(0)
   const edited = () => setEdits((count) => count + 1)
 
@@ -149,9 +147,8 @@ export function Board({
     onTurn: translating.onTurn,
   })
 
-  // Read through refs rather than depended on: dropping a block from a mask that
-  // was deliberately cleared out should not seed the whole page again, and the
-  // tracing callback changes identity on every keystroke of state above.
+  // Read through refs: dropping a block from a mask that was deliberately
+  // cleared must not seed the whole page again.
   const analysisNow = useRef(analysis)
   analysisNow.current = analysis
   const lettersNow = useRef(masking.letters)
@@ -169,8 +166,8 @@ export function Board({
     edited()
   }
 
-  // Coming to the mask with blocks already found and nothing marked yet: mark
-  // the lettering itself, which is what wants hiding.
+  // Coming to the mask with blocks found and nothing marked: seed it from the
+  // lettering itself, not the boxes.
   useEffect(() => {
     if (!brushing || !mask || !mask.empty || !analysisNow.current) return
     let dropped = false

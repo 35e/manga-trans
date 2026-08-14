@@ -1,9 +1,4 @@
-/**
- * The line icons, one place rather than spelled out wherever they are used.
- *
- * All drawn on the same 24 grid with the same stroke, so they sit together, and
- * all `currentColor`, so they take the colour of whatever they are put in.
- */
+/** The line icons: one 24 grid, one stroke, all `currentColor`. */
 
 type Props = { className?: string }
 

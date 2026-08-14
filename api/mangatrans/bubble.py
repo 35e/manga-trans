@@ -1,20 +1,7 @@
 """The room a block of lettering was written in, measured inside its balloon.
 
-The detector says where the balloon is and where the lettering inside it is. The
-balloon's box is not the answer on its own: a balloon is an oval, and a line set
-to the corners of its bounding box runs outside the outline. So the inside of the
-balloon is thresholded within the box it was found in, and the largest rectangle
-in *that* which still holds the block is the room.
-
-Around the block, not simply the largest rectangle in the shape. The words belong
-where they were written, and all a balloon is asked is how much wider or taller
-the room around them runs; a line set anywhere else is one the reader has to go
-looking for. Everything downstream leans on this — ``lines.roomFor`` letters into
-whatever comes back, and there is nothing else on the page saying where the words
-belong.
-
-``None`` is a real answer, and the right one for a sound effect over artwork: the
-caller keeps the block's own box.
+Always measured *around* the block, never as the largest rectangle in the shape.
+``None`` is a real answer: the caller keeps the block's own box.
 """
 
 from __future__ import annotations
@@ -24,21 +11,16 @@ import numpy as np
 
 from .geometry import Box
 
-# How much of the block the balloon's inside has to hold to be believed. Short of
-# this the threshold found some sliver beside the words rather than the ground
-# they were set on, and the block's own box is the honest answer.
+# How much of the block the balloon's inside has to hold to be believed.
 COVER = 0.85
 
 # Left clear inside the outline, as a share of the balloon's shorter side.
 INSET = 0.06
 
 # The block is shrunk by this before being painted in: a detector box often takes
-# in a little of the outline, and a seed laid across the outline bridges it.
+# in a little of the outline, and a seed laid across it bridges it.
 SHRINK = 0.12
 
-# The rectangle is searched for on a grid no larger than this on its longer side.
-# The search is the one thing here that is not a single OpenCV call, and a
-# balloon does not need measuring to the pixel.
 GRID = 128
 
 # How much of a full-size pixel must be inside the balloon for its square on that
@@ -47,7 +29,6 @@ GRID = 128
 MOSTLY = 200
 
 # How much of a block a balloon has to hold to be the balloon it was written in.
-# Well inside, or this is a balloon merely reaching over a sound effect beside it.
 HELD = 0.85
 
 
@@ -61,10 +42,8 @@ def shrunk(box: Box) -> Box:
 def solid(region: np.ndarray) -> np.ndarray:
     """``region`` with everything it encloses counted as part of it.
 
-    The lettering, and any tone inside the balloon, is a hole in the ground, and a
-    rectangle measured around those holes is the rectangle between two lines of
-    text. So whatever the outside cannot reach is filled in; the border of blank
-    added first is what makes "the outside" something there is always a corner of.
+    The border of blank added first is what makes "the outside" something there
+    is always a corner of.
     """
     padded = cv2.copyMakeBorder(region, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
     scratch = np.zeros((padded.shape[0] + 2, padded.shape[1] + 2), np.uint8)
@@ -76,7 +55,7 @@ def joined(ground: np.ndarray, seed: Box) -> np.ndarray:
     """The one piece of ``ground`` the seed sits in, holes and all.
 
     ``seed`` is painted in first, which is what joins the two halves of a balloon
-    that a column of Japanese down the middle has cut in two.
+    that a column of vertical text down the middle has cut in two.
     """
     painted = ground.copy()
     painted[seed.y0 : seed.y1, seed.x0 : seed.x1] = 255
@@ -91,13 +70,7 @@ def run(strip: np.ndarray) -> np.ndarray:
 
 
 def holding(mask: np.ndarray, block: Box) -> Box | None:
-    """The largest rectangle of set pixels that holds the whole of ``block``.
-
-    A row the block is not clear across closes the search off: there is no
-    rectangle holding the block on the far side of one. Between them a rectangle
-    is decided by which rows it spans, being as wide as the shortest reach past
-    the block among them, so every span holding the block is measured.
-    """
+    """The largest rectangle of set pixels that holds the whole of ``block``."""
     height = mask.shape[0]
     if block.w <= 0 or block.h <= 0:
         return None
@@ -135,9 +108,8 @@ def holding(mask: np.ndarray, block: Box) -> Box | None:
 def largest(mask: np.ndarray, block: Box) -> Box | None:
     """:func:`holding`, measured on a coarse grid and scaled back up.
 
-    The block is rounded outwards on the way in and the answer inwards on the
-    way out, so what comes back is inside the shape rather than nearly inside
-    it — and still holds every pixel of the block it was measured around.
+    The block is rounded outwards on the way in and the answer inwards on the way
+    out, so what comes back is inside the shape rather than nearly inside it.
     """
     height, width = mask.shape[:2]
     scale = min(1.0, GRID / max(height, width, 1))
@@ -171,10 +143,8 @@ def largest(mask: np.ndarray, block: Box) -> Box | None:
 def roomiest(region: np.ndarray, block: Box) -> Box | None:
     """The largest rectangle in ``region`` holding ``block``, clear of its edge.
 
-    The margin is the first thing given up. A balloon drawn tight around its
-    words has none to spare, and neither has one whose outline the block is
-    already up against: lettering set to the outline still beats lettering set
-    beside the words.
+    The margin is the first thing given up: a balloon drawn tight around its
+    words has none to spare.
     """
     _, _, wide, tall = cv2.boundingRect(region)
     if wide < 4 or tall < 4:
@@ -187,12 +157,7 @@ def roomiest(region: np.ndarray, block: Box) -> Box | None:
 
 
 def inside(grey: np.ndarray, balloon: Box, block: Box) -> Box | None:
-    """The room inside ``balloon``, measured around ``block``.
-
-    Both boxes are the page's. The balloon is thresholded in its own box rather
-    than against the page: what counts as the pale part of one corner of a page
-    is not what counts in another, and the balloon's box is exactly the
-    neighbourhood the question is about.
+    """The room inside ``balloon``, measured around ``block``. Both are the page's.
 
     Light ground first — nearly every balloon is dark words on a pale shape —
     then the other way round, for a shout set white on black.
@@ -205,8 +170,6 @@ def inside(grey: np.ndarray, balloon: Box, block: Box) -> Box | None:
 
     patch = np.ascontiguousarray(grey[view.y0 : view.y1, view.x0 : view.x1])
     local = held.moved(-view.x0, -view.y0)
-    # The block has to sit in the patch for any of this to mean anything; a
-    # balloon that does not hold its own block is not the room it was written in.
     if local.x0 < 0 or local.y0 < 0 or local.x1 > view.w or local.y1 > view.h:
         return None
 
@@ -225,9 +188,8 @@ def inside(grey: np.ndarray, balloon: Box, block: Box) -> Box | None:
 def cropped(box: Box, cell: Box) -> Box:
     """The part of ``box`` inside ``cell``, empty where the two do not meet.
 
-    Here rather than on :class:`Box` because :mod:`mangatrans.geometry` is copied
-    into the image before the models are baked in, and adding to it sends the
-    next build back for half a gigabyte of weights.
+    Here rather than on :class:`Box`: ``geometry`` is copied into the image
+    before the models are baked in, so adding to it costs a re-download.
     """
     x0, y0 = max(box.x0, cell.x0), max(box.y0, cell.y0)
     x1, y1 = min(box.x1, cell.x1), min(box.y1, cell.y1)
@@ -235,11 +197,7 @@ def cropped(box: Box, cell: Box) -> Box:
 
 
 def within(room: Box, block: Box) -> float:
-    """How much of ``block`` lies inside ``room``, 0 to 1.
-
-    Not :meth:`Box.covers`, which divides by whichever of the two is smaller:
-    the question here is only ever about the block.
-    """
+    """How much of ``block`` lies inside ``room``, 0 to 1."""
     wide = min(room.x1, block.x1) - max(room.x0, block.x0)
     tall = min(room.y1, block.y1) - max(room.y0, block.y0)
     if wide <= 0 or tall <= 0 or block.w <= 0 or block.h <= 0:
@@ -250,9 +208,8 @@ def within(room: Box, block: Box) -> float:
 def assigned(blocks: list[Box], balloons: list[Box]) -> list[int | None]:
     """Which balloon each block was written in, as an index into ``balloons``.
 
-    The smallest balloon that holds the block, so a balloon drawn inside another
-    — a shout within a thought — wins over the one around it. A block no balloon
-    holds is lettering on the art: ``None``, and it keeps its own box.
+    The smallest that holds it, so a balloon drawn inside another wins over the
+    one around it.
     """
     found: list[int | None] = []
     for block in blocks:
@@ -283,9 +240,8 @@ def cut(space: Box, axis: int, at: int) -> tuple[Box, Box]:
 def seam(blocks: list[Box], among: list[int], axis: int) -> tuple[int, int, list[int]]:
     """Where a group of blocks comes apart along one axis.
 
-    The widest blank between them, as (how wide, where to cut, which of them lie
-    on the near side of it). A group that overlaps everywhere still comes back
-    with its narrowest overlap, so there is always somewhere to cut.
+    As (how wide, where to cut, which lie on the near side). A group that
+    overlaps everywhere still comes back with its narrowest overlap.
     """
     order = sorted(among, key=lambda at: span(blocks[at], axis))
     best = (0, 0, order[:1])
@@ -302,16 +258,8 @@ def seam(blocks: list[Box], among: list[int], axis: int) -> tuple[int, int, list
 def divided(space: Box, blocks: list[Box]) -> list[Box]:
     """``space`` cut up between the blocks in it, one piece each.
 
-    Two blocks in one balloon would otherwise be answered with that same balloon
-    twice, and their translations set one on top of the other. They were told
-    apart by the blank between them in the first place, so the space they share
-    is cut the same way: at the widest blank between them, on whichever axis that
-    blank is widest — and then each side again, until every block has a piece to
-    itself.
-
-    Cutting once along one axis is not enough. Four blocks set two across and two
-    down are not in a row, and a single line of cuts hands the two on the right a
-    left half and a right half of a balloon they are stacked inside.
+    Recurses: cutting once along one axis is not enough, since four blocks set
+    two across and two down are not in a row.
     """
     shares: list[Box] = [space] * len(blocks)
 
@@ -337,14 +285,10 @@ def rooms(
 ) -> list[Box | None]:
     """The room each block goes in, in the order the blocks were given.
 
-    ``None`` where the block is in no balloon, or where its balloon turned out to
-    have nothing more to offer than the block already has.
-
-    Where several blocks share one balloon, each keeps *its own* answer cropped to
-    its own cell rather than a share of the balloon handed round: an answer is
-    always measured from the block it belongs to, so it is always around that
-    block's words. Colour says nothing about where a balloon ends that its own
-    lightness does not, so the page is flattened to one channel once.
+    ``None`` where the block is in no balloon, or where its balloon has nothing
+    more to offer than the block already has. Where several blocks share one
+    balloon, each keeps *its own* answer cropped to its own cell — never a share
+    of a neighbour's.
     """
     grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     height, width = grey.shape[:2]

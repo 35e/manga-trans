@@ -54,8 +54,7 @@ const newRegion = (box: Box, from?: Region): Region => ({
   id: crypto.randomUUID(),
   box,
   confidence: from?.confidence ?? 1,
-  // Half a block is the same kind of thing as the block it was cut from. One
-  // drawn from nothing is of no kind: the detector never saw it.
+  // A block drawn from nothing is of no kind: the detector never saw it.
   kind: from?.kind,
   manual: from ? from.manual : true,
 })
@@ -141,8 +140,7 @@ function App() {
   const [activeId, setActiveId] = useState<string | null>(null)
   const active = images.find((image) => image.id === activeId) ?? null
 
-  // Both kept per page, so going back to one already done shows its work again
-  // without asking the API twice.
+  // Both kept per page, so going back to one already done shows its work again.
   const [analyses, setAnalyses] = useState<Record<string, Analysis>>({})
   const [lettering, setLettering] = useState<Record<string, Lines>>({})
 
@@ -156,29 +154,25 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [showCleaned, setShowCleaned] = useState(false)
 
-  // How far past the ink a tracing reaches. What is enough depends on the scan,
-  // so it is the reader's to raise when edges are being left behind.
+  // How far past the ink a tracing reaches, in the detector's pixels.
   const [spread, setSpread] = useState(4)
   const [fill, setFill] = useState<Fill>('art')
 
   const analysis = active ? (analyses[active.id] ?? null) : null
   const pageLettering = active ? (lettering[active.id] ?? []) : []
-  // Which pages have been lettered, so a folder run can ask before doing them
-  // over: a line moved or rewritten by hand cannot be got back.
+  // So a folder run can ask before doing them over: a line rewritten by hand
+  // cannot be got back.
   const lettered = Object.entries(lettering)
     .filter(([, set]) => set.some(Boolean))
     .map(([id]) => id)
   const cleanedPage = active ? (cleanedPages[active.id] ?? null) : null
   const stage = working?.id === active?.id ? (working?.stage ?? null) : null
 
-  // Fetched early: a font is only asked for when something needs it, and the
-  // first thing that needs this one is measuring where the lettering breaks.
+  // Fetched early: the first thing that needs the face is measuring with it.
   useEffect(() => {
     void ready()
   }, [])
 
-  // The first page dropped in goes straight to the board, and so does whatever
-  // is left when the one on it is deleted.
   useEffect(() => {
     if (active === null && images.length > 0) setActiveId(images[0].id)
   }, [active, images])
@@ -188,33 +182,27 @@ function App() {
     setError(null)
   }, [activeId])
 
-  // A page opens on the first thing left to do with it, so picking one up again
-  // lands where it was left rather than back at the beginning. Read through refs
-  // so this runs when the page changes and not when its work does.
+  // Read through refs, so a page opening runs when the page changes and not
+  // when its work does.
   const analysesNow = useRef(analyses)
   analysesNow.current = analyses
   const cleanedNow = useRef(cleanedPages)
   cleanedNow.current = cleanedPages
 
-  // Which page is on the board, for the steps that run against a page that may
-  // not be it: a folder run must not clear the selection or move the step tabs
-  // out from under whoever is looking at another page while it works.
+  // Which page is on the board: a folder run must not move the view about under
+  // someone reading another page.
   const activeNow = useRef(activeId)
   activeNow.current = activeId
   const onBoard = useCallback((id: string) => id === activeNow.current, [])
 
-  // And whether a page is still here at all: a run works through the list it
-  // picked up, and a page can be deleted out from under it.
+  // And whether a page is still here: a run can have one deleted under it.
   const imagesNow = useRef(images)
   imagesNow.current = images
   const held = useCallback((id: string) => imagesNow.current.some((it) => it.id === id), [])
 
   /**
-   * Which page of its chapter a page is, and how many there are.
-   *
-   * The bible's beats are indexed by this, so it has to be worked out the one way
-   * a folder run works through a folder — the same filter in the same order, or a
-   * page is translated against the beat for its neighbour.
+   * Which page of its chapter a page is. The bible's beats are indexed by this,
+   * so it must stay the same filter in the same order a folder run uses.
    */
   const pagesOf = useCallback(
     (folder: string) => imagesNow.current.filter((it) => it.folder === folder),
@@ -241,9 +229,7 @@ function App() {
     )
   }, [activeId])
 
-  // A page arrives showing what came in; once cleaned, and whenever lettering is
-  // being set over it, the board shows the cleaned one. In this order so the
-  // later word wins.
+  // In this order, so the later word wins.
   useEffect(() => setShowCleaned(false), [activeId])
   useEffect(() => {
     if (cleanedPage) setShowCleaned(true)
@@ -274,8 +260,7 @@ function App() {
 
   /**
    * Why a step gave up, for a caller that has to say so somewhere other than the
-   * banner — a folder run names the page it happened to. Set by {@link during},
-   * and read straight after the step it belongs to.
+   * banner. Set by {@link during}, read straight after the step it belongs to.
    */
   const lastFailure = useRef<string | null>(null)
 
@@ -299,14 +284,11 @@ function App() {
   )
 
   /**
-   * What the blocks that just changed say, and what room every block on the
-   * page is now in.
+   * What the changed blocks say, and what room **every** block is now in.
    *
-   * Reading is asked only about the blocks that changed, since it is the slow
-   * half. The balloons are asked about all of them, because where several blocks
-   * share one balloon it is shared out between them — so adding or moving one
-   * changes the answer for its neighbours too, and asking about it alone would
-   * hand it the whole balloon and letter it over the top of them.
+   * Reading is asked only about what changed, since it is the slow half. The
+   * balloons must be asked about all of them: a box asked about alone is handed
+   * the whole balloon and lettered over the top of its neighbours.
    */
   const reread = useCallback(
     async (page: GalleryImage, boxes: Box[], ids: string[]) => {
@@ -340,17 +322,14 @@ function App() {
   )
 
   /**
-   * Find the lettering and read it, and hand back what was found.
-   *
-   * Every step below returns its answer as well as leaving it in state, so one
-   * can be run straight into the next — which is what "do all three" does.
+   * Find the lettering and read it. Every step below returns its answer as well
+   * as leaving it in state, so one can be run straight into the next.
    */
   const detectAndRead = useCallback(
     async (page: GalleryImage): Promise<Analysis | null> => {
       const { id, file } = page
-      // These blocks are about to be replaced, so a place in the old list means
-      // nothing. Only for the page being looked at: a folder run works its way
-      // through the others without touching what is picked out on this one.
+      // Only for the page being looked at: a run must not clear the selection
+      // on a page someone else is reading.
       if (onBoard(id)) setSelected(null)
 
       return during(id, 'detecting', async () => {
@@ -389,10 +368,7 @@ function App() {
     [during, onBoard, source.code],
   )
 
-  /**
-   * The lettering itself, traced pixel by pixel, so a clean can hide the words
-   * and leave the art they were drawn over.
-   */
+  /** The lettering itself, traced pixel by pixel. */
   const tracePage = useCallback(
     async (page: GalleryImage): Promise<ImageBitmap | null> => {
       const held = traced.at(page.id, spread)
@@ -413,16 +389,10 @@ function App() {
   )
 
   /**
-   * Mark these boxes into the page's mask by the lettering inside them, tracing
-   * the page first if that has not been asked for yet.
-   *
-   * Tracing rather than taking whatever is already held is the whole of it:
-   * without it there is nothing to mark but the box, and the clean takes out the
-   * whole rectangle instead of the words in it. Which is what a block put back
-   * by hand, or one drawn where the detector missed one, used to come out as.
-   *
-   * Only where something is marked already — an untouched mask is seeded in one
-   * go when the clean step is opened, and clearing it means it.
+   * Mark these boxes into the page's mask **by the lettering inside them**,
+   * tracing the page first if that has not been asked for yet. Without the
+   * tracing there is nothing to mark but the box, and the clean takes out the
+   * whole rectangle. Only where something is marked already.
    */
   const markLetters = useCallback(
     async (page: GalleryImage, boxes: Box[]) => {
@@ -435,10 +405,7 @@ function App() {
     [forPage, tracePage],
   )
 
-  /**
-   * Take one block out of what will be cleaned, or put it back. The mask is kept
-   * in step, so what is marked always matches what the list says.
-   */
+  /** Take one block out of what will be cleaned, or put it back, mask and all. */
   const toggleExcluded = useCallback(
     async (index: number) => {
       if (!active) return
@@ -462,8 +429,8 @@ function App() {
   )
 
   /**
-   * A block the detector missed, drawn by hand. It goes in where reading order
-   * puts it, not on the end, so the page still translates as one conversation.
+   * A block the detector missed, drawn by hand. It goes in **where reading order
+   * puts it**, not on the end: that order is also the order the page translates in.
    */
   const addRegion = useCallback(
     async (box: Box) => {
@@ -495,10 +462,7 @@ function App() {
     [active, analyses, markLetters, reread, source.rtl],
   )
 
-  /**
-   * A block's box while it is being dragged. Only the box moves here: what is
-   * inside it is read again once the drag is over rather than every frame.
-   */
+  /** A block's box while it is being dragged; it is read again once that ends. */
   const setRegionBox = useCallback(
     (index: number, box: Box) => {
       if (!active) return
@@ -513,10 +477,7 @@ function App() {
 
   /**
    * That drag, once it is over: read what the block says now, and keep the mask
-   * in step — the rectangle it used to cover comes out, where it is now goes in.
-   *
-   * This is what splitting two bubbles the detector ran together comes down to:
-   * pull this one off the second, and what it says is no longer both of them.
+   * in step — the old rectangle out, where it is now in.
    */
   const rereadRegion = useCallback(
     async (index: number, was: Box) => {
@@ -536,11 +497,7 @@ function App() {
     [active, analyses, forPage, markLetters, reread],
   )
 
-  /**
-   * A block dragged to a different place in the list. The order is a guess the
-   * detector makes, and an inset panel or a caption is enough to throw it — and
-   * it is also the order the page is translated in.
-   */
+  /** A block dragged to a different place in the list, which is reading order. */
   const moveRegion = useCallback(
     (from: number, to: number) => {
       if (!active || from === to) return
@@ -645,13 +602,7 @@ function App() {
 
   /**
    * Translate the page: every block that was read and not left alone, sent
-   * together. Each line lands in the balloon its original was written in, not in
-   * the box the original came out of, which for vertical Japanese is a column
-   * too narrow to set a word of English across.
-   *
-   * A page in a folder is translated against what that chapter has already
-   * settled on, and hands back whatever it added — which is what keeps one
-   * character's name spelled one way across pages the model never sees together.
+   * together and translated against everything the chapter has settled on.
    */
   const translatePage = useCallback(
     async (page: GalleryImage, found: Analysis): Promise<boolean> => {
@@ -665,9 +616,8 @@ function App() {
 
       const chapter = page.folder
       const got = await during(page.id, 'translating', async () => {
-        // The face has to be in before anything is measured, and now something is
-        // measured before the request rather than only after it: how much room a
-        // line has is part of what the model is asked for.
+        // The face has to be in before anything is measured, and the budgets
+        // below are measured before the request rather than after it.
         await ready()
         const sending = wanted.map(({ text, index }) => {
           const region = found.detection.regions[index]
@@ -677,9 +627,7 @@ function App() {
             budget: region ? lines.budgetFor(region, text) : undefined,
           }
         })
-        // The bible only where it still describes this folder: the beats are
-        // indexed by a page's place in it, so a page added or deleted since the
-        // sweep leaves every beat after it against the wrong page.
+        // The bible only where it still describes this folder — see `bible.fits`.
         const read = chapter ? bibleNow.current[chapter] : null
         const of = chapter ? placeOf(page) : null
         const surveyed = chapter && of !== null && fits(read, pagesIn(chapter))
@@ -723,9 +671,8 @@ function App() {
     ],
   )
 
-  // The three steps as the buttons on the board call them. Only cleaning moves on
-  // by itself: detection is imperfect and its boxes are there to be looked at and
-  // corrected, so it stays on the step that shows them.
+  // Only cleaning moves the tabs on by itself: detection is imperfect and its
+  // boxes are there to be looked at.
   const runDetect = useCallback(async () => {
     if (active) await detectAndRead(active)
   }, [active, detectAndRead])
@@ -744,18 +691,14 @@ function App() {
 
   /**
    * Everything a page needs before it can be translated: find the words, read
-   * them, hide them.
-   *
-   * It takes the page rather than reading the active one because a folder run puts
-   * every page in a folder through this same way, and hands back why it gave up
-   * rather than only leaving it in the banner, because a run has to say which page
-   * that was.
+   * them, hide them. Takes the page rather than reading the active one, and
+   * hands back why it gave up, because a run has to say which page that was.
    */
   const prepared = useCallback(
     async (
       page: GalleryImage,
     ): Promise<{ found: Analysis | null; why: string | null }> => {
-      // Deleted since the run picked up its list. Nothing to do and nothing wrong.
+      // Deleted since the run picked up its list: nothing to do, nothing wrong.
       if (!held(page.id)) return { found: null, why: null }
 
       const found = await detectAndRead(page)
@@ -771,9 +714,8 @@ function App() {
         }
       }
 
-      // The tracing is worked out from the page and can be had again; a folder of
-      // fifty would otherwise hold fifty page-sized bitmaps for the sake of one.
-      // The page on the board keeps its own, since that is the one being brushed.
+      // Dropped as soon as the clean lands, unless this is the page being
+      // brushed: fifty pages would otherwise hold fifty page-sized bitmaps.
       if (!onBoard(page.id)) traced.drop(page.id)
       else setMode('translate')
       return { found, why: null }
@@ -788,15 +730,10 @@ function App() {
   )
 
   /**
-   * Letter it: the page translated against everything the chapter knows, which
-   * after a survey is the whole chapter and before one is only the pages before
-   * it.
-   *
-   * A page nobody has examined is examined first, so this on its own is still the
-   * whole of what one button used to do — and it is taken straight from the step
-   * that found it rather than read back out of state, which the step has only
-   * asked React to hold. A page examined by the run before this one is read
-   * through `analysesNow`, that run being a different one this closure never saw.
+   * Letter it, examining the page first if nobody has. The analysis is taken
+   * **from the step that found it** rather than read back out of state, which
+   * the step has only asked React to hold; a page examined by the *previous* run
+   * comes through `analysesNow`, that run being one this closure never saw.
    */
   const render = useCallback(
     async (page: GalleryImage): Promise<string | null> => {
@@ -813,8 +750,8 @@ function App() {
       if (ollama.model && found.texts.some((text) => text.trim())) {
         lastFailure.current = null
         await translatePage(page, found)
-        // Not every empty answer is a refusal: a page whose every block was left
-        // alone has nothing to translate and nothing went wrong with it.
+        // Not every empty answer is a refusal, so the reason decides rather
+        // than the boolean.
         if (lastFailure.current) return lastFailure.current
       }
       return null
@@ -835,13 +772,9 @@ function App() {
   } = useBatch()
 
   /**
-   * The whole chapter's Japanese read before a word of it is translated, a
-   * windowful of pages at a time with what the earlier ones came to handed back
-   * in each time — so the last window is the one that has read the lot.
-   *
-   * A page with nothing on it is still sent, as an empty list: the beats come
-   * back one per page and are laid down by where the page sits, so a page left
-   * out is every later beat one place wrong.
+   * The whole chapter read before a word of it is translated, a windowful at a
+   * time with the running answer handed back in. A page with nothing on it is
+   * still sent, as an empty list: the beats are positional.
    */
   const surveyChapter = useCallback(
     async (
@@ -875,11 +808,9 @@ function App() {
         learnBible(folder.id, said, first)
       }
 
-      // Seeded once and at the end, never window by window. The glossary keeps the
-      // first rendering of a term and never moves it, so it has to be handed what
-      // the whole sweep settled on — folding each window in as it arrived would
-      // freeze the guesses of the windows that had not yet read the ending, which
-      // is the one thing this was all for.
+      // Seeded once and at the end, **never window by window**: the glossary
+      // keeps the first rendering of a term, so folding each window in as it
+      // arrived would freeze the guesses of the ones that had not read the end.
       const read = bibleNow.current[folder.id]
       if (read) {
         learnTerms(folder.id, read.terms)
@@ -1030,8 +961,7 @@ function App() {
     setApplying(true)
     setError(null)
     try {
-      // Exactly what the board is showing under the lettering, so what comes out
-      // is what was arranged.
+      // Exactly what the board is showing, so what comes out is what was arranged.
       const base = showCleaned && cleanedPage ? cleanedPage : active.url
       const page = await compose(base, active.width, active.height, set)
       save(page, `${stem(active.name)}-lettered.png`)
@@ -1043,16 +973,10 @@ function App() {
   }, [active, lettering, cleanedPage, showCleaned])
 
   /**
-   * A whole folder back out as the archive it came in as.
-   *
-   * One page at a time rather than all at once: each one is drawn at the page's
-   * own resolution, and forty of those in the air together is forty page-sized
-   * canvases held for no gain — the work is the same either way, and this way
-   * there is something true to count.
-   *
-   * A page that will not compose is put in as it arrived rather than left out.
-   * A chapter with a gap in it is not a chapter: the page that fell over is
-   * still part of the story, and dropping it renumbers everything after it.
+   * A whole folder back out as the archive it came in as, drawn afresh on the
+   * click. **One page at a time**: forty page-sized canvases in the air together
+   * buy nothing. A page that will not compose goes in as it arrived rather than
+   * being left out — dropping one renumbers everything after it.
    */
   const downloadFolder = useCallback(
     async (folder: GalleryFolder) => {
@@ -1164,7 +1088,7 @@ function App() {
           onClearAll={clearAll}
           batch={batch}
           // The bar names the page it is working on, so it wants that page's
-          // stage rather than the board's — which is only ever the active page's.
+          // stage rather than the board's.
           batchStage={working && working.id === batch?.page?.id ? working.stage : null}
           onSurveyFolder={surveyFolder}
           onTranslateFolder={translateFolder}

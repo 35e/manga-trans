@@ -22,11 +22,6 @@ FONT_MIN = 8
 LINE_SPACING = 0.15  # of the type size
 INSET = 0.06  # margin inside the box, of its shorter side
 
-# What goes where the lettering was. ART fills it in from the page around it, so
-# what the words were drawn over carries on through them; WHITE_OUT paints it
-# flat, which is right when the ground has to be clear for new lettering and
-# wrong almost everywhere else. TELEA is ART done without a model — kept because
-# it needs no weights, and because a fill worth comparing against is worth having.
 ART = "art"
 TELEA = "telea"
 WHITE_OUT = "white"
@@ -58,11 +53,7 @@ class Layout:
 def marked(
     size: tuple[int, int], boxes: list[Box], mask: Image.Image | None = None
 ) -> Image.Image:
-    """Everything to be hidden, as one greyscale page: boxes and mask together.
-
-    White is hidden, black is left alone. Where the two overlap the stronger
-    wins, so a box is not thinned by a mask brushed lightly over it.
-    """
+    """Everything to be hidden, as one greyscale page: boxes and mask together."""
     marks = Image.new("L", size, 0)
     draw = ImageDraw.Draw(marks)
     for box in boxes:
@@ -75,11 +66,7 @@ def marked(
 
 
 def cover_mask(image: Image.Image, mask: Image.Image) -> Image.Image:
-    """A copy of the page with white laid over it wherever the mask is light.
-
-    The blunt half of :func:`hidden`: it hides what was there without asking what
-    it was over, which is what a ground for new lettering wants.
-    """
+    """A copy of the page with white laid over it wherever the mask is light."""
     out = image.convert("RGB")
     out.paste(WHITE, (0, 0, out.width, out.height), mask.convert("L"))
     return out
@@ -90,13 +77,8 @@ def hidden(
 ) -> Image.Image:
     """A copy of the page with everything ``marks`` marks taken out of it.
 
-    ``fill`` is what goes in its place: :data:`ART`, made out of the page around
-    the mark by LaMa; :data:`TELEA`, the same idea without a model; or
-    :data:`WHITE_OUT`, flat white.
-
-    ``painter`` is the loaded LaMa, passed in rather than reached for so that
-    standing it up stays the caller's business — the same way the detector and
-    the reader are handed in. Without one, :data:`ART` is Telea.
+    ``painter`` is the loaded LaMa, handed in rather than reached for. Without
+    one, :data:`ART` is Telea.
     """
     if fill == WHITE_OUT:
         return cover_mask(image, marks)
@@ -156,11 +138,7 @@ def set_at(draw, text: str, box: Box, font_path: str | None, size: int) -> Layou
 
 
 def fit(draw, text: str, box: Box, font_path: str | None) -> Layout:
-    """The largest size that lands in ``box``, or the smallest if none does.
-
-    Text too long for its box is still drawn, overrunning: a line that can be read
-    and then moved beats a bubble left empty.
-    """
+    """The largest size that lands in ``box``, or the smallest if none does."""
     best = set_at(draw, text, box, font_path, FONT_MIN)
     lo, hi = FONT_MIN + 1, max(FONT_MIN, box.h)
     while lo <= hi:
@@ -199,11 +177,7 @@ def overlay(
     fill: str = WHITE_OUT,
     painter=None,
 ) -> Image.Image:
-    """A copy of the page with every region hidden and its text set in it.
-
-    White by default, the other way round from :func:`hidden`: a region here is a
-    rectangle with black lettering set in it, and that wants a clear ground.
-    """
+    """A copy of the page with every region hidden and its text set in it."""
     marks = marked(image.size, [region.box for region in regions])
     out = hidden(image, marks, fill, painter)
     draw = ImageDraw.Draw(out)

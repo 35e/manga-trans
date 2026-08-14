@@ -172,128 +172,53 @@ curl -X POST localhost:8000/api/render -F image=@001.png \
 **`/api/detect`** boxes every piece of lettering it finds. A `confidence` under
 0.8 is worth a second look — the dashboard leaves those blocks alone until one
 has been. It says where the text is, not what it says. `bubble` comes along with
-it, as below, because it is worked out from the page and the boxes and both are
-already in hand. `language` changes nothing about what is found, only the order
-it comes back in.
+it, as below, because both are already in hand. `language` changes nothing about
+what is found, only the order it comes back in.
 
 `kind` comes with it too: `speech` where the lettering is inside a balloon and
-`free` where it is not — a sound effect, a caption, a sign, a shout across the
-art. The model is asked both questions in the one pass, so it costs nothing here,
-and nothing about finding, tracing or hiding a block does anything differently
-with it. A translation must: a sound effect rendered as dialogue is a character
-shouting "thud". Send it back on `/api/translate` as `kinds`.
+`free` where it is not — a sound effect, a caption, a sign. Nothing about
+finding, tracing or hiding a block does anything differently with it. A
+translation must: a sound effect rendered as dialogue is a character shouting
+"thud". Send it back on `/api/translate` as `kinds`.
 
-Two balloons that overlap used to be boxed as one, and that is worse than it
-looks: the block is read as one string, so two speakers reach the translator as a
-single line and the lettering that comes back is set into one balloon. The model
-boxes by *region* rather than by lettering — it is asked where the balloons are
-at the same time as where the words are — so two balloons are two answers, and
-the gap-measuring that used to cut a merged block back apart is gone with the
-problem it was for.
-
-The detector still sometimes draws two boxes over the same lettering. A second
-pass drops any block covering the same words as a surer one, since a duplicate is
-read twice, translated twice and lettered twice into one place.
-
-Every block comes back with a small margin around it, because the head boxes
-lettering tightly and sometimes clips the edge of a glyph — enough to hold the
-whole of what it found and to cover the letter when a block is cleaned by its box
-rather than by its traced ink.
+Every block comes back with a small margin around it, and duplicates are dropped.
 
 **`/api/bubbles`** answers with the room each block was written in rather than
 the room its words take up: the largest rectangle that fits inside the balloon
 *around that block*. This is where a translation goes. Japanese runs down the
 page, so a block of it comes back forty pixels across and three hundred tall, and
-English set in a column that shape wraps to about a letter a line — which is why
-a translated line used to have to be dragged out to its balloon before it could
-be read at all.
+English set in a column that shape wraps to about a letter a line.
 
-The balloon is *detected*, not guessed at. That is the difference this turns on.
-It used to be flooded outwards from the words — a balloon is a light shape closed
-by a dark outline, so the light pixels reachable from the lettering are the
-balloon — and that works until the outline has a tail to escape down, or a scan
-has broken it into the panel beside it, at which point the answer is a rectangle
-somewhere else on the page. Now the model says which shape is the balloon, and
-the measuring only ever happens inside it.
+**The endpoint takes a list rather than one box at a time, and the answer for a
+block depends on which others share its balloon.** Where several are in one
+balloon their answers are cut back to a cell each; a box asked about alone is
+handed the whole balloon. So send every box on the page whenever the answer is
+going to be used for lettering.
 
-Inside it, the balloon's own box is still not the answer: a balloon is an oval,
-and a line set to the corners of its bounding box runs outside the outline. So
-the inside is thresholded within that box and the largest rectangle in it that
-still holds the block is what comes back. The block is painted in first, because
-a line of Japanese down the middle of a balloon cuts its ground into a left half
-and a right half and a measurement started in one of them describes the gap
-beside the words rather than the room around them. Dark balloons with white
-lettering are found the same way round the other way.
+`bubble` is null where the block is in no balloon — a sound effect over artwork
+is in none — and then the box is all there is to go on. Saying so beats answering
+with a rectangle somewhere in the artwork.
 
-Around the block, not simply the largest rectangle in the balloon: an answer
-always holds every pixel of the box it was asked about, and only ever says how
-much wider or taller the room around the words runs. A translation set anywhere
-else is one the reader has to go looking for.
-
-Where several blocks turn out to be in the *same* balloon — a balloon holding two
-separate lines of dialogue — their answers overlap, and each is cut back to its
-own side rather than left running across the others. The page is cut at the
-widest blank between them, on whichever axis that blank is widest, and then each
-side again until every block has a cell to itself; every answer is then cropped
-to the cell of the block it was measured around. Without that, two of them would
-be lettered one on top of another. Cutting once along one axis is not enough,
-which is why this recurses: four blocks set two across and two down are not in a
-row, and one line of cuts hands the two on the right a left half and a right half
-of a balloon they are stacked inside.
-
-Each block keeps its own answer through this, cropped — never a share of a
-neighbour's. Handing a whole group one balloon and cutting *that* up is what
-sends a translation to the far side of the page.
-
-This is why the endpoint takes a list rather than one box at a time: the answer
-for a block depends on which other blocks share its balloon. Ask about a box on
-its own and its answer is left uncropped, since nothing else is known to be in
-the balloon with it — so send every box on the page whenever the answer is going
-to be used for lettering.
-
-`bubble` is null where the block is in no balloon, and then the box is all there
-is to go on: a sound effect over artwork is in none, and a balloon drawn no wider
-than the words already are has nothing to offer. Saying so beats answering with a
-rectangle somewhere in the artwork.
-
-This call used to stand no model up, and now it stands the region detector up:
-where a balloon is is something a model answers, and the boxes sent in are only
-asked which of those balloons hold them.
-
-Detection keeps the last page's pass through the network, since the same page
-goes through twice as a matter of course: `/api/detect` for the boxes and
-`/api/letters` for the mask are one pass, and changing `grow` asks for it again.
-The pass is seconds and everything downstream of it is a millisecond, so asking
-about a page a second time costs milliseconds rather than repeating it. Only the
-last page is kept — they are worked on one at a time.
+*How the room is measured, and what a flood fill got wrong, is in `DOCS.md`.*
 
 **`/api/letters`** answers with the lettering itself rather than the box around
-it: a page-sized PNG, opaque white on the ink and clear everywhere else, which
-is the same detector's segmentation head — the one that answers per pixel rather
-than per block. Sent on to `/api/clean` it hides the words and leaves the art
-they were drawn over, which a rectangle cannot do. `grow` (default 4, up to 64)
-is how far to spread the mask, so no halo is left ringing a letter that has been
-hidden. On clean black-on-white lettering two is already enough; what needs more
-is scanned material — screentone, the ring JPEG leaves around a hard edge, the
-pale rim of an outlined letter — and how much more depends on the scan, which is
-why the dashboard puts it next to the button rather than deciding for you.
+it: a page-sized PNG, opaque white on the ink and clear everywhere else. Sent on
+to `/api/clean` it hides the words and leaves the art they were drawn over, which
+a rectangle cannot do.
 
-It is measured in the *detector's* pixels rather than the page's, and so means
-the same thing at any resolution the page was scanned at. The mask is worked out
-on a 1024-square canvas and stretched to the page, so its edge is only ever
-accurate to a canvas pixel — one page pixel on a small page, three and a half on
-an A4 scan at 300 dpi. Counted in page pixels the same `grow` would be a
-generous allowance on the one and almost none on the other, which comes back as
-the feet of every letter still on the page after a clean.
+`grow` (default 4, up to 64) is how far to spread the mask, so no halo is left
+ringing a hidden letter. Two is enough on clean black-on-white lettering; what
+needs more is scanned material, and how much more depends on the scan — which is
+why the dashboard puts it next to the button rather than deciding for you. **It
+is measured in the detector's pixels rather than the page's**, and so means the
+same thing at any resolution the page was scanned at.
 
 **`/api/read`** says what it says: one string per box, in the order the boxes
 were given, so they line up with the regions `/api/detect` returned. Reading is
 a separate call because the boxes are worth correcting first — a box that clips
 half a bubble reads half a sentence. A box too small to hold lettering comes
-back as `""`, and the box is given a few pixels of air before it goes to the
-model. It translates nothing: what the text should say instead is still for the
-caller to decide. `language` is which reader stands up — see above — and only
-the one asked for ever does.
+back as `""`. It translates nothing. `language` is which reader stands up, and
+only the one asked for ever does.
 
 **`/api/survey`** is the one call here about a chapter rather than a page, and it
 is the answer to the thing a page-at-a-time run cannot do for itself. A chapter is
@@ -309,31 +234,21 @@ page dropped on the way in puts every beat after it one place wrong.
 
 A chapter of raw lettering does not fit a context window, so this takes a
 windowful at a time. Send a few pages; send what came back as `chapter` with the
-next few, and `first` saying which page the window starts at. That the early
-windows had not read the end does not matter, because nothing is translated until
-all of it has been read: the synopsis, the register, the cast and the terms are
-written again each time with the new pages in them, so the last window is the one
-that has read the lot and its answer is the one to keep. There is no separate
-consolidation pass — the last window already is one.
+next few, and `first` saying which page the window starts at. The last window is
+the one that has read the lot, and its answer is the one to keep — there is no
+separate consolidation pass.
 
 `chapter` comes back as `{synopsis, register, beats, cast, terms}`. `synopsis` is
-the chapter whole, `register` is how it is written — how formal, whose voice, when
-and where it is set — and `beats` is one line per page of *this* window, so a
-caller lays them down at `first`. `cast` and `terms` are the same shapes
-`/api/translate` answers with, deliberately: what a survey worked out and what a
-page named go into the one cast and the one glossary, and nothing downstream has
-to know which found a name first. Everything is capped — a synopsis to 1200
-characters, a register to 200, a beat to 160, the cast to twelve and the terms to
-forty — and cut rather than refused, since these ride in front of every page of the
-run and there is no second chance to ask.
+the chapter whole, `register` is how it is written, and `beats` is one line per
+page of *this* window, so a caller lays them down at `first`. `cast` and `terms`
+are the same shapes `/api/translate` answers with. Everything is capped — a
+synopsis to 1200 characters, a register to 200, a beat to 160, the cast to twelve
+and the terms to forty — and cut rather than refused.
 
-The beats are counted the way the translations are, and a window that miscounts is
-shown its own answer and asked again. A second miscount hands back *no* beats
-rather than beats a page out: a beat in the wrong place describes the wrong page,
-and nothing downstream can tell that it does. What the window said about the
-chapter is kept either way — naming a character has nothing to do with counting
-pages. Nothing is kept here: the caller carries the chapter from window to window,
-and back in on `/api/translate`.
+The beats are counted the way the translations are, and a second miscount hands
+back *no* beats rather than beats a page out. What the window said about the
+chapter is kept either way. Nothing is kept here: the caller carries the chapter
+from window to window, and back in on `/api/translate`.
 
 **`/api/translate`** is the one thing here that works on words alone — no image
 goes with it. `texts` is a JSON list, `model` is one of the names `/api/models`
@@ -341,115 +256,66 @@ gives back, `target` is the language to translate into (English unless said) and
 `source` the one the page was lettered in (Japanese unless said). Both are words
 rather than codes: they are only ever words in a prompt, and a caller may well be
 translating something this API has no reader for. The whole page goes over in one
-request rather than one line at a time:
-that is both far quicker and better translation, since a line of manga read on
-its own often cannot be translated at all, having no idea who is speaking or
-about what. The model is held to a JSON schema so the answers come back
-countable. A page that comes back miscounted anyway is shown its own answer and
-asked again — still the whole page, still every line read against the ones around
-it — and only a second miscount falls back to one line at a time, which cannot
-miscount and is the worst translation this can produce. One translation comes
-back per text, in order; a text that was empty stays empty.
+request rather than one line at a time, held to a JSON schema so the answers come
+back countable; a page that miscounts is shown its own answer and asked again,
+and only a second miscount falls back to one line at a time. One translation
+comes back per text, in order; a text that was empty stays empty.
 
 `kinds` and `budgets` are what a caller knows about each line that the model
 cannot see. `kinds` is `speech` or `free` from `/api/detect`, or `""` for a block
 nothing classified. `budgets` is roughly how many characters fit where the
-translation is going to be lettered — worth saying while the words are still
-being chosen, since a line too long for its balloon is not refused anywhere, it
-is set smaller until it fits, and a page of that is a page nobody can read. Both
-are optional; both are one per text in the same order, and a list that is not is
-refused rather than lined up wrong.
+translation is going to be lettered. Both are optional; both are one per text in
+the same order, and a list that is not is **refused** rather than lined up wrong.
+Neither is ever enforced — a line over its budget is still lettered, smaller.
 
 What the model is told is the caller's too: send `system`, with `{target}` and
 `{source}` wherever the languages should go, and `GET /api/prompt` hands back the
-default to start from — as `prompt`, alongside `survey`, which is the other one
-and the default `/api/survey` uses. Nothing is kept — every request carries its
-own — so a front end that wants its own prompt remembers it and sends it each
-time, which is what the dashboard's settings do. Note that the two are not
-interchangeable: a survey briefed to translate translates its window instead of
-reading it, which is why the dashboard sends its prompt to one and not the other.
+default to start from — as `prompt`, alongside `survey`, which is the one
+`/api/survey` uses. Nothing is kept; every request carries its own. The two are
+not interchangeable: a survey briefed to translate translates its window instead
+of reading it.
 
 `terms` comes back beside `texts`: the names, places, honorifics and coinages
 this page introduced, each with the wording just used for it. Send them back as
-`glossary` — a JSON list of `{"source": …, "target": …}` — with the next page, and
-the model is told to render them the same way again. That is what keeps a chapter
-consistent across pages no model ever sees together, and it rides on the request
-that was going anyway rather than a second one, which over forty pages would be
-forty more calls. Nothing is kept here either: the caller collects the terms and
-sends them on, the same as the prompt.
-
-A term may carry a `note` — a few words on who or what it is, where that is what
-decided the wording. A name is rendered one way for a boy and another for a
-teacher, and the page that named him is the only one that ever saw which he was.
-It is optional both ways, and goes back out beside the pair it belongs to.
+`glossary` — a JSON list of `{"source": …, "target": …}`, optionally with a
+`note` — with the next page, and the model is told to render them the same way
+again. That is what keeps a chapter consistent across pages no model ever sees
+together, and it rides on the request that was going anyway.
 
 `story` comes back the same way and goes out again as `previously`: `scene`, a
 sentence or two on where the chapter has got to, and `cast`, who it is going on
-between. A page that opens on two people mid-argument is then translated as that
-rather than as strangers meeting. Japanese drops the subject of a sentence
-wherever the room can supply it, and a page read with no idea what came before it
-supplies the wrong one. The scene is *rewritten* each page rather than added to —
-the model is handed the last one and writes it again with this page in it — so a
-chapter of forty pages carries two sentences rather than eighty.
+between. The scene is *rewritten* each page rather than added to, so a chapter of
+forty pages carries two sentences rather than eighty.
 
 A cast entry is `{"name": …, "gender": "male"|"female"|"unknown", "note": …}`, and
-`unknown` is the answer wanted until the chapter has actually shown otherwise. A
-chapter says who someone is when it is ready to, which is often several pages
-after the first translation needed to know — and a guess made on page one is read
-back as established fact by every page after it, which is how a chapter ends up
-with the wrong pronoun throughout. So the schema makes `unknown` a value rather
-than something the model has to phrase its way around, the cast is named in the
-page's own script (`先輩`, not "the senior") so the name is a key that holds from
-page to page, and each page is asked at the foot of its own text whether anything
-on it settles whoever is still unknown. Measured with gemma4:12b, that last part
-is what makes the difference: told only in the briefing to correct what it is
-given, the model translates 「先輩は僕の兄です」 perfectly and hands the cast
-straight back unchanged.
+**`unknown` is the answer wanted until the chapter has actually shown otherwise**:
+a guess made on page one is read back as established fact by every page after it.
+The cast is named in the page's own script (`先輩`, not "the senior") so the name
+is a key that holds from page to page, and each page is asked at the foot of its
+own text whether anything on it settles whoever is still unknown.
 
 Send `"settled": ["gender"]` on an entry and the model is told that one is not
-its to change. That is how a caller says what it already knows — someone reading
-the chapter usually knows the protagonist's gender long before the pages spell it
-out.
+its to change. That is how a caller says what it already knows.
 
-`chapter` is the other half of that, and the half that reaches forwards: what
-`/api/survey` made of the whole chapter before any of it was translated, with
-`page` saying which of its pages this is, counting from zero. Where `story` is
-what the pages *before* this one came to, `chapter` is what all of them do — so a
-word can be chosen knowing what it turns out to have meant. It does not come
-back, being about the chapter rather than about this page. Send the bible whole:
-the API windows the beats around the page itself, six behind and two ahead, so a
-caller hands over what it holds and does not have to know how much of it is worth
-the room. A bible's `cast` and `terms` are ignored here — they ride as
-`previously` and `glossary`, which is where the rules about which of two answers
-wins live, and two versions of one cast in front of a model read as a
-contradiction.
+`chapter` is the other half, and the half that reaches forwards: what
+`/api/survey` made of the whole chapter, with `page` saying which of its pages
+this is, counting from zero. It does not come back. Send the bible whole — the
+API windows the beats around the page itself. Its `cast` and `terms` are ignored
+here: they ride as `previously` and `glossary`.
 
-The risk in that is worth stating plainly, because it is the whole reason the
-pre-pass needs care: **a model shown the ending writes towards it.** Page three
-comes back heavy with a significance page three has not earned, a line the author
-left vague comes back settled, and characters address each other as what they will
-turn out to be. So a note goes over with the chapter drawing the line — use it for
-who people *are*, since a pronoun and a form of address are exactly what it was
-read for, and not for what *happens*, which is the reader's to reach — and the page
-is told under its own text how far the reader has got. That last part is the same
-finding the `unknown` question above rests on: a standing instruction reads as a
-description of the job, and a line under the page reads as being about the page.
+The risk in that is worth stating plainly: **a model shown the ending writes
+towards it.** A note goes over with the chapter drawing the line — use it for who
+people *are*, not for what *happens* — and the page is told under its own text
+how far the reader has got.
 
-The same line twice on one page is asked about once and lettered twice: a page of
-`……` is one question, and two identical balloons coming back worded differently is
-the commonest way a page reads as though nobody checked it. Same words *and* same
-`kind` — a shout over the art and the same word in a balloon are not the same
-thing. Where the two blocks have different room, the tighter one is what is asked
-for, since the one answer has to fit both. For the same reason the repetition
-penalty is turned off: a page repeats itself on purpose, and a default of 1.1 is a
-push to word the second one differently for no reason but that it came second.
+The same line twice on one page is asked about once and lettered twice, keyed on
+the words *and* the `kind`. Where the two blocks have different room, the tighter
+budget is what is sent. For the same reason the repetition penalty is turned off:
+a page repeats itself on purpose.
 
-Bear in mind that the answers are held to a JSON schema, and a model under a
-schema follows a prompt loosely. Asking for a voice — casual, formal, terse —
-comes through; asking it to reformat what it returns mostly does not. That is why
-the sentence asking for `terms` is added by the API to whatever `system` says
-rather than living in the default prompt: replace the prompt and the glossary
-goes on working.
+*The measured findings behind all of this — the 先輩 experiment, why the notes are
+appended rather than written into the prompt, why the context window is asked for
+— are in `DOCS.md`.*
 
 The request asks for a context window rather than taking the one it is given:
 Ollama's own default is 4096 tokens and it drops what will not fit rather than
@@ -482,58 +348,29 @@ front end with a brush in it needs.
 
 What goes where the lettering was is `fill`. By default it is `art`: the page
 around the mark is looked at and carried inwards, so the tone a sound effect was
-drawn over runs on through it, a panel line that went under a letter comes out
-the other side, and the edge of a bubble joins back up. `fill=white` paints it
-flat instead, which is the old behaviour and still the right one where the
-ground was white to begin with — the inside of a bubble, or a box about to have
-new lettering set in it.
+drawn over runs on through it. `fill=white` paints it flat instead, which is the
+right one where the ground was white to begin with. `fill=telea` is OpenCV's
+inpainting — no weights, a tenth of a second, and a legible ghost over anything
+hatched. `fill=art` quietly falls back to it when LaMa's weights cannot be
+loaded, which an image built with `--build-arg PREFETCH_MODEL=false` may not have.
 
-Filling is LaMa, fine-tuned on 300k manga and anime pages. It has seen line art,
-so it continues a hatched edge and a screentone through the hole rather than
-averaging what surrounds it — which is the difference between a clean and a
-smudge on anything that was drawn rather than flat.
+Filling is LaMa, fine-tuned on 300k manga and anime pages, run on crops around
+each mark rather than on the whole page. A 300 dpi page cleans in about fifteen
+seconds under three and a half gigabytes.
 
-`fill=telea` is OpenCV's inpainting, which is what this used to do: the marked
-pixels are made out of the ones just outside them, working inwards, with no
-notion of structure. It costs nothing that is not already installed and runs in
-about a tenth of a second against LaMa's few seconds, and on flat tone the two
-are hard to tell apart. Over anything hatched it leaves a legible ghost of the
-lettering and breaks every line it crosses. It is kept for comparison, and
-because an image built with `--build-arg PREFETCH_MODEL=false` may not have
-LaMa's weights — `fill=art` quietly falls back to it rather than failing when
-they cannot be loaded.
+Two pixels around every mark are kept out of what the fill is made of but are not
+themselves painted over — which is also why `grow` on `/api/letters` matters more
+here than it did: what the mask does not reach is what the fill is made of.
 
-LaMa is not run over the whole page. A page is mostly art that is staying, so the
-mask is cut into the pieces that actually have marks in them, each taken with
-enough of the art around it to be made out of, and each is put through on its
-own. Marks close together go through as one piece: two letters of a word are not
-worth two passes, and the art around one of them would otherwise hold the other
-as material to copy it from.
-
-A piece larger than about a megapixel is worked out smaller and stretched back.
-LaMa's cost is in its Fourier layers, which hold whole feature maps, so it grows
-with the area it is given: a balloon on an A4 page scanned at 300 dpi would ask
-for something like 9 GB on its own, and the process is killed rather than
-answering. Working smaller costs almost nothing here — only the marked pixels are
-kept, lettering is thin, and what replaces it is the tone and the lines around it
-rather than any detail of its own. A 300 dpi page cleans in about fifteen seconds
-under three and a half gigabytes.
-
-Two pixels around every mark are kept out of what the fill is made of but are
-not themselves painted over. Lettering is printed with soft edges, and a mask
-that stops at the ink leaves a rim of half-ink just outside it; read as art,
-that rim would be carried inwards and the letter put back as a smudge. That is
-also why `grow` on `/api/letters` matters more here than it did: what the mask
-does not reach is what the fill is made of.
+*Why crops rather than pages, and the memory measurements behind the megapixel
+cap, are in `DOCS.md`.*
 
 **`/api/render`** does the same and sets each region's `text` in its box: wrapped
 to the width, centred, black, at the largest size that lands inside it. Text too
 long for its box is set at the smallest size and left to overrun rather than
-dropped — a line that can be read is a line that can be moved. It takes `fill`
-too, but the default is the other way round — `white` — because a region here is
-a rectangle and the text set in it is black, and black lettering wants a ground
-that is clear rather than one that is whatever was underneath. Both endpoints
-answer with `image/png`; neither writes anything to disk.
+dropped. It takes `fill` too, but the default is the other way round — `white` —
+because black lettering wants a clear ground. Both endpoints answer with
+`image/png`; neither writes anything to disk.
 
 ## Options
 
@@ -581,139 +418,64 @@ web/
 docker-compose.yml  both halves, on one origin
 ```
 
+`DOCS.md` is the section-per-module reference: how each of these works and why it
+is that way. `CLAUDE.md` is the short list of what must not be broken.
+
+## The dashboard
+
 Pages go in by dropping them, pasting them, or picking them — and a chapter can
-go in as a `.zip` or `.cbz`, which is opened in the browser. The pages come out
-in the order their names put them, counting properly: page 2 before page 10.
-Folders, dotfiles and the `__MACOSX` rubbish a Mac packs in are left behind.
+go in as a `.zip` or `.cbz`, which is opened in the browser and comes out in the
+order the names put it, counting properly: page 2 before page 10.
 
-An archive arrives as a **folder** in the rail rather than as fifty more
-thumbnails. Clicking it goes in, and the arrow at the top of the rail comes back
-out. The same archive dropped twice fills the same folder rather than putting a
-second one beside it, and a page is only ever the duplicate of another in the same
-folder: two chapters both hold a `001.png`, and those are two pages. Deleting a
-folder deletes its pages, and deleting the last page deletes the folder.
-
-**New folder** starts an empty one, for pages that did not arrive as a chapter.
-It is named as it is made, there being nothing that renames one afterwards, and
-opens straight away — because pages dropped while a folder is open land *in* it,
-which is the whole point of having made it. An archive is the exception and still
-makes a folder of its own: a chapter inside a chapter means nothing here. A
-hand-made folder is kept when its last page is deleted, having been made empty in
-the first place, and the first archive dropped into one tells it what to come back
-out as.
+An archive arrives as a **folder** in the rail. The same archive dropped twice
+fills the same folder, and pages are only duplicates of each other within one.
+**New folder** starts an empty one, which pages dropped while it is open land in;
+an archive still makes its own. Deleting a folder deletes its pages, and deleting
+the last page deletes an archive's folder but not a hand-made one.
 
 A folder is run in two steps, because a chapter is worth reading before it is
-translated.
+translated. **Clean & read chapter** puts every page through detect, read and
+hide, then reads the chapter itself out of what those pages said. **Translate
+chapter** then letters every page against the whole of it — pressed without
+having read the chapter it still works, each page knowing only the pages before
+it. Either asks once before doing a folder that has already been lettered.
 
-**Clean & read chapter**, inside an opened folder, puts every page through detect,
-read and hide — one page at a time, since the API holds one detector and one
-reader behind a lock each and pages sent together only queue there anyway — and
-then reads the chapter itself out of what those pages said, a few pages at a time.
-The bar above the rail says which of the two steps is running, which page is in
-hand and what is being done to it, and stays where it is when the folder is closed;
-clicking the page's name puts that page on the board. **Stop** stops after the page
-in hand, a request already sent being left to land. A page that falls over is named
-with the reason it gave and the rest carry on.
+The bar above the rail says which step is running, which page is in hand and what
+is being done to it; clicking the page's name puts it on the board. **Stop** stops
+after the page in hand. A page that falls over is named with its reason and the
+rest carry on.
 
-**Translate chapter** then letters every page against the whole of it. Pressed
-without having read the chapter it still works, and is exactly what one button
-used to be: each page knowing only the pages before it. Either button asks once
-before doing a folder that has already been lettered, since a line moved or
-rewritten by hand cannot be got back.
+The gap between the two steps is the point of splitting them: what the chapter
+turned out to be is shown under the folder's buttons and can be put right there,
+and a name corrected *there* is corrected on every page. The page-by-page beats
+are shown too, and are the one part that is not editable. Delete or add a page
+after reading the chapter and the beats no longer line up, so the rail says so and
+translating falls back to knowing only what came before.
 
-The gap between the two is the point of splitting them. What the chapter turned
-out to be is shown under the folder's buttons and can be put right there — the
-synopsis, how it is written, the cast and what each name is being rendered as — and
-a name corrected *there* is corrected on every page, where the same correction made
-afterwards is a chapter already lettered wrong. The page-by-page list is shown too,
-and is the one part that is not editable: a beat is what the sweep saw on a page,
-and editing one is a claim about a page nobody read again.
+A run also builds the folder's **chapter terms**, so a character keeps one
+spelling across pages the model never sees together; the first rendering of a term
+wins. **Forget** starts it over.
 
-Delete or add a page after reading the chapter and the beats no longer line up with
-the folder — they are indexed by where a page sits in it — so the rail says so and
-translating falls back to knowing only what came before, rather than translating
-each page against its neighbour's summary.
+**Download chapter** hands the whole folder back as one archive, the way it
+arrived: `ch01.cbz` comes back as `ch01-english.cbz`, or `ch01-cleaned.cbz` where
+it was only cleaned. *Every* page goes in, at the best state it reached, under the
+name it came in under. It can be pressed whenever there is something to save, and
+pressed again.
 
-A run also builds the folder's **chapter terms**: the survey's names, places and
-coinages seed the list, and each page adds whatever it introduces, so a character
-keeps one spelling across pages the model never sees together. The first rendering
-of a term wins and is never overwritten — which is why the survey's list is handed
-over whole at the end of the sweep rather than window by window, since folding each
-window in as it arrived would freeze the guesses of the windows that had not yet
-read the ending. **Forget** starts all of it over; pages already lettered are left
-as they are. It belongs to the folder, is capped at forty, and like everything else
-here is gone when the tab is.
+A page is worked on the board in three tabs. **Inspect** boxes the lettering and
+reads it; **Page is in** beside the blocks is the language, remembered for next
+time. A block the detector is less than 80% sure of starts left alone. **Mask**
+marks the lettering itself for hiding, brushable by hand, with **Hide under**
+choosing between the art, no model, and flat white. **Translate** sets each line
+in the balloon its original was written in, in Anime Ace, as large as it will go
+there but no larger than the page is lettered; the box can be dragged, pulled,
+sized with the up and down arrows and turned with the left and right ones or by
+the handle above it. **Fit** sets one line at the largest size that lands in its
+box. **Translate again** runs the page over against the blocks as they stand.
+**Apply to image** draws the lot into the page and saves it, with the same font,
+sizes and wrapping shown on the board.
 
-**Download chapter**, beside it and on the card the run leaves behind, hands the
-whole folder back as one archive — the way it arrived. A chapter dropped in as
-`ch01.cbz` comes back as `ch01-english.cbz`, named for whatever it was translated
-into; one that was only cleaned comes back `ch01-cleaned.cbz`.
-
-*Every* page goes in, at the best state it reached: lettered where it was
-translated, cleaned where it was only cleaned, and exactly as it arrived where it
-was neither — a page that fell over is still part of the story, and leaving it
-out renumbers everything after it. Pages keep the names they came in under, so a
-comic reader puts them back in the same order. Anything drawn on comes out as a
-PNG; anything untouched is passed through byte for byte rather than re-encoded.
-
-It can be pressed whenever there is something to save — after a whole run, after
-one stopped part way, or later in the session — and pressed again as often as you
-like, since the pages are drawn afresh each time from what is on screen. Nothing
-is compressed on the way in: these are PNGs and JPEGs already, and deflating them
-a second time costs seconds over a chapter to save about a percent.
-
-The dashboard puts a page on a board and works it in three tabs. **Inspect**
-boxes the lettering and reads it. **Page is in**, beside the blocks, is the
-language it is lettered in: it picks the reader, it puts the blocks in the order
-that language is read in, and it is what the translator is told the page is in.
-It sits on this tab rather than in the settings because this is the step it bears
-on, and it is remembered for next time, a chapter being all one language. A block
-the detector is less than 80% sure of
-is read and listed like any other but starts left alone, since a box over half a
-bubble or over a piece of artwork does more harm hidden than a real one does
-missed. Putting one back is one click, as is dropping one it was too sure of.
-**Mask** marks the lettering itself for
-hiding — not the boxes around it — and that mask can be brushed by hand, drawn
-wider or erased back, with blocks worth keeping dropped from it one at a time.
-**Hide under** beside the brush is what a clean puts back where the marks were:
-**The art**, filled in by a model that has seen line art, so a screentone and a
-hatched edge carry on through; **No model**, which is the same idea done by
-OpenCV and much faster, and fine over flat tone but a smear over anything drawn;
-or **White**, flat.
-**Translate** sets each translated line in the balloon its original was written
-in — not in the box the original came out of, which for a vertical line of
-Japanese is a column too narrow to set one word of English across. It is set in
-Anime Ace, as large as it will go in that balloon but no larger than the page is
-lettered: a balloon is drawn around its words rather than to them, so the largest
-type that fits one is far bigger than the type it was drawn around whenever the
-line is short, and "OK!" left to fill its balloon comes out four times the height
-of the dialogue on either side of it. How large the page is lettered is read off
-the original — Japanese is set on a square em, so a block of *n* characters
-covering *w × h* was set at about the square root of *wh/n*.
-
-The box can be dragged about, pulled wider or narrower by its edges,
-sized with the up and down arrows and turned with the left and right ones — or
-by the round handle standing above the box, which follows the pointer round it,
-holding shift for 15° at a time. Manga letters plenty of things on the slant: a
-sound effect running up the page, a shout across a tilted bubble, and a line set
-square over one of those reads as a sticker rather than as part of the art. The
-box itself stays square to the page and only what sits in it turns, so a line
-still wraps to the width it was given; pulling a turned box by an edge pulls it
-along its own axes, and the edge that was not pulled stays where it looks.
-**Fit**, against each line in the translations list, sets that one line at the
-largest size that lands in its box, held to the size the page is lettered at —
-which is the size the arrows deliberately go past.
-**Translate again**, beside it, runs the page
-over against the blocks as they stand: blocks are added, dropped and put back
-after a page has been translated, and this is what brings the lines back into
-step with them — one that was added gets a line, one that went away loses its
-own. Every line already set is replaced, so it is the whole page again rather
-than the gaps in it, which is also the better translation: the model reads the
-page as one conversation. **Apply to image** draws the lot into the page
-and saves it — in the browser, with the same font, sizes and wrapping shown on
-the board, so what comes out is what was arranged. `/api/render` letters a page
-too, and letters it with PIL: it takes boxes and text and finds its own sizes,
-which is the endpoint to reach for from something that is not this dashboard.
+*What each of those decisions costs, and why, is in `DOCS.md`.*
 
 Translating needs Ollama running with a model pulled:
 
@@ -729,14 +491,7 @@ otherwise.
 
 ## Tests
 
-From `api/`:
-
-```bash
-python -m unittest discover -s tests -t .
-```
-
-Or in the container, with the working copy mounted in so a change needs no
-rebuild:
+In the container, with the working copy mounted in so a change needs no rebuild:
 
 ```bash
 podman run --rm --network none --entrypoint python -w /app \

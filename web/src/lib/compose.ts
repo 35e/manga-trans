@@ -2,12 +2,8 @@ import type { Lettering } from './api'
 import { LINE_HEIGHT, fontFor, linesFor, ready, strokeFor } from './fit'
 
 /**
- * The page with the translations set into it, as a PNG.
- *
- * Drawn with the same font, sizes and wrapping the board previews with, so what
- * was arranged there is what comes out. The base is whatever the board is
- * showing — the cleaned page if there is one, since lettering over words that
- * were never hidden only stacks one on the other.
+ * The page with the translations set into it, as a PNG. Shares `lib/fit.ts` with
+ * the board's preview, so what was arranged there is what comes out.
  */
 export async function compose(
   source: string,
@@ -59,15 +55,12 @@ function set(context: CanvasRenderingContext2D, line: Lettering) {
   const lines = linesFor(line.text, x1 - x0, line.size)
   const step = line.size * LINE_HEIGHT
 
-  // Drawn about the middle of the box, which is what lets a line be turned the
-  // way the board turns it: the same rotation about the same point.
+  // About the middle of the box, the same point the board turns about.
   context.save()
   context.translate((x0 + x1) / 2, (y0 + y1) / 2)
   if (line.angle) context.rotate((line.angle * Math.PI) / 180)
 
-  // The whole block is centred on the box, so the first line starts half a
-  // block above the middle — text too tall for its box overruns it evenly,
-  // above and below, as it does on the board.
+  // Centred on the box, so the first line starts half a block above the middle.
   const top = -((lines.length - 1) * step) / 2
 
   lines.forEach((text, index) => {

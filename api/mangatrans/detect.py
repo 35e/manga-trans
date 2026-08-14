@@ -1,19 +1,7 @@
 """Finding the lettering on a page, and the balloons it was written in.
 
-Two models, because they answer two different questions.
-
-:class:`Regions` is comic-text-and-bubble-detector, an RT-DETRv2 trained on manga,
-webtoons, manhua and western comics. One pass gives both the balloons and the
-lettering, told apart by class — which is what lets a translation be lettered into
-the room it belongs in rather than into a rectangle guessed from the page. It runs
-on onnxruntime.
-
-:class:`Letters` is comic-text-detector, kept for its segmentation head alone: the
-per-pixel map of where the ink is, which is what lets a clean hide the words and
-leave the art they were drawn over. Its own block head is not used — boxing by
-region beats boxing by lettering, and a region detector does not run two balloons
-together the way a lettering detector does. It runs on OpenCV's ONNX backend, so
-it needs neither torch nor onnxruntime.
+:class:`Regions` boxes both, told apart by class. :class:`Letters` is kept for
+its segmentation head alone — the per-pixel ink map. See DOCS.md.
 """
 
 from __future__ import annotations
@@ -47,19 +35,10 @@ INPUT_SIZE = 1024
 # The segmentation head answers per pixel, between 0 and 1.
 SEG_THRESHOLD = 0.5
 
-# Letters have soft edges and the mask stops at the ink, so the mask is grown to
-# cover the halo left ringing a hidden letter — screentone, JPEG ringing, the
-# pale rim of an outlined letter. Four suits clean lettering; scans want more,
-# which is why callers can say `grow`.
-#
-# Measured in the *detector's* pixels rather than the page's. The mask is worked
-# out on a 1024-square canvas and stretched to the page, so its edge is only ever
-# accurate to a canvas pixel — which is one page pixel on a small page and three
-# and a half on an A4 scan at 300 dpi. Fixed in page pixels, the same `grow`
-# covers three canvas pixels of slop on the one and barely one on the other, and
-# a big scan comes back with the feet of its letters still on it: measured,
-# 100% of the lettering covered at 1000x1400 against 94.5% at 2480x3508.
-# In canvas pixels it means the same thing at any size the page was scanned at.
+# How far the ink mask is grown to cover the halo around a hidden letter.
+# Measured in the *detector's* pixels, not the page's: held in page pixels the
+# same value is three canvas pixels of allowance on a small page and barely one
+# on a 300 dpi scan. Anything else measured against the mask is in these units.
 GROW = 4
 GROW_MAX = 64
 
@@ -69,41 +48,24 @@ REGIONS_REPO = "ogkalu/comic-text-and-bubble-detector"
 REGIONS_FILE = "detector_int8.onnx"
 REGIONS_ENV = "MANGA_TRANS_REGIONS"
 
-# What the model was trained at, and how it is fed: a plain resize to a square,
-# rescaled to 0..1, with no normalisation — straight from the model's own
-# preprocessor_config.json. The graph itself takes any size, but a page put
-# through at its own resolution is both slower and worse than one put through at
-# the size the weights were fitted to. A plain resize rather than a letterbox
-# because the graph is told the page's shape separately and puts it back itself.
+# A plain resize to a square, rescaled to 0..1, no normalisation — straight from
+# the model's own preprocessor_config.json.
 REGIONS_SIZE = 640
 
-# The classes it answers with.
 BUBBLE, TEXT_BUBBLE, TEXT_FREE = 0, 1, 2
 
-# What a block turned out to be, in the words the answer carries it in. Finding,
-# tracing and cleaning treat the two alike and always will — they are ink on a
-# page either way — but a translation must not: lettering in a balloon is someone
-# speaking, and lettering outside one is a sound effect, a caption or a sign, which
-# is not spoken and is not written the same way. The model is asked both questions
-# in the one pass, so this costs nothing to keep and cannot be recovered later.
 SPEECH, FREE = "speech", "free"
 KINDS = {TEXT_BUBBLE: SPEECH, TEXT_FREE: FREE}
 
-# Below this a box is not worth showing. The dashboard leaves anything under
-# UNSURE (0.8) unselected for review, so this is the floor of what it is offered
-# rather than the line between sure and unsure.
+# The floor of what the dashboard is offered, not the line between sure and
+# unsure — that is UNSURE (0.8), and it is the front end's.
 REGIONS_CONF = 0.35
 
-# Two boxes covering this much of the smaller of them are the same thing found
-# twice. RT-DETR matches one query to one object and needs no NMS, but a balloon
-# and the text filling it are different classes and are deduped separately.
+# Two boxes covering this much of the smaller of them are one thing found twice.
 DUPLICATE = 0.75
 
-# A margin left around every block, as a share of its shorter side. The head
-# boxes lettering tightly and sometimes inside it, clipping the edge of a glyph:
-# a slightly wider box holds the whole of what it found, gives the reader the
-# stroke it was cutting through, and covers the whole letter when the block is
-# cleaned by its box rather than by the traced ink.
+# A margin left around every block, as a share of its shorter side: the head
+# boxes lettering tightly and sometimes inside it, clipping the edge of a glyph.
 PAD = 0.04
 PAD_MIN = 2
 
@@ -114,8 +76,7 @@ class Block:
 
     box: Box
     confidence: float = 1.0
-    # SPEECH or FREE where the detector said which. Empty where nothing did: a
-    # block drawn by hand, or one asked about on its own.
+    # Empty where nothing said: a block drawn by hand, or asked about on its own.
     kind: str = ""
 
 
@@ -128,23 +89,13 @@ def model_path(explicit: str | None = None) -> Path:
     return next((path for path in candidates if path.is_file()), candidates[-1])
 
 
-# A hundred megabytes in one response is enough for a container network that
-# carries small files fine — a VM on a Mac, most proxies — to drop it part way
-# through, and urlretrieve does not retry. The weights are the same every time,
-# so starting over is always safe; it is only ever the transfer that failed.
-#
-# Waiting between tries is the half that matters. Whatever drops one of these
-# drops the next few as well, so attempts in a row all land in the same bad few
-# seconds and the retry buys nothing. Long enough, by the last try, to outlast
-# the minute-scale throttle a release asset gets when it is fetched repeatedly.
+# The wait between tries is the half that matters: whatever drops one of these
+# drops the next few as well, so tries in a row all land in the same bad seconds.
 TRIES = 6
 BACKOFF = 8
 
-# urlretrieve cannot set headers, and the default `Python-urllib/3.x` is turned
-# away by enough of the internet — GitHub's release assets among them, which
-# close the connection before answering rather than saying so — that it is worth
-# not using it. Nothing here depends on being taken for a browser; it only has to
-# not be the one string that is refused out of hand.
+# The default `Python-urllib/3.x` is refused out of hand by GitHub's release
+# assets, which close the connection rather than saying so.
 AGENT = "Mozilla/5.0 (compatible; manga-trans)"
 
 
@@ -184,9 +135,6 @@ def ensure_regions(explicit: str | None = None) -> str:
 
     from huggingface_hub import hf_hub_download
 
-    # Straight from the cache when it is already there, which is what the image
-    # bakes in; only otherwise is anything fetched. Said this way round because
-    # announcing a download that did not happen is how a log stops being read.
     try:
         return hf_hub_download(REGIONS_REPO, REGIONS_FILE, local_files_only=True)
     except Exception:  # noqa: BLE001 — not cached, so go and get it
@@ -224,8 +172,7 @@ def page_mask(
     full = cv2.resize(kept, (width, height), interpolation=cv2.INTER_LINEAR)
     mask = ((full > SEG_THRESHOLD) * 255).astype(np.uint8)
 
-    # The letterbox puts the page's longer side on the canvas, so this is how
-    # many page pixels one canvas pixel became. See :data:`GROW`.
+    # How many page pixels one canvas pixel became — see :data:`GROW`.
     spread = round(grow * max(width, height) / INPUT_SIZE)
     if spread > 0:
         kernel = cv2.getStructuringElement(
@@ -259,12 +206,8 @@ def decode(
 ):
     """The model's rows to (class, box, score), in the page's own pixels.
 
-    This export carries RT-DETR's own postprocessing inside the graph, so what
-    comes out is already a class, a corner-to-corner box and a score rather than
-    logits to be talked down from. The boxes are in the pixels of whatever was
-    passed as ``orig_target_sizes`` and can fall slightly outside them, which is
-    what the clip is for. The model answers with a fixed 300 queries whether or
-    not it found that many things, so the score is what says which are real.
+    It answers with a fixed 300 queries whether or not it found that many
+    things, so the score is what says which are real.
     """
     found = []
     for at in np.flatnonzero(scores >= REGIONS_CONF):
@@ -305,11 +248,8 @@ class Regions:
     def run(self, image) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """One pass: the classes, the boxes and the scores, in the page's pixels.
 
-        The graph takes the page at whatever size it is handed and is told
-        separately what to scale its answer back to, so the page goes over at the
-        size the model was trained on and the boxes come back on the page. That
-        second input is (width, height) — measured, not assumed: the other way
-        round returns the same balloons transposed.
+        ``orig_target_sizes`` is **(width, height)** — measured, not assumed: the
+        other way round returns the same balloons transposed.
         """
         page = np.ascontiguousarray(image)
         key = hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest()
@@ -338,25 +278,20 @@ class Regions:
     def __call__(self, image, rtl: bool = True) -> tuple[list[Block], list[Box]]:
         """Every block of lettering on one RGB page array, and every balloon.
 
-        ``rtl`` is which way reading order runs across the page — right to left
-        for Japanese and for the Chinese set in columns, left to right for Korean
-        and for a webcomic. It is the caller's rather than measured because it is
-        a property of what is being read rather than of the page: the same layout
-        of balloons is read both ways round by different languages.
+        ``rtl`` is the caller's rather than measured: the same layout of balloons
+        is read both ways round by different languages.
         """
         height, width = image.shape[:2]
         labels, boxes, scores = self.run(image)
         found = decode(labels, boxes, scores, width, height)
 
-        # Per class. A balloon and the text filling it cover each other almost
+        # Per class: a balloon and the text filling it cover each other almost
         # entirely and are not two findings of one thing.
         balloons = suppressed(
             [Block(box, score) for kind, box, score in found if kind == BUBBLE]
         )
         # Thinned on the tight boxes and padded after, never the other way round:
         # a margin put on first can make two neighbours look like one finding.
-        # Speech and free lettering are thinned together though they are kept
-        # apart: a block the model called both is one block found twice.
         blocks = [
             Block(padded(block.box, width, height), block.confidence, block.kind)
             for block in suppressed(
@@ -368,8 +303,7 @@ class Regions:
             )
         ]
 
-        # Down the page, then across it the way the language is read.
-        # `lib/order.ts` sorts by the same key.
+        # `lib/order.ts` sorts by the same key and must go on agreeing.
         across = (lambda box: -box.x1) if rtl else (lambda box: box.x0)
         blocks.sort(key=lambda block: (block.box.y0, across(block.box)))
         return blocks, [balloon.box for balloon in balloons]
@@ -379,9 +313,7 @@ class Letters:
     """comic-text-detector's segmentation head: where the ink is, pixel by pixel.
 
     One page at a time: an OpenCV net is not reentrant. The last page's pass is
-    kept, because a dashboard asks for the mask again every time the spread is
-    changed, and the pass is seconds where everything downstream of it is a
-    millisecond.
+    kept — it is seconds where everything downstream of it is a millisecond.
     """
 
     def __init__(self, weights: str | Path | None = None) -> None:
@@ -394,10 +326,7 @@ class Letters:
         """One pass: the per-pixel text map and the padding put on to get it.
 
         Some OpenCV builds return the outputs in a different order than they were
-        asked for, so they are told apart by shape: the lettering is the
-        one-channel map — the two-channel one is where the lines of text run,
-        which nothing here wants, and the three-dimensional one is the block head,
-        which :class:`Regions` answers better.
+        asked for, so they are told apart by shape rather than by position.
         """
         page = np.ascontiguousarray(image)
         key = hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest()

@@ -30,11 +30,8 @@ from mangatrans.detect import FREE, SPEECH, Block
 from mangatrans.geometry import Box
 
 DARK = (20, 20, 20)
-# A page of flat tone, and something dark drawn on it to be taken back off: what
-# a fill made out of the surroundings should come back as, and what it should not.
 TONE = (200, 200, 200)
 INK = Box(80, 50, 120, 90)
-# Filling from a flat surround lands on that flat value, give or take rounding.
 NEAR = 5
 
 
@@ -43,11 +40,7 @@ def page(width: int = 200, height: int = 140, colour=DARK) -> Image.Image:
 
 
 def toned(ink: Box | None = INK, rim: int = 0) -> Image.Image:
-    """Flat tone with ink on it, and a rim of half-ink around it if asked.
-
-    The rim is what a soft-edged letter leaves just outside a mask that stops at
-    the ink — the thing a fill must not be made out of.
-    """
+    """Flat tone with ink on it, and a rim of half-ink around it if asked."""
     image = page(colour=TONE)
     draw = ImageDraw.Draw(image)
     if ink is not None:
@@ -62,11 +55,7 @@ def toned(ink: Box | None = INK, rim: int = 0) -> Image.Image:
 
 
 def payload(image: Image.Image, mask: Image.Image | None = None, **fields) -> dict:
-    """A multipart body: the image, a mask if there is one, and JSON beside them.
-
-    Strings go up as they are — a word the API reads back with request.form.get
-    is not JSON, and would arrive still wearing its quotes.
-    """
+    """A multipart body: the image, a mask if there is one, and JSON beside them."""
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
@@ -133,13 +122,7 @@ class StubLetters:
 
 
 class StubLama:
-    """A painter that does what LaMa does, crudely: fill from what is around.
-
-    The middle of everything outside the hole, laid over everything inside it. It
-    is not inpainting, but it stands in the same relation to the page as the real
-    thing — what comes out is made of what surrounds the mark rather than being
-    flat white — so the tests that care about *that* need no weights.
-    """
+    """A painter that does what LaMa does, crudely: fill from what is around."""
 
     def __init__(self, *args, **kwargs) -> None:
         pass
@@ -154,14 +137,12 @@ class StubLama:
         return out
 
 
-# No test stands the real LaMa up: its weights are 206 MB and the point of the
-# doubles is that the suite needs no model and no network. Held for the whole
-# module because `server.create_app` reaches for it per request rather than up
-# front, so a patch around building the client would already have lifted.
+# Held for the whole module because `server.create_app` reaches for the
+# client per request: a patch around building it would already have lifted.
 _stub_lama = mock.patch.object(inpaint, "Lama", StubLama)
 
-# Kept from before that patch goes on, so the cropping and padding around the
-# session can still be tested on the real class.
+# Kept from before that patch goes on, so the real class can still be
+# tested.
 Lama = inpaint.Lama
 
 
@@ -174,11 +155,7 @@ def tearDownModule():
 
 
 class StubReader:
-    """The size of whatever it was handed, so the crop can be checked.
-
-    The language is named alongside it, since which reader a request stands up is
-    the point of sending one.
-    """
+    """The size of whatever it was handed, so the crop can be checked."""
 
     def __init__(self, *args, **kwargs) -> None:
         pass
@@ -279,14 +256,10 @@ class TestFill(unittest.TestCase):
         self.assertTrue((filled < TONE[0] - NEAR).all(), "all of it was laid on")
 
     def test_the_rim_around_a_mark_is_not_what_it_is_made_of(self):
-        # Half-ink just outside the mask is the letter, not the art: read as art
-        # it would be carried inwards and the letter put back as a smudge.
         filled = patch(inpaint.fill(toned(rim=2), stencil(INK)), INK).astype(int)
         self.assertTrue((abs(filled - TONE[0]) <= NEAR).all(), "the rim was read")
 
     def test_the_rim_is_still_left_where_it_was(self):
-        # Kept out of what the fill is made of is not the same as painted over:
-        # nothing outside the mark is touched.
         out = np.array(inpaint.fill(toned(rim=2), stencil(INK)))
         self.assertEqual(tuple(out[INK.y0 - 1, INK.x0]), (100, 100, 100))
 
@@ -301,11 +274,7 @@ class TestFill(unittest.TestCase):
 
 
 class TestPainter(unittest.TestCase):
-    """The fill a model makes, and the seam it is laid back through.
-
-    The session is stubbed throughout: what is under test is the cropping, the
-    padding and the compositing around it, none of which needs weights.
-    """
+    """The fill a model makes, and the seam it is laid back through."""
 
     def marker(self):
         """A painter that signs its work, so its pixels can be told from Telea's."""
@@ -326,25 +295,18 @@ class TestPainter(unittest.TestCase):
         self.assertEqual(len(seen), 1, "the painter was not asked")
 
     def test_nothing_outside_the_mark_is_painted_over(self):
-        # The hole is grown before the fill is *sampled*, and only the ungrown
-        # mark is laid back through. A painter that covers the grown hole must
-        # still not show up outside the mark.
         paint, _ = self.marker()
         out = np.array(inpaint.fill(toned(), stencil(INK), paint))
         self.assertEqual(tuple(out[INK.y0 - 1, INK.x0]), TONE)
         self.assertEqual(tuple(out[INK.y1 + 1, INK.x0]), TONE)
 
     def test_a_page_marked_all_over_never_reaches_the_painter(self):
-        # There is nothing left to make the fill out of, and a model handed a
-        # page that is entirely hole does not say so, it invents one.
         paint, seen = self.marker()
         out = inpaint.fill(toned(), stencil(Box(0, 0, 200, 140)), paint)
         self.assertTrue((np.array(out) == 255).all())
         self.assertEqual(seen, [], "the painter was asked to make a page up")
 
     def test_a_crop_is_padded_out_to_whole_blocks(self):
-        # The graph halves its input three times over, so a size that is not a
-        # multiple of eight fails inside it rather than being padded for us.
         made = Lama.__new__(Lama)
         made._lock = threading.Lock()
 
@@ -362,8 +324,6 @@ class TestPainter(unittest.TestCase):
         self.assertEqual(made.patch(crop, hole).shape, crop.shape)
 
     def test_only_the_marked_pieces_of_a_page_go_through(self):
-        # A page is mostly art that is staying. Sending the whole of one through
-        # to take out two balloons is minutes rather than seconds.
         hole = np.zeros((400, 400), np.uint8)
         hole[20:40, 20:40] = 255
         hole[300:320, 300:320] = 255
@@ -376,16 +336,11 @@ class TestPainter(unittest.TestCase):
         self.assertIsNone(Lama.working((800, 600)))
 
     def test_a_crop_over_the_cap_is_brought_down_to_it(self):
-        # An A4 page scanned at 300 dpi is 8.7 MP and a balloon on one is a crop
-        # of several. Put through whole, LaMa asks for something like 9 GB and
-        # the process is killed: no error, no traceback, just a 502.
         wide, tall = Lama.working((2055, 2406))
         self.assertLessEqual(wide * tall, inpaint.LARGEST)
         self.assertAlmostEqual(wide / tall, 2406 / 2055, places=1, msg="shape changed")
 
     def test_a_scaled_crop_still_comes_back_the_size_it_went_in(self):
-        # The caller pastes it back into the page, so anything else is a crop
-        # landing in the wrong place.
         made = Lama.__new__(Lama)
         made._lock = threading.Lock()
 
@@ -402,7 +357,6 @@ class TestPainter(unittest.TestCase):
         self.assertEqual(made.patch(crop, hole).shape, crop.shape)
 
     def test_a_thin_stroke_survives_being_scaled_down(self):
-        # Rounding a stroke *out* of the hole leaves that stroke on the page.
         hole = np.zeros((2400, 2000), np.uint8)
         hole[1200:1202, 500:1500] = 255  # two pixels tall
         small = Lama.working(hole.shape)
@@ -410,8 +364,6 @@ class TestPainter(unittest.TestCase):
         self.assertTrue((shrunk > 0).any(), "the mark was rounded away")
 
     def test_marks_close_together_go_through_as_one(self):
-        # Two letters of a word are not worth two passes, and the context around
-        # one would hold the other as art to copy it from.
         hole = np.zeros((400, 400), np.uint8)
         hole[100:120, 100:120] = 255
         hole[100:120, 125:145] = 255
@@ -419,14 +371,7 @@ class TestPainter(unittest.TestCase):
 
 
 class TestGrowIsScanIndependent(unittest.TestCase):
-    """`grow` means the same thing however large the page was scanned.
-
-    The mask is worked out on a fixed square canvas and stretched to the page, so
-    its edge is only accurate to a canvas pixel — one page pixel on a small page
-    and three and a half on an A4 scan at 300 dpi. Held in page pixels, the same
-    `grow` is three canvas pixels of allowance on the one and barely one on the
-    other, and a big scan comes back with the feet of its letters still on it.
-    """
+    """`grow` means the same thing however large the page was scanned."""
 
     def grown(self, width: int, height: int, grow: int = detect.GROW) -> int:
         """How many page pixels a lit spot spreads to, on a page this size."""
@@ -440,8 +385,6 @@ class TestGrowIsScanIndependent(unittest.TestCase):
     def test_a_bigger_scan_of_one_page_is_grown_proportionally(self):
         small = self.grown(1000, 1400)
         large = self.grown(2480, 3508)
-        # Both the lit spot and the margin scale with the page, so the whole mark
-        # scales with it: the same allowance, measured the same way.
         self.assertAlmostEqual(large / small, 3508 / 1400, delta=0.15)
 
     def test_growing_by_nothing_still_grows_by_nothing(self):
@@ -449,8 +392,6 @@ class TestGrowIsScanIndependent(unittest.TestCase):
         self.assertLess(plain, self.grown(2480, 3508, detect.GROW))
 
     def test_a_small_page_is_not_grown_away(self):
-        # The scale runs the other way below the canvas size, and a mask grown by
-        # a fraction of a pixel must still be grown by none rather than by one.
         self.assertGreater(self.grown(200, 140, detect.GROW), 0)
 
 
@@ -486,8 +427,6 @@ class TestPageMask(unittest.TestCase):
         self.assertEqual(mask[120, 180], 0, "the far corner of the page is marked")
 
     def test_the_padding_is_taken_back_off(self):
-        # Everything the model saw is lit, so every page pixel should be, and
-        # nothing should be lost to the black bars letterbox() added.
         pad_w, pad_h = self.pads()
         seg = np.zeros((detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
         seg[: detect.INPUT_SIZE - pad_h, : detect.INPUT_SIZE - pad_w] = 1.0
@@ -579,13 +518,7 @@ def ballooned(
     ground=(255, 255, 255),
     ink=(0, 0, 0),
 ) -> Image.Image:
-    """A page of artwork with one balloon on it, and a column of writing inside.
-
-    The column is what a detector hands back for Japanese: tall, narrow, and
-    down the middle, which cuts the balloon's ground in two. The artwork around
-    it is mid tone, so nothing outside the balloon is light enough to be mistaken
-    for part of it.
-    """
+    """A page of artwork with one balloon on it, and a column of writing inside."""
     image = Image.new("RGB", size, (120, 120, 120))
     draw = ImageDraw.Draw(image)
     draw.ellipse(
@@ -606,13 +539,7 @@ def run_together(
     column: Box = Box(150, 110, 180, 210),
     size=(600, 800),
 ) -> Image.Image:
-    """Two balloons whose outline is broken where they meet, writing in the small
-    one.
-
-    What a scan does to a balloon drawn against the next one: the flood has both
-    of them to spread over, so the largest rectangle in what comes back is in the
-    wrong one — a translation set half a page from the words it translates.
-    """
+    """Two balloons whose outline is broken where they meet, writing in the small."""
     image = Image.new("RGB", size, (120, 120, 120))
     draw = ImageDraw.Draw(image)
     for balloon in (small, large):
@@ -629,13 +556,7 @@ def run_together(
 
 
 def stub_balloon(size=(300, 200)) -> Image.Image:
-    """A page with a balloon drawn around the block :class:`StubRegions` finds.
-
-    Rounded rather than oval, because that block is nearly square and nearly
-    fills it: the largest rectangle inside an oval drawn round a square is
-    smaller than the square, which is an answer /api/bubbles is right to
-    withhold and not what this is here to show.
-    """
+    """A page with a balloon drawn around the block :class:`StubRegions` finds."""
     image = Image.new("RGB", size, (120, 120, 120))
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
@@ -673,9 +594,6 @@ class TestHolding(unittest.TestCase):
         self.assertIsNone(bubble.holding(np.zeros((10, 10), bool), Box(2, 2, 5, 5)))
 
     def test_the_block_is_still_held_when_the_search_is_scaled_down(self):
-        # Measured on a coarse grid, so the block is rounded outwards into it and
-        # the answer inwards out of it: rounded the other way it comes back
-        # holding all but a few pixels of the words it was measured around.
         mask = np.zeros((600, 600), np.uint8)
         mask[100:500, 100:500] = 255
         block = Box(203, 307, 251, 353)
@@ -703,12 +621,7 @@ class TestSolid(unittest.TestCase):
 
 
 class TestInside(unittest.TestCase):
-    """The room inside a balloon the detector has already found.
-
-    The balloon is handed in rather than guessed at, which is the whole of the
-    difference: the question is no longer "where does the light stop" but "how
-    much of this shape can the words be opened out into".
-    """
+    """The room inside a balloon the detector has already found."""
 
     balloon = Box(120, 60, 480, 300)
     column = Box(285, 100, 315, 260)
@@ -738,9 +651,6 @@ class TestInside(unittest.TestCase):
         self.assertEqual(bubble.within(found, self.column), 1.0)
 
     def test_the_next_balloon_along_is_no_longer_reachable(self):
-        # Two balloons whose outlines run together. Measured by flooding out from
-        # the words this answered with a rectangle in the other one; told which
-        # balloon it is in, it cannot leave it however broken the outline is.
         column = Box(150, 110, 180, 210)
         found = self.found(run_together(), column, Box(120, 60, 300, 260))
         assert found is not None
@@ -748,8 +658,6 @@ class TestInside(unittest.TestCase):
         self.assertLess(found.y1, 261, "the room ran on into the other balloon")
 
     def test_the_column_is_not_measured_as_the_gap_beside_it(self):
-        # Without the block painted in, the ground of a balloon a line of
-        # Japanese has cut in two is two pieces, and this answers with one.
         found = self.found(ballooned())
         assert found is not None
         self.assertGreater(found.x1 - found.x0, self.balloon.w / 2)
@@ -761,8 +669,6 @@ class TestInside(unittest.TestCase):
         self.assertGreater(found.w, self.column.w * 3)
 
     def test_a_balloon_no_wider_than_the_words_is_left_alone(self):
-        # There is nothing to be won by moving a line into a balloon that is
-        # already drawn tight around it.
         wide = Box(40, 170, 560, 230)
         words = Box(60, 180, 540, 220)
         image = ballooned(balloon=wide, column=words)
@@ -772,8 +678,6 @@ class TestInside(unittest.TestCase):
         self.assertIsNone(self.found(ballooned(), Box(300, 180, 302, 182)))
 
     def test_a_balloon_that_does_not_hold_its_block_has_no_answer(self):
-        # Which is a block matched to the wrong balloon; the block's own box is
-        # the honest answer and the caller keeps it.
         self.assertIsNone(self.found(ballooned(), Box(500, 400, 560, 460)))
 
     def test_a_box_off_the_page_has_no_answer(self):
@@ -784,11 +688,7 @@ EM = 20
 
 
 def lettering(x: int, y: int, columns: int, rows: int, em: int = EM) -> list[Box]:
-    """Characters set solid on a square em, ``columns`` across and ``rows`` down.
-
-    Each glyph is drawn a little inside its cell, the way a real one sits in
-    its em, so the blank between them is the blank a real line has.
-    """
+    """Characters set solid on a square em, ``columns`` across and ``rows`` down."""
     ink = round(em * 0.85)
     return [
         Box(x + c * em, y + r * em, x + c * em + ink, y + r * em + ink)
@@ -838,25 +738,17 @@ class TestSplit(unittest.TestCase):
         self.assertEqual(len(pieces), 3)
 
     def test_the_columns_of_one_balloon_are_left_alone(self):
-        # The blank between columns of vertical Japanese is a line gap, not a wall.
         one = lettering(20, 20, 5, 6)
         box = around(one)
         self.assertEqual(split.pieces(written(one), box), [box])
 
     def test_a_single_column_is_left_alone(self):
-        # The risky one: a row projection sees every gap between characters.
         one = lettering(20, 20, 1, 10)
         box = around(one)
         self.assertEqual(split.pieces(written(one), box), [box])
 
     def test_a_lone_line_needs_a_wider_gap_than_a_block_of_several(self):
-        """The rule that makes a gap this small safe to cut on at all.
-
-        A cut standing through several lines has all of them agreeing the page is
-        blank there. A cut along a single line has only that line's own gaps, and
-        the gap between two characters is one of those — so the same blank that
-        splits a block of three columns must leave one column alone.
-        """
+        """The rule that makes a gap this small safe to cut on at all."""
         gap = EM  # one character of blank, in the middle of both
 
         alone = lettering(20, 20, 1, 5) + lettering(20, 20 + 5 * EM + gap, 1, 5)
@@ -876,12 +768,7 @@ class TestSplit(unittest.TestCase):
     def test_lettering_too_close_to_cut_on_its_gap_still_comes_apart_when_staggered(
         self,
     ):
-        """Text set at different heights was never one block, however close.
-
-        The blank here is barely half a character — well under what a cut needs
-        on its own — so the alignment is the only thing deciding, which is the
-        whole point of it.
-        """
+        """Text set at different heights was never one block, however close."""
         ink = round(EM * 0.85)
         gap = round(EM * 0.55)
         near = 20 + EM + ink + gap
@@ -902,23 +789,18 @@ class TestSplit(unittest.TestCase):
         )
 
     def test_a_column_that_stops_early_is_not_a_second_block(self):
-        # Vertical Japanese starts every column at the same height and the last
-        # one simply ends early. The ends disagree; the starts do not.
         short = lettering(20, 20, 1, 5) + lettering(20 + EM, 20, 1, 2)
         self.assertEqual(
             split.pieces(written(short), around(short)), [around(short)]
         )
 
     def test_columns_centred_against_each_other_are_not_two_blocks(self):
-        # One inside the other, rather than both shifted the same way: a balloon
-        # of two columns set centred, not two balloons.
         long_one = lettering(20, 20, 1, 8)
         middle = lettering(20 + EM, 20 + 3 * EM, 1, 2)
         both = long_one + middle
         self.assertEqual(split.pieces(written(both), around(both)), [around(both)])
 
     def test_two_balloons_a_character_apart_come_apart(self):
-        # What the wider gap used to miss: close together, but not one thing.
         one = lettering(20, 20, 2, 5)
         other = lettering(20 + 2 * EM + EM, 25, 2, 5)
         pieces = split.pieces(written(one, other), around(one, other))
@@ -926,8 +808,6 @@ class TestSplit(unittest.TestCase):
 
     def test_a_block_that_holds_one_balloon_is_handed_back_untouched(self):
         one = lettering(20, 20, 3, 4)
-        # Deliberately looser than the lettering: a block that does not come
-        # apart must not be re-boxed either, or every block would move.
         box = Box(10, 10, 200, 200)
         self.assertEqual(split.pieces(written(one), box), [box])
 
@@ -952,7 +832,6 @@ class TestSplit(unittest.TestCase):
         self.assertEqual(split.pieces(written(), box), [box])
 
     def test_a_wider_gap_wins_over_a_narrower_one(self):
-        # Cut across the plainest seam first; the rest is left to the recursion.
         left = lettering(20, 20, 2, 3)
         right = lettering(20 + 6 * EM, 20, 2, 3)
         below = lettering(20, 20 + 3 * EM + 4 * EM, 2, 3)
@@ -960,8 +839,6 @@ class TestSplit(unittest.TestCase):
         self.assertEqual(len(pieces), 3)
 
     def test_the_gap_is_measured_in_characters_not_pixels(self):
-        # The same layout at half the size splits the same way: a page may be
-        # lettered at any size.
         for em in (EM, EM * 2):
             one = lettering(20, 20, 2, 4, em)
             other = lettering(20 + 5 * em, 20, 2, 4, em)
@@ -981,8 +858,6 @@ class TestCharacter(unittest.TestCase):
         self.assertLessEqual(found, EM)
 
     def test_punctuation_does_not_drag_it_down(self):
-        # Small kana and punctuation are a large minority of the marks in a line,
-        # which is why this is a high percentile rather than a median.
         column = lettering(20, 20, 1, 10)
         small = [Box(g.x0, g.y0, g.x0 + 4, g.y0 + 4) for g in column[:5]]
         mask = written(column[5:], small)
@@ -990,8 +865,6 @@ class TestCharacter(unittest.TestCase):
         self.assertGreater(found, EM * 0.6, "the marks were read as tiny")
 
     def test_characters_set_solid_enough_to_touch_do_not_read_as_one_long_mark(self):
-        # Without the cap at the region's shorter side, a whole column that
-        # touches comes back as one mark as long as the column is.
         column = [Box(20, 20 + r * EM, 20 + EM, 20 + (r + 1) * EM) for r in range(8)]
         mask = written(column)
         found = split.character(mask[20 : 20 + 8 * EM, 20 : 20 + EM])
@@ -999,12 +872,7 @@ class TestCharacter(unittest.TestCase):
 
 
 class TestRegionBlocks(unittest.TestCase):
-    """The wiring in Regions.__call__: decode, pad, tell the classes apart, sort.
-
-    The session is replaced by its outputs, so this needs no weights. The export
-    carries RT-DETR's own postprocessing, so what it hands back is already a
-    class, a corner-to-corner box in the page's pixels, and a score.
-    """
+    """The wiring in Regions.__call__: decode, pad, tell the classes apart, sort."""
 
     size = (200, 140)
 
@@ -1061,7 +929,6 @@ class TestRegionBlocks(unittest.TestCase):
         self.assertEqual(found.box, found.box.clipped(*self.size))
 
     def test_a_box_running_past_the_page_is_brought_back_onto_it(self):
-        # The head answers in the page's pixels but is not held to them.
         [found] = self.regions(
             [(detect.TEXT_BUBBLE, Box(-20, -10, 260, 190), 0.9)]
         )(self.page())[0]
@@ -1078,7 +945,6 @@ class TestRegionBlocks(unittest.TestCase):
         self.assertEqual(round(blocks[0].confidence, 2), 0.91, "the surer one went")
 
     def test_the_blocks_come_back_in_reading_order(self):
-        # Down the page, then right to left: the left one is read second.
         found = self.regions(
             [
                 (detect.TEXT_BUBBLE, Box(20, 60, 60, 100), 0.9),
@@ -1128,7 +994,6 @@ class TestStaggered(unittest.TestCase):
         self.assertTrue(split.staggered(mask, 0, 40, 20))
 
     def test_one_lying_inside_the_other_is_not_a_stagger(self):
-        # A column that stopped early, or two centred against each other.
         mask = self.sides(Box(10, 10, 30, 150), Box(50, 50, 70, 110))
         self.assertFalse(split.staggered(mask, 0, 40, 20))
 
@@ -1137,7 +1002,6 @@ class TestStaggered(unittest.TestCase):
         self.assertFalse(split.staggered(mask, 0, 40, 20))
 
     def test_it_reads_across_the_cut_whichever_way_that_runs(self):
-        # Cutting across y instead: now it is the left edges that are compared.
         mask = self.sides(Box(10, 10, 100, 30), Box(40, 50, 130, 70))
         self.assertTrue(split.staggered(mask, 1, 40, 20))
 
@@ -1160,11 +1024,7 @@ class TestBlanks(unittest.TestCase):
 
 
 class TestKeptPass(unittest.TestCase):
-    """The last page's forward pass is kept, because it is asked for twice.
-
-    A dashboard asks /api/detect where the lettering is and then /api/letters
-    what it looks like, and asks the second again on every change of spread.
-    """
+    """The last page's forward pass is kept, because it is asked for twice."""
 
     def detector(self):
         """:class:`Letters`, counting how often its net is actually run."""
@@ -1236,8 +1096,6 @@ class TestKeptPass(unittest.TestCase):
         self.assertEqual(first[1:], again[1:])
 
     def test_two_masks_off_one_page_share_the_pass(self):
-        # Which is what a change of spread asks for: the same page again at a
-        # different grow, and the pass is the slow half.
         made = self.detector()
         made(self.page(), grow=2)
         made(self.page(), grow=8)
@@ -1287,7 +1145,6 @@ class TestSuppressed(unittest.TestCase):
     """The same lettering found twice, thinned to the surest of them."""
 
     def test_a_piece_that_repeats_a_whole_block_is_dropped(self):
-        # What splitting turns the head's overlapping guesses into.
         blocks = [
             Block(Box(540, 300, 620, 500), 0.91),
             Block(Box(543, 305, 619, 501), 0.62),
@@ -1330,7 +1187,6 @@ class TestDivided(unittest.TestCase):
         self.assertEqual((top.x0, top.x1), (self.room.x0, self.room.x1))
 
     def test_the_shares_come_back_against_the_blocks_they_belong_to(self):
-        # Reading order runs right to left, so the first block is the rightmost.
         blocks = [Box(400, 150, 450, 350), Box(150, 150, 200, 350)]
         first, second = bubble.divided(self.room, blocks)
         self.assertGreater(first.cx, second.cx, "the shares were handed back swapped")
@@ -1342,12 +1198,7 @@ class TestDivided(unittest.TestCase):
             self.assertGreaterEqual(share.x1, block.x1)
 
     def test_blocks_two_across_and_two_down_get_a_quarter_each(self):
-        """The arrangement one line of cuts cannot describe.
-
-        Cut only along x, the two on the right are handed a left half and a
-        right half of a balloon they are stacked inside — which is the same
-        lettering set twice in nearly the same place.
-        """
+        """The arrangement one line of cuts cannot describe."""
         blocks = [
             Box(140, 130, 220, 220),  # top left
             Box(380, 130, 460, 220),  # top right
@@ -1379,7 +1230,6 @@ class TestDivided(unittest.TestCase):
             self.assertGreaterEqual(share.covers(block), 0.99)
 
     def test_blocks_that_overlap_every_way_still_get_a_piece_each(self):
-        # Nothing sensible to cut on, but two pieces beat one balloon twice.
         blocks = [Box(150, 150, 400, 350), Box(160, 160, 410, 360)]
         first, second = bubble.divided(self.room, blocks)
         self.assertEqual(first.covers(second), 0.0)
@@ -1393,13 +1243,7 @@ class TestDivided(unittest.TestCase):
 
 
 class TestAssigned(unittest.TestCase):
-    """Which balloon each block was written in.
-
-    Replaces the old grouping-by-collision. That existed because a balloon was
-    guessed at from the words outwards and two blocks in one balloon came back
-    with different guesses; the detector now says which balloon is which, so the
-    question is only whether a balloon holds a block.
-    """
+    """Which balloon each block was written in."""
 
     def test_a_block_inside_a_balloon_is_given_it(self):
         blocks = [Box(30, 30, 70, 70)]
@@ -1419,14 +1263,11 @@ class TestAssigned(unittest.TestCase):
         self.assertEqual(bubble.assigned(blocks, balloons), [1, 0])
 
     def test_the_smaller_of_two_balloons_around_a_block_wins(self):
-        # A shout drawn inside a thought: the words belong to the inner one.
         blocks = [Box(40, 40, 60, 60)]
         balloons = [Box(0, 0, 200, 200), Box(30, 30, 70, 70)]
         self.assertEqual(bubble.assigned(blocks, balloons), [1])
 
     def test_a_balloon_merely_reaching_over_a_block_does_not_hold_it(self):
-        # A sound effect beside a balloon is in none, and moving it into one
-        # would take the words off the art they belong to.
         blocks = [Box(80, 80, 160, 160)]
         self.assertEqual(bubble.assigned(blocks, [Box(0, 0, 100, 100)]), [None])
 
@@ -1453,8 +1294,6 @@ class TestWithin(unittest.TestCase):
         self.assertEqual(bubble.within(Box(0, 0, 100, 100), Box(50, 0, 150, 100)), 0.5)
 
     def test_a_block_larger_than_the_room_is_measured_against_itself(self):
-        # `Box.covers` divides by the smaller of the two, which would call this
-        # one whole; the question here is how much of the *block* is inside.
         self.assertEqual(bubble.within(Box(0, 0, 50, 100), Box(0, 0, 100, 100)), 0.5)
 
     def test_a_block_nowhere_near_is_none_of_it(self):
@@ -1462,11 +1301,7 @@ class TestWithin(unittest.TestCase):
 
 
 class TestRooms(unittest.TestCase):
-    """Sharing one balloon out, which is what keeps two translations apart.
-
-    The measuring inside a balloon is stubbed: what is under test is what
-    :func:`bubble.rooms` does with the answers once it has them.
-    """
+    """Sharing one balloon out, which is what keeps two translations apart."""
 
     page = np.full((600, 600), 255, np.uint8)
 
@@ -1494,7 +1329,6 @@ class TestRooms(unittest.TestCase):
         self.assertEqual(self.rooms(boxes, balloons, answers), answers)
 
     def test_two_blocks_in_one_balloon_are_cut_a_side_each(self):
-        # Handed the balloon whole they would be lettered one over the other.
         boxes = [Box(150, 200, 190, 400), Box(300, 200, 340, 400)]
         balloons = [Box(100, 180, 400, 420)]
         answers = [Box(100, 180, 400, 420)] * 2
@@ -1519,27 +1353,18 @@ class TestRooms(unittest.TestCase):
                 self.assertEqual(rooms[one].covers(rooms[other]), 0.0)
 
     def test_a_block_in_another_balloon_is_not_cut_against_this_one(self):
-        # Two balloons: two blocks in the first and one on its own in the
-        # second. Cutting one balloon up between all three hands that third one
-        # a piece of a balloon its words are nowhere near.
         boxes = [Box(120, 300, 160, 400), Box(200, 300, 240, 400), Box(430, 150, 470, 250)]
         balloons = [Box(100, 280, 420, 420), Box(400, 120, 560, 300)]
         answers = [Box(100, 280, 420, 420), Box(100, 280, 420, 420), Box(400, 120, 560, 300)]
 
         found = self.rooms(boxes, balloons, answers)
-        # The odd one out keeps the whole of its own balloon. Cutting the first
-        # balloon up between all three would hand it a piece of a balloon its
-        # words are nowhere near.
         self.assertEqual(found[2], answers[2], "a balloon of its own was cut up")
-        # The two that do share one are still parted from each other.
         first, second = self.lettered(boxes, found)[:2]
         self.assertEqual(first.covers(second), 0.0)
         for at, room in enumerate(self.lettered(boxes, found)):
             self.assertGreaterEqual(bubble.within(room, boxes[at]), 0.99)
 
     def test_a_share_that_no_longer_holds_its_block_is_refused(self):
-        # Which only happens where the blocks themselves overlap, and there the
-        # box the block came in with is the honest answer.
         boxes = [Box(150, 200, 400, 400), Box(160, 210, 410, 410)]
         balloons = [Box(100, 180, 460, 440)]
         answers = [Box(100, 180, 460, 440)] * 2
@@ -1635,7 +1460,6 @@ class TestOllama(unittest.TestCase):
         self.assertIn("1. おはよう", asked[0][1]["messages"][1]["content"])
 
     def test_the_answer_is_taken_from_thinking_when_content_is_empty(self):
-        # Some builds file a schema-held answer under 'thinking' instead.
         with mock.patch.object(
             ollama, "ask", return_value=reply("", translations("Good morning"))
         ):
@@ -1649,8 +1473,6 @@ class TestOllama(unittest.TestCase):
         self.assertEqual(done.texts, ["Good morning"])
 
     def test_a_miscounted_page_is_asked_again_whole(self):
-        # The cheap recovery, and much the better one: the page is still in front
-        # of it, where the pass line by line has nothing around each line.
         answers = [
             reply(translations("only one")),  # two were asked about
             reply(translations("first", "second")),
@@ -1669,8 +1491,6 @@ class TestOllama(unittest.TestCase):
 
         with mock.patch.object(ollama, "ask", ask):
             ollama.translate(["いち", "に"], "m")
-        # The miscounted answer, then what was wrong with it: the count is the one
-        # thing it cannot see from the request it was sent.
         again = asked[1]
         self.assertEqual(again[2]["role"], "assistant")
         self.assertIn("only one", again[2]["content"])
@@ -1689,8 +1509,6 @@ class TestOllama(unittest.TestCase):
         self.assertEqual(ask.call_count, 4, "it did not ask again line by line")
 
     def test_the_context_is_asked_for(self):
-        # Ollama's own is 4096 and it truncates what it is handed rather than
-        # saying so, front first — which is the briefing and the glossary.
         asked = []
 
         def ask(path, body=None, **kwargs):
@@ -1724,7 +1542,6 @@ class TestOllama(unittest.TestCase):
         self.assertIn("Dutch", ollama.briefing("Dutch"))
 
     def test_the_briefing_says_what_the_page_was_written_in(self):
-        # Left to guess, a model reads a Chinese page as though it were Japanese.
         self.assertIn("Korean", ollama.briefing("Dutch", source="Korean"))
         self.assertIn("Japanese", ollama.briefing("Dutch"))
 
@@ -1744,7 +1561,6 @@ class TestOllama(unittest.TestCase):
         self.assertEqual(said, "Turn this into Dutch, in pirate.")
 
     def test_a_briefing_may_have_braces_of_its_own(self):
-        # Substituted rather than formatted: str.format would choke on these.
         said = ollama.briefing("Dutch", 'Answer like {"a": 1} but in {target}.')
         self.assertEqual(said, 'Answer like {"a": 1} but in Dutch.')
 
@@ -1757,8 +1573,6 @@ class TestOllama(unittest.TestCase):
 
         with mock.patch.object(ollama, "ask", ask):
             ollama.translate(["おはよう"], "m", "Dutch", system="Be brief in {target}.")
-        # First, and whole: what follows it is the note about terms, which is the
-        # API's rather than the caller's.
         self.assertTrue(asked[0].startswith("Be brief in Dutch."), asked[0])
 
     def test_the_briefing_holds_when_it_falls_back_to_one_at_a_time(self):
@@ -1766,7 +1580,6 @@ class TestOllama(unittest.TestCase):
 
         def ask(path, body=None, **kwargs):
             asked.append(body["messages"][0]["content"])
-            # Miscounted twice over, so each line is then asked about alone.
             return reply(translations("only one")) if len(asked) <= 2 else reply(
                 translations("a line")
             )
@@ -1782,8 +1595,7 @@ class TestOllama(unittest.TestCase):
 
 
 class TestSaidAboutEachLine(unittest.TestCase):
-    """What the caller knows about a block and the model cannot see: whether it
-    is spoken at all, and how much room its translation has."""
+    """What the caller knows about a block and the model cannot see."""
 
     def asking(self, answer):
         """Ollama patched to answer that, collecting the whole request."""
@@ -1813,8 +1625,6 @@ class TestSaidAboutEachLine(unittest.TestCase):
         self.assertIn(ollama.BUDGET_NOTE, system)
 
     def test_a_line_with_nothing_said_about_it_is_sent_as_it_was(self):
-        # And the notes about the markers go with them: a page carrying neither
-        # must not be told how to read either.
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
             ollama.translate(["おはよう"], "m")
@@ -1824,9 +1634,6 @@ class TestSaidAboutEachLine(unittest.TestCase):
         self.assertNotIn(ollama.BUDGET_NOTE, system)
 
     def test_what_is_said_about_a_line_follows_a_blank_being_dropped(self):
-        # The one way this can go quietly wrong: an empty block is never sent, so
-        # everything after it renumbers, and a kind left where it was describes
-        # the wrong line.
         asked, patched = self.asking(reply(translations("Morning", "THUD")))
         with patched:
             ollama.translate(
@@ -1845,7 +1652,6 @@ class TestSaidAboutEachLine(unittest.TestCase):
         asked, patched = self.asking(reply(translations("only one")))
         with patched:
             ollama.translate(["おはよう", "ドン"], "m", kinds=[SPEECH, FREE])
-        # The page, the page again, then each line by itself with its own marker.
         self.assertEqual(len(asked), 4)
         self.assertIn("1. [speech] おはよう", asked[2][1]["content"])
         self.assertIn("1. [free] ドン", asked[3][1]["content"])
@@ -1873,8 +1679,6 @@ class TestGlossary(unittest.TestCase):
         self.assertEqual(done.terms, named)
 
     def test_a_page_that_named_nothing_still_translates(self):
-        # `terms` is not required by the schema: a page of "..." names nobody, and
-        # that must not cost the translation.
         with mock.patch.object(
             ollama, "ask", return_value=reply(translations("Good morning"))
         ):
@@ -1921,8 +1725,6 @@ class TestGlossary(unittest.TestCase):
             self.assertIn("タロウ = Taro", said)
 
     def test_a_miscounted_page_keeps_the_terms_it_did_return(self):
-        # Naming a character does not depend on counting the lines, and the pass
-        # line by line has no page left to find one in.
         named = [{"source": "タロウ", "target": "Taro"}]
         answers = [
             reply(with_terms(["only one"], named)),  # two were asked about
@@ -1936,8 +1738,6 @@ class TestGlossary(unittest.TestCase):
         self.assertEqual(done.terms, named)
 
     def test_a_page_asked_again_keeps_the_terms_of_the_first_answer(self):
-        # The second answer is the one lettered, but it was asked for a count
-        # rather than for names, and a term named once is named.
         named = [{"source": "タロウ", "target": "Taro"}]
         answers = [
             reply(with_terms(["only one"], named)),  # two were asked about
@@ -1957,8 +1757,6 @@ class TestGlossary(unittest.TestCase):
         self.assertNotIn(f"あ{ollama.GLOSSARY_LIMIT} =", asked[0])
 
     def test_the_terms_note_is_said_whatever_the_prompt_is(self):
-        # It is about the shape of the answer rather than how to translate, so a
-        # prompt of one's own must not silently turn the glossary off.
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
             ollama.translate(["おはよう"], "m", system="Pirate, please.")
@@ -1982,12 +1780,9 @@ class TestSaidTwice(unittest.TestCase):
         with patched:
             done = ollama.translate(["……", "行こう", "……"], "m")
         self.assertEqual(asked[0].splitlines(), ["1. ……", "2. 行こう"])
-        # And the one answer is lettered into both of the blocks it came from.
         self.assertEqual(done.texts, ["...", "Let's go", "..."])
 
     def test_the_same_words_in_different_lettering_are_two_questions(self):
-        # A shout drawn over the art and the same word spoken in a balloon are
-        # not the same thing, and are not rendered the same way.
         asked, patched = self.sending(reply(translations("Wham!", "wham")))
         with patched:
             done = ollama.translate(
@@ -1997,15 +1792,12 @@ class TestSaidTwice(unittest.TestCase):
         self.assertEqual(done.texts, ["Wham!", "wham"])
 
     def test_the_tightest_room_of_the_two_is_the_one_asked_for(self):
-        # One answer has to be lettered into both, so the smaller balloon decides.
         asked, patched = self.sending(reply(translations("Morning")))
         with patched:
             ollama.translate(["おはよう", "おはよう"], "m", budgets=[40, 18])
         self.assertEqual(asked[0], "1. <=18 おはよう")
 
     def test_a_page_is_not_pushed_to_vary_what_it_repeats(self):
-        # Ollama's default repeat_penalty is 1.1, which is a push to render the
-        # second "……" differently from the first for no reason but its order.
         asked = []
 
         def ask(path, body=None, **kwargs):
@@ -2015,7 +1807,6 @@ class TestSaidTwice(unittest.TestCase):
         with mock.patch.object(ollama, "ask", ask):
             ollama.translate(["おはよう"], "m")
         self.assertEqual(asked[0]["repeat_penalty"], 1.0)
-        # What that penalty was nominally guarding against, bounded instead.
         self.assertEqual(asked[0]["num_predict"], ollama.PREDICT)
 
 
@@ -2041,7 +1832,6 @@ class TestStory(unittest.TestCase):
         self.assertEqual(done.story["cast"], cast)
 
     def test_a_page_that_said_nothing_about_the_story_still_translates(self):
-        # `story` is not required by the schema, the same as `terms`.
         with mock.patch.object(
             ollama, "ask", return_value=reply(translations("Good morning"))
         ):
@@ -2050,8 +1840,6 @@ class TestStory(unittest.TestCase):
         self.assertEqual(done.story, {})
 
     def test_who_a_page_has_not_shown_comes_back_unknown(self):
-        # The whole point of the shape. A guess made on page one is read back as
-        # settled fact by every page after it.
         cast = [person("タロウ", ollama.UNKNOWN)]
         answer = reply(with_story(["Morning"], "Someone arrives.", cast))
         with mock.patch.object(ollama, "ask", return_value=answer):
@@ -2059,7 +1847,6 @@ class TestStory(unittest.TestCase):
         self.assertEqual(done.story["cast"][0]["gender"], "unknown")
 
     def test_a_gender_this_does_not_know_is_read_as_unknown(self):
-        # The enum in the schema is what holds it to the three; this is the belt.
         cast = [{"name": "タロウ", "gender": "a man, probably"}]
         answer = reply(with_story(["Morning"], "", cast))
         with mock.patch.object(ollama, "ask", return_value=answer):
@@ -2067,8 +1854,6 @@ class TestStory(unittest.TestCase):
         self.assertEqual(done.story["cast"][0]["gender"], ollama.UNKNOWN)
 
     def test_a_placeholder_for_a_name_is_dropped(self):
-        # Filed under "unknown", an unnamed character collides with the next one
-        # and turns the question at the foot of the page into nonsense.
         cast = [person("unknown"), person("?"), person("ハナ", ollama.FEMALE)]
         answer = reply(with_story(["Morning"], "", cast))
         with mock.patch.object(ollama, "ask", return_value=answer):
@@ -2105,8 +1890,6 @@ class TestStory(unittest.TestCase):
         self.assertIn("タロウ — male, the younger brother", asked[0])
 
     def test_what_was_set_by_hand_is_put_over_as_settled(self):
-        # Marked so the model is told it is not its to change: a page that reads
-        # ambiguously must not talk the chapter back out of something known.
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
             ollama.translate(
@@ -2125,13 +1908,9 @@ class TestStory(unittest.TestCase):
         with patched:
             ollama.translate(["おはよう"], "m")
         self.assertNotIn(ollama.PREVIOUSLY_HEADING, asked[0])
-        # The note asking for one is said either way: the first page of a chapter
-        # is where the story starts.
         self.assertIn(ollama.filled(ollama.STORY_NOTE, "English", "Japanese"), asked[0])
 
     def test_the_cast_is_asked_for_in_the_language_of_the_page(self):
-        # The name is the key the chapter is carried on, so it has to be the same
-        # word every page — which the page's own is and an English label is not.
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
             ollama.translate(["안녕"], "m", "Dutch", source="Korean")
@@ -2156,7 +1935,6 @@ class TestStory(unittest.TestCase):
             self.assertIn("Taro has arrived late.", said)
 
     def test_a_miscounted_page_keeps_the_story_it_did_return(self):
-        # Saying what is going on does not depend on counting the lines.
         answers = [
             reply(with_story(["only one"], "They are arguing.")),
             reply(translations("first", "second")),
@@ -2167,13 +1945,7 @@ class TestStory(unittest.TestCase):
 
 
 class TestAskingAboutTheUnknown(unittest.TestCase):
-    """Who is still unknown, asked under the page rather than in the briefing.
-
-    Measured against a real model: told in the system message to correct what it
-    is given, it translates 「先輩は僕の兄です」 faithfully and hands the cast
-    straight back with 先輩 still unknown. The question has to be next to the
-    evidence.
-    """
+    """Who is still unknown, asked under the page rather than in the briefing."""
 
     def paging(self, answer):
         asked = []
@@ -2194,7 +1966,6 @@ class TestAskingAboutTheUnknown(unittest.TestCase):
             )
         self.assertIn("Still unknown: 先輩", asked[0])
         self.assertNotIn("ハナ", asked[0], "it asked about someone already known")
-        # And the page itself is still the page.
         self.assertTrue(asked[0].startswith("1. おはよう"), asked[0])
 
     def test_a_chapter_with_nobody_unknown_is_asked_nothing(self):
@@ -2206,7 +1977,6 @@ class TestAskingAboutTheUnknown(unittest.TestCase):
         self.assertEqual(asked[0], "1. おはよう")
 
     def test_a_fact_set_by_hand_is_never_asked_about(self):
-        # Settled is settled, even where it says unknown: someone decided that.
         asked, patched = self.paging(reply(translations("Morning")))
         with patched:
             ollama.translate(
@@ -2232,7 +2002,6 @@ class TestTermNotes(unittest.TestCase):
         self.assertEqual(done.terms, named)
 
     def test_a_term_without_one_stays_a_pair(self):
-        # The note is optional, and a term that has none must not grow an empty.
         named = [{"source": "タロウ", "target": "Taro"}]
         answer = reply(with_terms(["Taro"], named))
         with mock.patch.object(ollama, "ask", return_value=answer):
@@ -2260,12 +2029,7 @@ class TestTermNotes(unittest.TestCase):
 
 
 class TestSurvey(unittest.TestCase):
-    """Reading a whole chapter before any of it is translated.
-
-    The one thing a page-at-a-time run cannot do for itself: page three is
-    translated long before page forty has been read, and page forty is usually
-    where a chapter gets round to saying who someone is.
-    """
+    """Reading a whole chapter before any of it is translated."""
 
     def asking(self, *answers):
         """Ollama patched to give these answers, collecting the system messages."""
@@ -2294,7 +2058,6 @@ class TestSurvey(unittest.TestCase):
         self.assertEqual(found.beats, ["Taro arrives.", "They argue."])
 
     def test_a_page_with_nothing_on_it_still_gets_a_beat(self):
-        # Left out, it would put every beat after it a page out.
         answer = reply(with_beats(["Taro arrives.", "Nobody speaks."]))
         with mock.patch.object(ollama, "ask", return_value=answer):
             found = ollama.survey([["タロウだ"], []], "m")
@@ -2320,7 +2083,6 @@ class TestSurvey(unittest.TestCase):
         self.assertEqual(found.terms, terms)
 
     def test_a_window_that_said_nothing_about_the_chapter_still_answers(self):
-        # Only `beats` is required, for the reason only `translations` is.
         with mock.patch.object(ollama, "ask", return_value=reply(with_beats(["one"]))):
             found = ollama.survey([["タロウだ"]], "m")
         self.assertEqual(found.beats, ["one"])
@@ -2338,14 +2100,11 @@ class TestSurvey(unittest.TestCase):
         self.assertEqual(asked.call_count, 2)
 
     def test_a_window_that_lost_count_twice_hands_back_no_beats(self):
-        # Beats a page out are worse than none at all: they describe the wrong
-        # page, and nothing downstream of here can tell that they do.
         with mock.patch.object(ollama, "ask", return_value=reply(with_beats(["one"]))):
             found = ollama.survey([["いち"], ["に"]], "m")
         self.assertEqual(found.beats, [])
 
     def test_a_miscounted_window_keeps_what_it_said_about_the_chapter(self):
-        # Naming a character has nothing to do with counting pages.
         answer = reply(with_beats(["one"], "Taro is late.", cast=[person("タロウ")]))
         with mock.patch.object(ollama, "ask", return_value=answer):
             found = ollama.survey([["いち"], ["に"]], "m")
@@ -2382,8 +2141,6 @@ class TestSurvey(unittest.TestCase):
         self.assertIn("タロウ = Taro", asked[0])
 
     def test_the_beats_already_written_are_not_sent_back(self):
-        # This window writes beats for its own pages; the earlier ones are not
-        # improved by being read again, and they are the bulk of the answer.
         asked, patched = self.asking(reply(with_beats(["three"])))
         with patched:
             ollama.survey([["さん"]], "m", chapter={"beats": ["he wakes", "he runs"]})
@@ -2439,7 +2196,6 @@ class TestSurvey(unittest.TestCase):
         self.assertEqual(found.beats, [])
 
     def test_the_survey_asks_for_a_window_of_its_own(self):
-        # A windowful of raw lettering is several pages where a translation is one.
         sent = []
 
         def ask(path, body=None, **kwargs):
@@ -2482,8 +2238,6 @@ class TestChapter(unittest.TestCase):
         self.assertNotIn(ollama.SYNOPSIS_HEADING, asked[0])
 
     def test_the_note_about_giving_things_away_is_said_only_with_a_chapter(self):
-        # A warning about revealing what is coming is a warning about nothing
-        # where there is no chapter in front of it revealing anything.
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
             ollama.translate(["おはよう"], "m")
@@ -2495,8 +2249,6 @@ class TestChapter(unittest.TestCase):
         self.assertIn("must not be made to hint", asked[0])
 
     def test_the_note_is_said_whatever_the_prompt_is(self):
-        # The same reason TERMS_NOTE is not written into SYSTEM_DEFAULT: the
-        # prompt is the caller's to replace, and this must not go with it.
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
             ollama.translate(
@@ -2522,8 +2274,6 @@ class TestChapter(unittest.TestCase):
         self.assertIn("  1. one", asked[0])
 
     def test_only_the_beats_around_the_page_are_sent(self):
-        # The chapter reaches the page through the synopsis and the cast; forty
-        # beats would crowd out the page they are there to help.
         beats = [f"beat{at}" for at in range(40)]
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
@@ -2551,7 +2301,6 @@ class TestChapter(unittest.TestCase):
         self.assertNotIn(ollama.BEATS_HEADING, asked[0])
 
     def test_the_chapter_holds_when_it_falls_back_to_one_at_a_time(self):
-        # The pass that gives up the page must not also give up the chapter.
         asked = []
 
         def ask(path, body=None, **kwargs):
@@ -2565,8 +2314,6 @@ class TestChapter(unittest.TestCase):
         self.assertIn("Taro is late.", asked[-1])
 
     def test_the_page_is_told_where_in_the_chapter_it_is(self):
-        # Under the page rather than in the briefing, the same finding `asking`
-        # records: how far the reader has got is a fact about this page.
         asked = []
 
         def ask(path, body=None, **kwargs):
@@ -2592,7 +2339,6 @@ class TestChapter(unittest.TestCase):
         self.assertEqual(asked[0], "1. おはよう")
 
     def test_the_chapter_comes_before_the_story_so_far(self):
-        # What the chapter is, then where it had got to, then the page.
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
             ollama.translate(
@@ -2607,14 +2353,9 @@ class TestChapter(unittest.TestCase):
 
 
 class TestOllamaHost(unittest.TestCase):
-    """Finding Ollama when nothing said where it is.
-
-    It runs on the machine rather than in the container, and Docker and Podman
-    call that machine different things, so each is tried.
-    """
+    """Finding Ollama when nothing said where it is."""
 
     def setUp(self):
-        # No host set, and nothing found yet: the state a fresh process is in.
         for patch in (
             mock.patch.dict(os.environ, {ollama.OLLAMA_ENV: ""}),
             mock.patch.object(ollama, "_answering", None),
@@ -2650,7 +2391,6 @@ class TestOllamaHost(unittest.TestCase):
         self.assertEqual(self.asked, [ollama.OLLAMA_HOSTS[0]], "it looked twice")
 
     def test_a_miss_is_not_remembered(self):
-        # Ollama is often started after the page it is wanted for is opened.
         with self.answering():
             with self.assertRaises(ollama.Unreachable):
                 ollama.base()
@@ -2689,8 +2429,6 @@ class TestLanguages(unittest.TestCase):
             languages.of("klingon")
 
     def test_japanese_is_the_only_one_manga_ocr_is_asked_about(self):
-        # Everything else goes to PP-OCR, and a PP-OCR language has to say which
-        # of its weights to fetch.
         for language in languages.LANGUAGES:
             if language.reader == languages.PPOCR:
                 self.assertTrue(language.recogniser, language.code)
@@ -2757,14 +2495,12 @@ class TestLines(unittest.TestCase):
         self.assertEqual(len(read.cells(read.inked(solid))), 5)
 
     def test_columns_are_handed_over_right_to_left(self):
-        # Two columns, the right-hand one shorter, so they can be told apart.
         crop = crop_of(column(5), column(2, at=2), size=(64, 104))
         cut = read.pieces(crop, languages.of("zh"))
         self.assertEqual(len(cut), 2)
         self.assertLess(cut[0].width, cut[1].width, "the left column was read first")
 
     def test_lines_are_handed_over_top_to_bottom(self):
-        # Two lines, the top one shorter.
         short = lettering(2, 2, 2, 1, EM)
         long = lettering(2, 2 + 2 * EM, 5, 1, EM)
         crop = crop_of(short, long, size=(104, 64))
@@ -2773,8 +2509,6 @@ class TestLines(unittest.TestCase):
         self.assertLess(cut[0].height, crop.height, "the block was not cut at all")
 
     def test_a_script_that_does_not_stack_keeps_a_tall_block_whole(self):
-        # A turned line of English, not a column of one letter per line: PP-OCR
-        # turns that back itself, and cutting it up would be nonsense.
         crop = crop_of(column(5), size=(24, 104))
         self.assertEqual(len(read.pieces(crop, languages.of("en"))), 1)
 
@@ -2784,11 +2518,7 @@ class TestLines(unittest.TestCase):
 
 
 class TestPpocr(unittest.TestCase):
-    """Reading a block a line at a time, and joining what comes back.
-
-    The engine is replaced by what it would answer, so this needs no weights and
-    no onnxruntime.
-    """
+    """Reading a block a line at a time, and joining what comes back."""
 
     class Answer:
         def __init__(self, said: str) -> None:
@@ -2825,19 +2555,13 @@ class TestPpocr(unittest.TestCase):
         self.assertEqual(self.reader("ko", ["", "hello"])(crop), "hello")
 
     def test_the_engine_is_handed_the_pixels_the_way_round_it_wants_them(self):
-        # An array is taken as BGR, which is what the models were trained on.
         made = self.reader("zh", ["你"])
         made.line(Image.new("RGB", (40, 20), (200, 210, 220)))
         self.assertEqual(tuple(self.shown[0][0, 0]), (220, 210, 200))
 
 
 class TestQuieted(unittest.TestCase):
-    """Standing a reader up without onnxruntime's hunt for a GPU in the log.
-
-    It is written from C++ straight to the descriptor, so it is the descriptor
-    that is caught rather than a logger that is turned down — and everything else
-    written while it is caught has to come back out.
-    """
+    """Standing a reader up without onnxruntime's hunt for a GPU in the log."""
 
     HUNT = (
         b'2026-01-01 00:00:00 [W:onnxruntime:Default, device_discovery.cc:285 '
@@ -2856,7 +2580,6 @@ class TestQuieted(unittest.TestCase):
         self.assertEqual(self.said(lambda: os.write(2, self.HUNT)), "")
 
     def test_everything_else_is_let_through(self):
-        # A reader that cannot find its weights says so exactly this way.
         trouble = b"[ERROR] Download failed: https://example.invalid/rec.onnx\n"
         said = self.said(lambda: os.write(2, self.HUNT + trouble))
         self.assertNotIn("GetGpuDevices", said)
@@ -2901,7 +2624,6 @@ class TestUnfetched(unittest.TestCase):
         return mock.patch.dict(sys.modules, {"rapidocr": module})
 
     def test_it_says_which_language_and_where_the_weights_go(self):
-        # What comes back otherwise is a modelscope URL and nothing else.
         with self.rapidocr(RuntimeError("Failed to download https://example.invalid")):
             with self.assertRaises(read.Unfetched) as caught:
                 read.Ppocr.load(languages.of("zh"))
@@ -3022,8 +2744,6 @@ class TestApi(unittest.TestCase):
         )
 
     def test_detect_says_whether_a_block_is_spoken(self):
-        # Nothing here treats the two differently. A translation must: a sound
-        # effect rendered as dialogue is a character shouting "thud".
         with mock.patch.object(server, "Regions", StubRegions):
             response = client().post("/api/detect", data=payload(stub_balloon()))
         [region] = response.json["regions"]
@@ -3036,8 +2756,6 @@ class TestApi(unittest.TestCase):
         self.assertEqual(region["kind"], "free")
 
     def test_detect_leaves_lettering_in_no_balloon_in_its_own_box(self):
-        # A sound effect over artwork: the detector found the words and no
-        # balloon around them, and there is nothing to open the line out into.
         alone = finding([StubRegions.found], [])
         with mock.patch.object(server, "Regions", alone):
             response = client().post("/api/detect", data=payload(stub_balloon()))
@@ -3058,10 +2776,6 @@ class TestApi(unittest.TestCase):
         self.assertIsNone(second["bubble"], "the corner of the page is no balloon")
 
     def test_bubbles_finds_the_balloons_itself(self):
-        # It did not always: a balloon used to be flooded out from the box, so
-        # this was the one call on an image that stood no model up. A balloon is
-        # now something a model finds, and the boxes sent in are only asked
-        # which of them they hold.
         with mock.patch.object(server, "Regions", side_effect=AssertionError):
             response = client().post(
                 "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 315, 260]])
@@ -3107,14 +2821,9 @@ class TestApi(unittest.TestCase):
         self.assertEqual(alpha[120, 180], 0, "the page around it is not clear")
 
     def test_clean_reads_an_opaque_mask_by_its_brightness(self):
-        # What a browser canvas exports: black, white where it was marked, and
-        # opaque from edge to edge, because a canvas always carries an alpha
-        # channel whether or not anything was made see-through. Going by that
-        # alpha would hide the whole page.
         canvas = Image.new("RGBA", (200, 140), (0, 0, 0, 255))
         ImageDraw.Draw(canvas).rectangle((10, 10, 59, 39), fill=(255, 255, 255, 255))
 
-        # Flat white, so what came back says plainly what was read as marked.
         response = client().post(
             "/api/clean", data=payload(page(), mask=canvas, fill="white")
         )
@@ -3132,9 +2841,6 @@ class TestApi(unittest.TestCase):
         self.assertTrue((np.array(opened(response)) == np.array(page())).all())
 
     def test_clean_reads_a_mask_by_its_transparency(self):
-        # What /api/letters hands back is white everywhere and only transparent
-        # where the page should be left alone. Read by brightness it would say
-        # "hide all of it", so /api/clean has to go by the alpha channel.
         letters = Image.new("RGBA", (200, 140), (255, 255, 255, 0))
         letters.putalpha(stencil(Box(10, 10, 60, 40)))
 
@@ -3227,8 +2933,6 @@ class TestApi(unittest.TestCase):
         self.assertIn("fill", response.json["error"])
 
     def test_clean_clips_a_box_that_runs_off_the_page(self):
-        # And a page marked from edge to edge has nothing left to make a fill
-        # out of, so white is all that can be said.
         response = client().post(
             "/api/clean", data=payload(page(), boxes=[[-50, -50, 500, 500]])
         )
@@ -3286,8 +2990,6 @@ class TestApi(unittest.TestCase):
         self.assertTrue((inside == 255).any())
 
     def test_render_gives_the_new_text_a_clear_ground_unasked(self):
-        # The other way round from /api/clean: black lettering is set into the
-        # box here, and it wants white under it rather than whatever was there.
         response = client().post(
             "/api/render",
             data=payload(toned(), regions=[{"box": INK.as_list(), "text": "HI"}]),
@@ -3412,8 +3114,6 @@ class TestApi(unittest.TestCase):
         self.assertIsNone(told.call_args.kwargs["budgets"])
 
     def test_a_block_classified_by_nothing_is_a_real_answer(self):
-        # One drawn by hand: the detector never saw it, and saying nothing about
-        # it is honest where guessing is not.
         with mock.patch.object(
             server.ollama, "translate", return_value=translated([""])
         ) as told:
@@ -3429,8 +3129,6 @@ class TestApi(unittest.TestCase):
         self.assertEqual(told.call_args.kwargs["kinds"], [""])
 
     def test_what_is_said_about_the_lines_has_to_line_up_with_them(self):
-        # Refused rather than padded: one that has slipped by a place describes
-        # the wrong line, and nothing downstream can tell.
         response = client().post(
             "/api/translate",
             data={
@@ -3443,8 +3141,6 @@ class TestApi(unittest.TestCase):
         self.assertIn("kinds", response.json["error"])
 
     def test_a_kind_this_does_not_know_is_refused(self):
-        # It goes into a prompt, so it is one of the words /api/detect answers
-        # with or it is nothing.
         response = client().post(
             "/api/translate",
             data={
@@ -3501,7 +3197,6 @@ class TestApi(unittest.TestCase):
             self.assertIn("previously", response.json["error"])
 
     def test_a_gender_the_api_does_not_know_is_refused(self):
-        # Lenient reading a model's answer, strict reading a caller's request.
         response = client().post(
             "/api/translate",
             data={
@@ -3587,8 +3282,6 @@ class TestApi(unittest.TestCase):
         self.assertIn("pages", response.json["error"])
 
     def test_survey_keeps_a_page_with_nothing_on_it(self):
-        # The beats are one per page and positional: a page dropped on the way in
-        # is every beat after it one place wrong.
         with mock.patch.object(
             server.ollama, "survey", return_value=surveyed(["one", "two"])
         ) as told:
@@ -3681,8 +3374,6 @@ class TestApi(unittest.TestCase):
             self.assertIn("chapter", response.json["error"])
 
     def test_a_chapter_cast_is_read_the_way_a_story_cast_is(self):
-        # The one validator, so a bible and a story cannot disagree about what a
-        # person is.
         response = client().post(
             "/api/translate",
             data={

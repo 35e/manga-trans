@@ -47,11 +47,7 @@ export function RegionsLayer({
   )
 }
 
-/**
- * One block, draggable and pullable by its edges: the detector runs two speech
- * bubbles together often enough to matter, and the fix is to pull this one back
- * off the second and draw a block around what is left.
- */
+/** One block, draggable and pullable by its edges. */
 function RegionBox({
   region,
   index,

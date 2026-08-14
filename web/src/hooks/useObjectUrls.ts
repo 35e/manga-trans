@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 /**
- * Blobs held under a key and handed out as URLs, each released the moment it is
- * replaced, dropped or the page goes away. Nothing here happens inside a state
- * updater: those run twice under StrictMode, and a URL made twice is a URL
- * leaked once.
+ * Blobs held under a key and handed out as URLs. **Nothing here happens inside a
+ * state updater**: those run twice under StrictMode, and a URL made twice is one
+ * leaked.
  */
 export function useObjectUrls() {
   const [urls, setUrls] = useState<Record<string, string>>({})

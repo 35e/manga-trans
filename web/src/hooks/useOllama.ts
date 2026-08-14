@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react'
 import { models as listModels } from '../lib/api'
 
-/**
- * What the API's Ollama has to translate with, asked for once, and which of them
- * to use. `problem` is why there is nothing to choose from, when there is not.
- */
+/** What the API's Ollama has to translate with, and which of them to use. */
 export function useOllama() {
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')

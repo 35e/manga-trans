@@ -27,11 +27,7 @@ type Props = {
   packing: { done: number; total: number } | null
 }
 
-/**
- * How far a folder run has got. It is not shown inside the folder it belongs to:
- * a run takes minutes a page, and the folder it is working through is not
- * where its reader will be sitting.
- */
+/** How far a folder run has got, shown wherever the rail is. */
 export function BatchProgress({
   run,
   stage,
@@ -44,11 +40,8 @@ export function BatchProgress({
   const share = run.total === 0 ? 0 : run.done / run.total
   const failed = run.failed.length
 
-  // The last thing the API was asked for, kept while it is between two of them:
-  // a page's steps do not run into each other, and a word blinking out for the
-  // few milliseconds in the gap reads as something having gone wrong.
-  // Cleared before it is filled in, so a page that arrives already being worked
-  // on keeps its stage rather than being reset to nothing after it.
+  // Held between two steps, or the word blinks out in the gap and reads as
+  // something having gone wrong. Cleared before it is filled in, in that order.
   const [held, setHeld] = useState<Stage | null>(stage)
   useEffect(() => setHeld(null), [run.page?.id])
   useEffect(() => {
@@ -115,8 +108,7 @@ export function BatchProgress({
               </button>
             </>
           ) : run.note ? (
-            // Work on the whole chapter rather than on any one page, so there is
-            // no page to name — the note says what it is doing instead.
+            // Work on the whole chapter, so there is no page to name.
             <>
               <Spinner className="mr-1 inline size-2.5 align-[-1px]" />
               {run.note}

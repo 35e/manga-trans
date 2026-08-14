@@ -2,11 +2,7 @@ import type { Box } from './api'
 
 /**
  * Where a box falls in reading order: down the page, then across it the way the
- * language is read — right to left for Japanese, left to right for Korean.
- *
- * `detect.py` sorts its own blocks by the same key, and is told the same way
- * round. A block added by hand has to land where the detector would have put it,
- * or the page translates as a jumbled conversation.
+ * language is read. `detect.py` sorts by the same key and must go on agreeing.
  */
 function key(box: Box, rtl: boolean): [number, number] {
   return [box[1], rtl ? -box[2] : box[0]]
@@ -29,11 +25,7 @@ function cutAt(length: number, share: number): number {
   return Math.min(Math.max(length * share, SLIVER), length - SLIVER)
 }
 
-/**
- * A box cut in two across its longer side, handed back in the order the halves
- * are read in — which depends on how it was cut, so it is asked of the same rule
- * that orders every other block rather than assumed here.
- */
+/** A box cut in two across its longer side, in the order the halves are read. */
 export function halves(box: Box, share: number, rtl: boolean): [Box, Box] {
   const [x0, y0, x1, y1] = box
   const width = x1 - x0
@@ -77,9 +69,8 @@ export function moveAt<T>(list: T[], from: number, to: number): T[] {
 }
 
 /**
- * Where an index ends up after that same move. Blocks are pointed at by their
- * place in the list — which are left alone, which one is picked out — so every
- * pointer has to be carried across a reorder.
+ * Where an index ends up after that same move: blocks are pointed at by
+ * position, so every pointer has to be carried across a reorder.
  */
 export function movedIndex(index: number, from: number, to: number): number {
   if (index === from) return to

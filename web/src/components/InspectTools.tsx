@@ -6,8 +6,7 @@ type Props = {
   offered: Language[]
   language: string
   onLanguage: (code: string) => void
-  /** Whether the page has been through the detector: until it has, there are no
-   * blocks to show, hide or draw beside. */
+  /** Whether the page has been through the detector. */
   found: boolean
   showBoxes: boolean
   onShowBoxes: (showing: boolean) => void
@@ -17,11 +16,7 @@ type Props = {
 
 /**
  * What the page is written in, and what can be done to the blocks found in it.
- *
- * The language sits here rather than in the settings because this is the step it
- * bears on — it is who reads the page and which way round the blocks are put —
- * and it shows before anything has been detected, so a page of Korean is never
- * quietly read as Japanese for want of somewhere to say so.
+ * The language sits here because this is the step it bears on.
  */
 export function InspectTools({
   offered,

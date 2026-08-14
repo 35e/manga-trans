@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-/**
- * A traced page is held under how far it was grown as well as which page it is:
- * ask for more spread and it is a different tracing, not the same one again.
- */
+/** A different spread is a different tracing, not the same one again. */
 const keyFor = (id: string, spread: number) => `${id}@${spread}`
 
 export type LetterMasks = {
@@ -15,17 +12,13 @@ export type LetterMasks = {
 }
 
 /**
- * The lettering traced pixel by pixel, one bitmap per page and spread.
- *
- * Tracing is another pass of the detector, so what comes back is kept rather
- * than asked for twice. The bitmaps are explicitly closed on the way out: they
- * hold decoded pixels the collector will not hurry over.
+ * The lettering traced pixel by pixel, one bitmap per page and spread. They are
+ * explicitly `close()`d: decoded pixels the collector will not hurry over.
  */
 export function useLetterMasks(): LetterMasks {
   const [held, setHeld] = useState<Record<string, ImageBitmap>>({})
 
-  // Read through a ref so the operations below keep one identity, and so the
-  // unmount cleanup does not re-run on every tracing.
+  // Read through a ref, so the cleanup does not re-run on every tracing.
   const now = useRef(held)
   now.current = held
 

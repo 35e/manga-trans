@@ -14,10 +14,8 @@ export function typingNow(): boolean {
 }
 
 /**
- * What this browser was told to remember. The API keeps no settings, so
- * everything chosen once and meant thereafter — the prompt, the language — is
- * kept here. A browser that will not remember anything is still a browser to
- * work in, so neither of these ever throws.
+ * What this browser was told to remember, the API keeping no settings. A browser
+ * that will not remember is still one to work in, so neither of these throws.
  */
 export function held(key: string): string | null {
   try {

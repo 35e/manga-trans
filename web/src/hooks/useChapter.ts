@@ -4,21 +4,12 @@ import { folded, withText } from '../lib/bible'
 
 /**
  * What each chapter turned out to be, read whole before any of it was
- * translated. Sent over with every page of the folder, so page three is
- * translated knowing what page forty reveals — which is the one thing the
- * running story and glossary cannot do, being built forwards.
- *
- * Per folder, because that is what a chapter is here. A loose page has none: a
- * page on its own is not a chapter and there is nothing to survey.
- *
- * What is *held* here and what is *decided* are apart, the same as `useStory`:
- * every rule about folding a window in lives in `lib/bible.ts`.
+ * translated. Every folding rule lives in `lib/bible.ts`, as `useStory` does.
  */
 export function useChapter() {
   const [bibles, setBibles] = useState<Record<string, Bible>>({})
 
-  // Read as a page is translated, from a callback that deliberately does not
-  // depend on the record — the same reason the analyses are read through a ref.
+  // Read through a ref, so translating a page does not depend on the record.
   const now = useRef(bibles)
   now.current = bibles
 

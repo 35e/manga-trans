@@ -7,9 +7,8 @@ function carriesFiles(event: DragEvent) {
 }
 
 /**
- * Files dropped anywhere on the page, and files pasted into it. Listening at the
- * window keeps a stray drop from navigating the browser away from the app, and
- * gives the whole page one answer to "is something being dragged in right now".
+ * Files dropped anywhere on the page, and files pasted into it. At the window,
+ * so a stray drop cannot navigate the browser away from the app.
  */
 export function useFileDrop(onFiles: FileHandler) {
   const [dragging, setDragging] = useState(false)

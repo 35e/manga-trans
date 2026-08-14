@@ -48,8 +48,7 @@ export function RegionsPanel({
   const kept = regions.length - excluded.size
 
   // A drag has to be told apart from a click, or picking a block out by its
-  // handle would start one. Keyboard sorting comes for free with the sensor:
-  // space to lift, arrows to move, space again to drop.
+  // handle would start one.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),

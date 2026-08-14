@@ -7,18 +7,15 @@ type Props = {
   brush: Brush
   /** While the board is being dragged about, the hand belongs to the pan. */
   panning: boolean
-  /** Once a stroke ends, so the buttons that care whether anything is marked
-   *  catch up. Brushing itself draws straight onto the canvas. */
+  /** Once a stroke ends; brushing itself draws straight onto the canvas. */
   onStroke: () => void
 }
 
 /**
  * The mask over the page, and the brush that draws it. The canvas is the page's
  * own size and scaled by CSS, so a stroke is in page pixels whatever the zoom.
- *
- * Repainted after every render: a canvas is blank whenever it is remounted or
- * resized, and the mask is written to from the block list as well as by hand, so
- * there is no one thing to watch for.
+ * **Repainted after every render**: a canvas is blank whenever it is remounted
+ * or resized, and there is no one thing to watch for.
  */
 export function MaskCanvas({ page, mask, brush, panning, onStroke }: Props) {
   const overlay = useRef<HTMLCanvasElement>(null)

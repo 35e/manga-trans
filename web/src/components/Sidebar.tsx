@@ -107,9 +107,8 @@ export function Sidebar({
     : images
   const total = counted.reduce((sum, image) => sum + image.size, 0)
 
-  // A page dropped while a folder is open lands in it; an archive makes one of
-  // its own. Only the second sends the rail back out — going out to look at a
-  // folder you did not drop into, and staying put when you dropped into this one.
+  // Only an archive sends the rail back out: a loose page dropped into the open
+  // folder stays put.
   const inside = folder ? counted.length : 0
   const held = useRef({ total: images.length, inside })
   useEffect(() => {
@@ -208,11 +207,8 @@ export function Sidebar({
 }
 
 /**
- * A folder started by hand, for pages that did not arrive as a chapter.
- *
- * Named as it is made, there being nothing anywhere that renames one — and the
- * field is left open on a name already taken, which is the only way it is
- * refused, so the next one typed lands somewhere.
+ * A folder started by hand. Named as it is made, and the field is left open on a
+ * name already taken, which is the only way it is refused.
  */
 function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
   const [naming, setNaming] = useState(false)
@@ -278,16 +274,8 @@ function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
 
 /**
  * The head of an opened folder: the way back out, and the two buttons that run
- * the whole chapter through.
- *
- * Two rather than one because a chapter is read before it is translated: the
- * first finds and cleans every page and then reads the chapter out of what they
- * say, and the second letters them against it. The gap between them is where the
- * chapter can be corrected — a wrong name settled by hand there is a wrong name
- * on none of the pages rather than on all of them.
- *
- * Each is armed first where there is lettering in the folder already, since a run
- * does every page over and hand work is not recoverable.
+ * the whole chapter through. The gap between them is where the chapter can be
+ * corrected by hand. Each is armed first where the folder already has lettering.
  */
 function FolderBar({
   folder,
@@ -332,10 +320,8 @@ function FolderBar({
   const [armed, setArmed] = useState(false)
   const [armedTranslate, setArmedTranslate] = useState(false)
 
-  // Whether the chapter that was read still describes this folder. The beats are
-  // indexed by a page's place in it, so a page added or deleted since leaves
-  // every beat after it against the wrong page — silently, which is why it is
-  // said here and why translating drops the chapter rather than using it.
+  // Whether the chapter that was read still describes this folder — see
+  // `bible.fits`. Said here, because translating drops it silently otherwise.
   const read = !isUnread(bible)
   const stale = read && !fits(bible, pages.length)
 
@@ -494,20 +480,10 @@ function FolderBar({
 }
 
 /**
- * What this chapter has settled on calling things and where its story has got to.
- * Both go over with every page in the folder, so a name keeps one spelling and a
- * page that opens mid-argument is translated as that rather than as strangers
- * meeting — across pages no model ever sees together.
- *
- * Shown rather than only used, because the first page to name someone decides it
- * for the rest of the chapter and there would otherwise be nothing saying why a
- * later page came out as it did. The story is the other way round — the last page
- * to speak decides it — which is worth being able to see for the same reason.
- *
- * The cast is the one part that can be corrected: a chapter says who someone is
- * when it is ready to, which may be pages after the first translation needed to
- * know, and someone reading it already knows. Anything set here is settled — the
- * model is told so on every page after it, and stops being asked to work it out.
+ * What this chapter has settled on calling things and where its story has got
+ * to, both shown rather than only used. The cast is the part that can be
+ * corrected, and anything set here is **settled**: the model is told so on every
+ * page after it and stops being asked to work it out.
  */
 function Chapter({
   terms,
@@ -625,11 +601,8 @@ function Chapter({
 }
 
 /**
- * One settled term, its wording open to being put right.
- *
- * The source is the key and stays as it is; only what it is rendered as can be
- * changed, and changing it changes every page not yet lettered — which is why
- * this is worth having in the gap between reading a chapter and translating it.
+ * One settled term, its wording open to being put right. The source is the key
+ * and stays as it is.
  */
 function TermRow({
   term,
@@ -688,12 +661,8 @@ function TermRow({
 }
 
 /**
- * A piece of what the chapter is, open to being written again by hand.
- *
- * Click to edit, Escape to leave it as it was, blur or Enter to settle — the same
- * idiom as a cast member's note. Correcting it here is worth more than anywhere
- * else: it rides in front of every page of the chapter, so a wrong reading fixed
- * before the run is a wrong reading on none of the pages.
+ * A piece of what the chapter is, open to being written again by hand. Click to
+ * edit, Escape to leave it, blur or Enter to settle.
  */
 function Writing({
   value,
@@ -751,11 +720,8 @@ function Writing({
 }
 
 /**
- * One of the cast, and the two things about them that can be put right.
- *
- * `unknown` is not a gap to be filled in for the sake of it: it is what the
- * chapter has honestly shown so far, and setting it back to unknown hands the
- * question to the model again rather than asserting anything.
+ * One of the cast, and the two things about them that can be put right. Setting
+ * one back to `unknown` hands the question to the model again.
  */
 function Person({
   person,

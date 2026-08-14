@@ -14,9 +14,7 @@ type Props = {
 
 /**
  * The one bar that sits on the page rather than above it: which version is being
- * looked at, and how closely. Original-versus-cleaned belongs here and not in a
- * step of its own — comparing them is looking, done by the same hand that is
- * zooming in to see whether the clean held up.
+ * looked at, and how closely.
  */
 export function ViewBar({ view, cleaned, name, showCleaned, onShowCleaned }: Props) {
   return (
