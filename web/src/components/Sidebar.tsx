@@ -45,13 +45,16 @@ type Props = {
   /** Running a whole folder: what is happening, and how to start and stop it. */
   batch: BatchRun | null
   batchStage: Stage | null
-  /** Read the folder: every page found and cleaned, then the chapter itself. */
-  onSurveyFolder: (folder: GalleryFolder) => void
-  /** And letter it, every page against the whole chapter. */
+  /** Read the folder: every page found and read, then the chapter itself. */
+  onReadFolder: (folder: GalleryFolder) => void
+  /** And hide the words and letter it, every page against the whole chapter. */
   onTranslateFolder: (folder: GalleryFolder) => void
   onStopBatch: () => void
   onDismissBatch: () => void
-  /** Whether a model has been picked, without which a run only cleans. */
+  /**
+   * Whether a model has been picked, without which a run reads and cleans but
+   * does not translate.
+   */
   canTranslate: boolean
   /** The pages that have been lettered, which a run would do over. */
   lettered: string[]
@@ -89,7 +92,7 @@ export function Sidebar({
   onClearAll,
   batch,
   batchStage,
-  onSurveyFolder,
+  onReadFolder,
   onTranslateFolder,
   onStopBatch,
   onDismissBatch,
@@ -165,7 +168,7 @@ export function Sidebar({
           lettered={counted.filter((image) => lettered.includes(image.id)).length}
           done={counted.filter((image) => workedOn.includes(image.id)).length}
           onBack={() => onOpenFolder(null)}
-          onSurvey={() => onSurveyFolder(folder)}
+          onRead={() => onReadFolder(folder)}
           onTranslate={() => onTranslateFolder(folder)}
           onDownload={() => onDownloadFolder(folder)}
           running={batch !== null && !batch.finished}
@@ -274,8 +277,10 @@ function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
 
 /**
  * The head of an opened folder: the way back out, and the two buttons that run
- * the whole chapter through. The gap between them is where the chapter can be
- * corrected by hand. Each is armed first where the folder already has lettering.
+ * the whole chapter through. Reading comes first and cheaply — the clean is in
+ * the second — so the gap between them, which is where the chapter can be
+ * corrected by hand, is reached without waiting on LaMa. Each is armed first
+ * where the folder already has lettering.
  */
 function FolderBar({
   folder,
@@ -283,7 +288,7 @@ function FolderBar({
   lettered,
   done,
   onBack,
-  onSurvey,
+  onRead,
   onTranslate,
   onDownload,
   running,
@@ -303,7 +308,7 @@ function FolderBar({
   /** Pages that have been cleaned or lettered, so there is something to save. */
   done: number
   onBack: () => void
-  onSurvey: () => void
+  onRead: () => void
   onTranslate: () => void
   onDownload: () => void
   running: boolean
@@ -371,7 +376,7 @@ function FolderBar({
           if (!armed && lettered > 0) setArmed(true)
           else {
             setArmed(false)
-            onSurvey()
+            onRead()
           }
         }}
         onBlur={() => setArmed(false)}
@@ -381,45 +386,49 @@ function FolderBar({
           running
             ? 'A folder is already being run'
             : canTranslate
-              ? `Find and hide the words on all ${plural(pages.length, 'page')}, then read the chapter whole`
-              : `Find and hide the words on all ${plural(pages.length, 'page')}`
+              ? `Find and read the words on all ${plural(pages.length, 'page')}, then read the chapter whole. Nothing is hidden yet`
+              : `Find and read the words on all ${plural(pages.length, 'page')}`
         }
       >
         {armed
           ? `Do ${plural(lettered, 'lettered page')} again?`
           : canTranslate
-            ? 'Clean & read chapter'
-            : 'Clean all'}
+            ? 'Read chapter'
+            : 'Read all'}
       </Button>
 
-      {canTranslate && (
-        <Button
-          variant={armedTranslate ? 'primary' : 'outline'}
-          onClick={() => {
-            if (!armedTranslate && lettered > 0) setArmedTranslate(true)
-            else {
-              setArmedTranslate(false)
-              onTranslate()
-            }
-          }}
-          onBlur={() => setArmedTranslate(false)}
-          disabled={running || pages.length === 0}
-          className="mt-1.5 w-full"
-          title={
-            running
-              ? 'A folder is already being run'
+      {/* Not hidden without a model: this is also the only way to clean a folder,
+          and with nothing to translate with it does exactly that. */}
+      <Button
+        variant={armedTranslate ? 'primary' : 'outline'}
+        onClick={() => {
+          if (!armedTranslate && lettered > 0) setArmedTranslate(true)
+          else {
+            setArmedTranslate(false)
+            onTranslate()
+          }
+        }}
+        onBlur={() => setArmedTranslate(false)}
+        disabled={running || pages.length === 0}
+        className="mt-1.5 w-full"
+        title={
+          running
+            ? 'A folder is already being run'
+            : !canTranslate
+              ? `Hide the words on all ${plural(pages.length, 'page')}`
               : stale
                 ? 'The pages have changed since the chapter was read — each page will know only the pages before it'
                 : read
-                  ? 'Every page translated knowing the whole chapter'
+                  ? 'Every page hidden and translated knowing the whole chapter'
                   : 'No chapter read yet — each page will know only the pages before it'
-          }
-        >
-          {armedTranslate
-            ? `Do ${plural(lettered, 'lettered page')} again?`
-            : 'Translate chapter'}
-        </Button>
-      )}
+        }
+      >
+        {armedTranslate
+          ? `Do ${plural(lettered, 'lettered page')} again?`
+          : canTranslate
+            ? 'Clean & translate chapter'
+            : 'Clean all'}
+      </Button>
 
       {stale && (
         <p className="mt-1.5 leading-snug">
@@ -460,7 +469,9 @@ function FolderBar({
 
       {!canTranslate && (
         <p className="mt-1.5 leading-snug">
-          <Note>no model picked — pages will be cleaned but not translated</Note>
+          <Note>
+            no model picked — pages will be read and cleaned but not translated
+          </Note>
         </p>
       )}
 
@@ -796,12 +807,15 @@ function Person({
             setNote(person.note ?? '')
             setNoting(true)
           }}
+          // A survey describes a character in a sentence, which is longer than
+          // this rail: shown to two lines and whole on hover.
           title={
-            settled.includes('note')
+            person.note ||
+            (settled.includes('note')
               ? 'Set by hand. The model is told it is not to change it'
-              : 'What the chapter has made of them. Click to say it yourself'
+              : 'What the chapter has made of them. Click to say it yourself')
           }
-          className={`block w-full truncate px-1 text-left text-[11px] leading-snug ${
+          className={`block w-full px-1 text-left text-[11px] leading-snug line-clamp-2 ${
             settled.includes('note') ? 'text-muted' : 'text-faint'
           } hover:text-ink`}
         >

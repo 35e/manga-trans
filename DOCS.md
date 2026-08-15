@@ -206,6 +206,17 @@ under "unknown", an unnamed character collides with the next one *and* turns the
 question below into `Still unknown: 先輩, unknown`. Measured — and it appears to
 be what stopped the model answering that question at all.
 
+`SURVEY_NOTE` asks for a `note` on each of the cast, and for a long time did not:
+the field was in `CAST_SCHEMA` from the start and the survey listed the cast by
+name and gender alone, so a chapter came back with twelve names and nothing said
+about any of them. What a page is told about someone is `described(person)`, which
+is that note — so a survey that skipped it left the cast doing nothing but keeping
+pronouns straight. It is capped at `CAST_NOTE_LIMIT` rather than `NOTE_LIMIT`
+because it is a different thing from a term's note, and `STORY_NOTE` asks for the
+same length for a reason that is easy to miss: a page's answer replaces what is
+held (`lib/story.ts`), so a page still told "a few words" would quietly file the
+survey's sentence down over the length of a chapter.
+
 `beats` is a bare list counted against the pages rather than each beat carrying its
 page number. Numbered, a page the model passed over would leave a gap instead of
 shifting the rest — but that only moves the failure: a model that numbers from one
@@ -330,6 +341,17 @@ cover the halo around a letter also closes the gaps this exists to measure.
 A Vite/React dashboard that holds all the state. `App.tsx` owns it and the async
 orchestration, keyed by page id; it holds no logic of its own — every edit to a
 page goes through `lib/`.
+
+The two folder runs are split at the clean rather than at the translate. Reading a
+page is a detection and an OCR pass; hiding it is LaMa on every balloon, and over a
+chapter that is most of the wait. Putting the clean in the second run is what makes
+the synopsis, the beats and the cast arrive early enough to be worth correcting,
+and correcting them is the whole point of there being a gap between the runs at
+all. It was the other way round first — the first run cleaned as it read — and
+what that cost was not the minutes themselves but where they fell: in front of the
+one answer worth looking at before anything is committed to. The second run hides
+what the first only read and skips a page already hidden, so the expensive half is
+still paid for once.
 
 Everything that keeps this half correct — the positional arrays, `bubble ?? box`,
 the reading order defined twice, the three merge directions, the folder-run rules

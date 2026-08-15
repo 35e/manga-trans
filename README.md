@@ -243,7 +243,8 @@ the chapter whole, `register` is how it is written, and `beats` is one line per
 page of *this* window, so a caller lays them down at `first`. `cast` and `terms`
 are the same shapes `/api/translate` answers with. Everything is capped — a
 synopsis to 1200 characters, a register to 200, a beat to 160, the cast to twelve
-and the terms to forty — and cut rather than refused.
+with 200 characters describing each of them, and the terms to forty — and cut
+rather than refused.
 
 The beats are counted the way the translations are, and a second miscount hands
 back *no* beats rather than beats a page out. What the window said about the
@@ -287,8 +288,12 @@ sentence or two on where the chapter has got to, and `cast`, who it is going on
 between. The scene is *rewritten* each page rather than added to, so a chapter of
 forty pages carries two sentences rather than eighty.
 
-A cast entry is `{"name": …, "gender": "male"|"female"|"unknown", "note": …}`, and
-**`unknown` is the answer wanted until the chapter has actually shown otherwise**:
+A cast entry is `{"name": …, "gender": "male"|"female"|"unknown", "note": …}`.
+The `note` is where the character is: their part in the story, who they are to
+the others, and how they speak. It is all a page being translated will be told
+about anyone on it, so it is carried to 200 characters rather than the 80 a
+term's note gets. **`unknown` is the answer wanted until the chapter has actually
+shown otherwise**:
 a guess made on page one is read back as established fact by every page after it.
 The cast is named in the page's own script (`先輩`, not "the senior") so the name
 is a key that holds from page to page, and each page is asked at the foot of its
@@ -434,23 +439,32 @@ an archive still makes its own. Deleting a folder deletes its pages, and deletin
 the last page deletes an archive's folder but not a hand-made one.
 
 A folder is run in two steps, because a chapter is worth reading before it is
-translated. **Clean & read chapter** puts every page through detect, read and
-hide, then reads the chapter itself out of what those pages said. **Translate
-chapter** then letters every page against the whole of it — pressed without
+translated. **Read chapter** puts every page through detect and read, then reads
+the chapter itself out of what those pages said. Nothing is hidden yet: hiding is
+the slow half, and this way what the chapter turns out to be — including who is
+in it — arrives without waiting on it. **Clean & translate chapter** then hides
+the words on every page and letters it against the whole of it — pressed without
 having read the chapter it still works, each page knowing only the pages before
 it. Either asks once before doing a folder that has already been lettered.
+
+With no model picked the first reads the pages but not the chapter, and the
+second cleans without lettering — which is the whole of what **Read all** and
+**Clean all** are.
 
 The bar above the rail says which step is running, which page is in hand and what
 is being done to it; clicking the page's name puts it on the board. **Stop** stops
 after the page in hand. A page that falls over is named with its reason and the
 rest carry on.
 
-The gap between the two steps is the point of splitting them: what the chapter
-turned out to be is shown under the folder's buttons and can be put right there,
-and a name corrected *there* is corrected on every page. The page-by-page beats
-are shown too, and are the one part that is not editable. Delete or add a page
-after reading the chapter and the beats no longer line up, so the rail says so and
-translating falls back to knowing only what came before.
+The gap between the two steps is the point of splitting them, and splitting them
+at the clean is what makes the gap cheap to reach: what the chapter turned out to
+be is shown under the folder's buttons and can be put right there, and a name
+corrected *there* is corrected on every page. So is the cast — who the chapter is
+about, what they are to each other and how they speak — which is what a page
+being translated knows about anyone on it. The page-by-page beats are shown too,
+and are the one part that is not editable. Delete or add a page after reading the
+chapter and the beats no longer line up, so the rail says so and translating
+falls back to knowing only what came before.
 
 A run also builds the folder's **chapter terms**, so a character keeps one
 spelling across pages the model never sees together; the first rendering of a term
@@ -460,7 +474,8 @@ wins. **Forget** starts it over.
 arrived: `ch01.cbz` comes back as `ch01-english.cbz`, or `ch01-cleaned.cbz` where
 it was only cleaned. *Every* page goes in, at the best state it reached, under the
 name it came in under. It can be pressed whenever there is something to save, and
-pressed again.
+pressed again — a chapter only read has nothing to save yet, so it waits for the
+second step.
 
 A page is worked on the board in three tabs. **Inspect** boxes the lettering and
 reads it; **Page is in** beside the blocks is the language, remembered for next

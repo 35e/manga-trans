@@ -167,7 +167,9 @@ def people_in(cast, field: str) -> list[dict]:
             {
                 "name": name,
                 "gender": gender,
-                "note": str(person.get("note") or "").strip()[: ollama.NOTE_LIMIT],
+                "note": str(person.get("note") or "").strip()[
+                    : ollama.CAST_NOTE_LIMIT
+                ],
                 "settled": settled,
             }
         )

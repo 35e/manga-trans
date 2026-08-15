@@ -107,6 +107,11 @@ NOTE_LIMIT = 80
 SCENE_LIMIT = 600
 CAST_LIMIT = 12
 
+# Wider than NOTE_LIMIT because the two notes are different things: a term's says
+# what decides a wording, where one of the cast's is the character. Twelve of
+# these is around 2400 characters, well inside CONTEXT.
+CAST_NOTE_LIMIT = 200
+
 # A survey window is several pages of raw lettering with the running answer in
 # front of it, where CONTEXT is sized for one page.
 SURVEY_CONTEXT = 16384
@@ -161,7 +166,10 @@ STORY_NOTE = (
     "Also give, under `story`, where the chapter has got to. `scene` is one or two "
     "sentences: who is present, what is going on between them, anything a page not "
     "yet read would need. `cast` is everyone who speaks or is spoken about, with "
-    "their `gender` and a few words of `note` on who they are. Name each of them "
+    "their `gender` and a `note` saying who they are: their part in the story, "
+    "who they are to the others, and how they speak. Give the note at that "
+    "length whatever you were handed — a fuller one shortened is a character "
+    "lost for every page after this one. Name each of them "
     "as the pages do, in the {source} they are written in — 先輩, 田中先生 — "
     "and "
     "keep that name exactly from page to page, since it is what says who is who. "
@@ -227,7 +235,11 @@ SURVEY_NOTE = (
     "about, named as the pages name them, in the {source} they are written in — "
     "先輩, 田中先生 — since that name is what says who is who. Somebody the pages "
     "never name is named by what they are — 'the boy on the bicycle' — and never as "
-    "`unknown`, which is not a name. Answer `unknown` for the gender of anyone the "
+    "`unknown`, which is not a name. Give each of them a `note` saying who they "
+    "are: their part in the chapter, who they are to the others, and how they "
+    "speak — how formal, how blunt, what they call people. That note is all a "
+    "page being translated will know about them, so write it for someone who has "
+    "not read the chapter. Answer `unknown` for the gender of anyone the "
     "chapter has not actually shown to be one or the other: do not guess it from a "
     "name, from a manner of speaking, or from how someone is addressed. A later "
     "page settles it, and a guess made here is read as fact by every page of the "
@@ -431,7 +443,7 @@ def peopled(cast) -> list[dict]:
         if not name or name.casefold() in NOT_A_NAME:
             continue
         gender = person.get("gender")
-        note = str(person.get("note") or "").strip()[:NOTE_LIMIT]
+        note = str(person.get("note") or "").strip()[:CAST_NOTE_LIMIT]
         people.append(
             {
                 "name": name,

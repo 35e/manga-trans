@@ -690,11 +690,11 @@ function App() {
   }, [active, analyses, translatePage])
 
   /**
-   * Everything a page needs before it can be translated: find the words, read
-   * them, hide them. Takes the page rather than reading the active one, and
-   * hands back why it gave up, because a run has to say which page that was.
+   * Find the words on a page and read them. Takes the page rather than reading
+   * the active one, and hands back why it gave up, because a run has to say
+   * which page that was.
    */
-  const prepared = useCallback(
+  const readPage = useCallback(
     async (
       page: GalleryImage,
     ): Promise<{ found: Analysis | null; why: string | null }> => {
@@ -706,11 +706,23 @@ function App() {
         return { found: null, why: lastFailure.current ?? 'the text could not be found' }
       }
 
+      // The next thing to do to a page that has been read is hide it, which is
+      // where the page-change rule would put it anyway. Here rather than in
+      // `detectAndRead`, so the board's own Detect still leaves the tabs alone.
+      if (onBoard(page.id)) setMode('mask')
+      return { found, why: null }
+    },
+    [detectAndRead, onBoard, held],
+  )
+
+  /** And hide them, which is the slow half and so the one paid for later. */
+  const hidePage = useCallback(
+    async (page: GalleryImage, found: Analysis): Promise<string | null> => {
       const marks = await marksFor(page, found)
       if (marks) {
         lastFailure.current = null
         if (!(await cleanPage(page, marks))) {
-          return { found, why: lastFailure.current ?? 'the page could not be cleaned' }
+          return lastFailure.current ?? 'the page could not be cleaned'
         }
       }
 
@@ -718,22 +730,23 @@ function App() {
       // brushed: fifty pages would otherwise hold fifty page-sized bitmaps.
       if (!onBoard(page.id)) traced.drop(page.id)
       else setMode('translate')
-      return { found, why: null }
+      return null
     },
-    [detectAndRead, marksFor, cleanPage, traced, onBoard, held],
+    [marksFor, cleanPage, traced, onBoard],
   )
 
   /** That, as a folder run wants it: why it gave up, or null when it came out. */
   const examine = useCallback(
-    async (page: GalleryImage) => (await prepared(page)).why,
-    [prepared],
+    async (page: GalleryImage) => (await readPage(page)).why,
+    [readPage],
   )
 
   /**
-   * Letter it, examining the page first if nobody has. The analysis is taken
-   * **from the step that found it** rather than read back out of state, which
-   * the step has only asked React to hold; a page examined by the *previous* run
-   * comes through `analysesNow`, that run being one this closure never saw.
+   * Hide the words and letter it, reading the page first if nobody has. The
+   * analysis is taken **from the step that found it** rather than read back out
+   * of state, which the step has only asked React to hold; a page read by the
+   * *previous* run comes through `analysesNow`, that run being one this closure
+   * never saw.
    */
   const render = useCallback(
     async (page: GalleryImage): Promise<string | null> => {
@@ -741,11 +754,19 @@ function App() {
 
       let found: Analysis | null = analysesNow.current[page.id] ?? null
       if (!found?.texts) {
-        const done = await prepared(page)
+        const done = await readPage(page)
         if (done.why) return done.why
         found = done.found
       }
       if (!found?.texts) return lastFailure.current ?? 'the text could not be found'
+
+      // Read by the first run and not hidden, which is the ordinary way round
+      // now. Skipped where it has been: the clean is the slow half and is not
+      // paid for twice.
+      if (!cleanedNow.current[page.id]) {
+        const why = await hidePage(page, found)
+        if (why) return why
+      }
 
       if (ollama.model && found.texts.some((text) => text.trim())) {
         lastFailure.current = null
@@ -756,7 +777,7 @@ function App() {
       }
       return null
     },
-    [prepared, translatePage, held, ollama.model],
+    [readPage, hidePage, translatePage, held, ollama.model],
   )
 
   /** "Do all three": that, for the page on the board. */
@@ -831,27 +852,29 @@ function App() {
   )
 
   /**
-   * Read the folder: every page found, read and cleaned, and then the chapter
-   * itself read whole out of what they said. One run rather than two, so there is
-   * one card and one Stop — reading the chapter is part of reading it.
+   * Read the folder: every page found and read, and then the chapter itself read
+   * whole out of what they said. One run rather than two, so there is one card
+   * and one Stop — reading the chapter is part of reading it. Nothing is hidden
+   * here: the clean is the slow half, and what a chapter turns out to be is worth
+   * having before it is paid for.
    */
-  const surveyFolder = useCallback(
+  const readFolder = useCallback(
     (folder: GalleryFolder) => {
       const pages = images.filter((image) => image.folder === folder.id)
-      void startBatch(folder, pages, 'Cleaning & reading', examine, (say) =>
+      void startBatch(folder, pages, 'Reading', examine, (say) =>
         surveyChapter(folder, pages, say),
       )
     },
     [startBatch, images, examine, surveyChapter],
   )
 
-  /** And then letter it, every page against the whole chapter. */
+  /** And then hide the words and letter it, every page against the whole chapter. */
   const translateFolder = useCallback(
     (folder: GalleryFolder) => {
       void startBatch(
         folder,
         images.filter((image) => image.folder === folder.id),
-        'Translating',
+        'Cleaning & translating',
         render,
       )
     },
@@ -1090,7 +1113,7 @@ function App() {
           // The bar names the page it is working on, so it wants that page's
           // stage rather than the board's.
           batchStage={working && working.id === batch?.page?.id ? working.stage : null}
-          onSurveyFolder={surveyFolder}
+          onReadFolder={readFolder}
           onTranslateFolder={translateFolder}
           onStopBatch={stopBatch}
           onDismissBatch={dismissBatch}

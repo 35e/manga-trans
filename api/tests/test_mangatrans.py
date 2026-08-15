@@ -1924,6 +1924,13 @@ class TestStory(unittest.TestCase):
             done = ollama.translate(["おはよう"], "m")
         self.assertEqual(len(done.story["scene"]), ollama.SCENE_LIMIT)
 
+    def test_a_page_does_not_shorten_a_description_the_survey_wrote(self):
+        told = person("ハナ", note="who " * 100)
+        answer = reply(with_story(["Morning"], "They are arguing.", [told]))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            done = ollama.translate(["おはよう"], "m")
+        self.assertEqual(len(done.story["cast"][0]["note"]), ollama.CAST_NOTE_LIMIT)
+
     def test_the_story_holds_when_it_falls_back_to_one_at_a_time(self):
         asked, patched = self.asking(reply(translations("only one")))
         with patched:
@@ -2182,6 +2189,20 @@ class TestSurvey(unittest.TestCase):
         with mock.patch.object(ollama, "ask", return_value=answer):
             found = ollama.survey([["いち"]], "m")
         self.assertEqual(len(found.cast), ollama.CAST_LIMIT)
+
+    def test_a_description_of_someone_is_carried_further_than_a_terms_note(self):
+        told = person("ハナ", note="who " * 100)
+        answer = reply(with_beats(["one"], cast=[told]))
+        with mock.patch.object(ollama, "ask", return_value=answer):
+            found = ollama.survey([["いち"]], "m")
+        self.assertEqual(len(found.cast[0]["note"]), ollama.CAST_NOTE_LIMIT)
+        self.assertGreater(ollama.CAST_NOTE_LIMIT, ollama.NOTE_LIMIT)
+
+    def test_the_cast_is_asked_to_say_who_someone_is(self):
+        asked, patched = self.asking(reply(with_beats(["one"])))
+        with patched:
+            ollama.survey([["いち"]], "m")
+        self.assertIn("`note` saying who they are", asked[0])
 
     def test_a_placeholder_for_a_name_is_dropped_here_too(self):
         answer = reply(with_beats(["one"], cast=[person("unknown"), person("ハナ")]))

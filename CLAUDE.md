@@ -184,9 +184,15 @@ The bible is *replaced* per window and the **last** window wins. The glossary
 accumulates and the **first** rendering of a term wins (`useGlossary`). The story's
 `scene` is **replaced** and the **last** page wins (`useStory`, via `lib/story.ts`).
 Everything is capped on the way in and out (`SCENE_LIMIT`, `CAST_LIMIT`,
-`NOTE_LIMIT`, `GLOSSARY_LIMIT`, `SYNOPSIS_LIMIT`, `REGISTER_LIMIT`, `BEAT_LIMIT`,
-`BEATS_LIMIT`): it all rides on *every* page of a folder run. An empty answer
-leaves what was held.
+`NOTE_LIMIT`, `CAST_NOTE_LIMIT`, `GLOSSARY_LIMIT`, `SYNOPSIS_LIMIT`,
+`REGISTER_LIMIT`, `BEAT_LIMIT`, `BEATS_LIMIT`): it all rides on *every* page of a
+folder run. An empty answer leaves what was held.
+
+**A cast note is not a term note and is not capped like one.** `NOTE_LIMIT` (80)
+says what decides a wording; `CAST_NOTE_LIMIT` (200) is the character, and it is
+all a page is told about anyone on it. Both `SURVEY_NOTE` and `STORY_NOTE` ask for
+it at that length — a page told to write "a few words" would shorten what the
+survey wrote, since `lib/story.ts` lets any non-empty note replace the held one.
 
 **A survey's cast is seeded unsettled.** `settled` means "set by hand", which is
 what `described` tells the model, so the sweep must not claim it. Hand corrections
@@ -243,15 +249,20 @@ particular order. Board actions are shut while a run is going (`Board`'s
 `runningFolder`) for the same reason.
 
 **A folder is run twice, and the step is an argument rather than the hook's.**
-`App.examine` finds, reads and cleans a page; `App.render` translates and letters
+`App.examine` finds and reads a page; `App.render` hides, translates and letters
 one. Between them the chapter is read, which is why `useBatch.start` also takes an
 `after` — run inside the same run so there is one card, one **Stop** and one thing
-that is true. Both steps take the page rather than reading the active one, and move
-the step tabs and clear the selection **only** for the page on the board. Both hand
-back why they gave up (`App.lastFailure`), because a run has to say which page that
-was; not every empty answer is a refusal, so the reason decides rather than the
-boolean. `App.render` takes its analysis **from the step that found it** rather
-than reading it back out of state.
+that is true. **The clean is in the second run, not the first**, so a chapter can
+be read and put right before LaMa is paid for: `render` hides a page that was read
+and not hidden (`cleanedNow`) and skips one that has been, which is also why a mask
+brushed after a clean is re-cleaned from the board rather than by running the folder
+again. Both steps take the page rather than reading the active one, and move the
+step tabs and clear the selection **only** for the page on the board — reading
+lands on **mask**, hiding on **translate**, which is where the page-change rule
+would put each anyway. Both hand back why they gave up (`App.lastFailure`), because
+a run has to say which page that was; not every empty answer is a refusal, so the
+reason decides rather than the boolean. `App.render` takes its analysis **from the
+step that found it** rather than reading it back out of state.
 
 **A tracing is dropped as soon as its clean lands, unless its page is on the
 board.** Traced masks are cached per `(pageId, spread)` (`useLetterMasks`) and the
