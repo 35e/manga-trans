@@ -1,7 +1,3 @@
-/**
- * How big the lettering can be set and still land in its box, measured with the
- * same font the board draws it in.
- */
 
 export const FONT_STACK =
   '"Anime Ace", "Comic Sans MS", "Helvetica Neue", Arial, sans-serif'
@@ -11,19 +7,12 @@ export const LINE_HEIGHT = 1.15
 export const SIZE_MIN = 6
 export const SIZE_MAX = 200
 
-/** Left at the end of a line to say the word carries on below. */
 const HYPHEN = '-'
 
-/** The white outline, as a share of the type size. */
 const STROKE_RATIO = 0.12
 
-/** Latin fills about two thirds of its em where a kanji fills all of it. */
 const LATIN = 1.25
 
-/**
- * The white wanted *outside* the letter. A stroke is centred on the outline, so
- * both letterers set twice this and paint the fill over the half falling inside.
- */
 export function strokeFor(size: number): number {
   return Math.max(1, size * STROKE_RATIO)
 }
@@ -39,19 +28,11 @@ function measurer(): CanvasRenderingContext2D | null {
   return scratch
 }
 
-/**
- * Wait for the lettering face to be in. **Anything that measures or draws waits
- * on this first**, or it measures the fallback and fits to the wrong shape.
- */
 export function ready(): Promise<unknown> {
   if (typeof document === 'undefined' || !document.fonts) return Promise.resolve()
   return document.fonts.load(fontFor(16)).catch(() => undefined)
 }
 
-/**
- * A word too wide for the box, cut into pieces that fit. The hyphen is measured
- * along with its piece, or it would be what overruns the box.
- */
 function pieces(
   context: CanvasRenderingContext2D,
   word: string,
@@ -68,12 +49,10 @@ function pieces(
       part = candidate
     }
   }
-  // A single letter wider than the box still goes on a line of its own.
   if (part) parts.push(part)
   return parts
 }
 
-/** Greedy wrap on whitespace, and inside a word when the word alone is too wide. */
 function wrap(
   context: CanvasRenderingContext2D,
   text: string,
@@ -109,10 +88,6 @@ function wrap(
   return lines.filter((line, index) => line !== '' || index === 0)
 }
 
-/**
- * The lines `text` breaks into inside a box `width` wide, set at `size`. The
- * board and the canvas letterer both draw from this call.
- */
 export function linesFor(text: string, width: number, size: number): string[] {
   const context = measurer()
   const words = text.trim()
@@ -121,7 +96,6 @@ export function linesFor(text: string, width: number, size: number): string[] {
   return wrap(context, words, width)
 }
 
-/** The widest single word, at whatever size the context is set to. */
 function widestWord(context: CanvasRenderingContext2D, text: string): number {
   let widest = 0
   for (const word of text.split(/\s+/).filter(Boolean)) {
@@ -130,10 +104,6 @@ function widestWord(context: CanvasRenderingContext2D, text: string): number {
   return widest
 }
 
-/**
- * Whether `text` lands inside the box when set at `size`. With `whole`, a size
- * leaving any word too wide fails.
- */
 function lands(
   context: CanvasRenderingContext2D,
   text: string,
@@ -152,11 +122,6 @@ function lands(
   )
 }
 
-/**
- * How large the page itself is lettered, read off the block the original came
- * out of: CJK is set on a square em, so `n` characters covering `width × height`
- * were set at about `sqrt(width × height / n)`.
- */
 export function originalSize(
   original: string,
   width: number,
@@ -170,16 +135,10 @@ export function originalSize(
   )
 }
 
-/** Measured in the face the lettering is set in, not guessed as a share of the em. */
 const SAMPLE = 'abcdefghijklmnopqrstuvwxyz '
 
-/** What a greedy wrap leaves ragged at the end of each line. */
 const PACKING = 0.85
 
-/**
- * Roughly how many characters fit in a box set at `size`. An estimate on purpose
- * — what really fits depends on which letters — and nothing is held to it.
- */
 export function roomInCharacters(
   width: number,
   height: number,
@@ -194,7 +153,6 @@ export function roomInCharacters(
   return Math.max(0, Math.floor((width / character) * rows * PACKING))
 }
 
-/** The largest size that lands, or null if not even the smallest does. */
 function largestThatLands(
   context: CanvasRenderingContext2D,
   text: string,
@@ -219,11 +177,6 @@ function largestThatLands(
   return best
 }
 
-/**
- * The largest size that fits `text` inside `width` × `height`, never below
- * SIZE_MIN. Two passes: words kept whole, then broken if even the smallest type
- * cannot hold the longest. `most` caps it however much room there is.
- */
 export function fitSize(
   text: string,
   width: number,

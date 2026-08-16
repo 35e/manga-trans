@@ -4,16 +4,13 @@ import { CloseIcon } from './icons'
 
 type Props = {
   onClose: () => void
-  /** What is being used now: null when it is the API's own. */
   prompt: string | null
-  /** The API's own, to start from and to go back to. */
   fallback: string | null
   onSave: (prompt: string | null) => void
   apiBase: string
   models: string[]
 }
 
-/** What the model is told, and what by. Kept in this browser, not in the API. */
 export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }: Props) {
   const [draft, setDraft] = useState(prompt ?? fallback ?? '')
 
@@ -25,7 +22,6 @@ export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }:
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // The default may still be on its way in when this is opened.
   useEffect(() => {
     if (prompt === null && fallback !== null) setDraft((now) => now || fallback)
   }, [prompt, fallback])
@@ -129,8 +125,6 @@ export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }:
             variant="primary"
             size="md"
             onClick={() => {
-              // Saved as "the API's own" when it is word for word the API's own,
-              // so a change there is still picked up later.
               onSave(isDefault || !draft.trim() ? null : draft)
               onClose()
             }}

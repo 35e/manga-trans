@@ -54,15 +54,12 @@ def optionally(make: Callable[[], T]) -> Callable[[], T | None]:
         if not held:
             try:
                 held.append(get())
-            except Exception as exc:  # noqa: BLE001 — any failure means "do without"
+            except Exception as exc:  # noqa: BLE001
                 print(f"mangatrans: cleaning with telea instead of lama: {exc}")
                 held.append(None)
         return held[0]
 
     return maybe
-
-
-# --- Reading the request --------------------------------------------------
 
 
 def page() -> Image.Image:
@@ -265,8 +262,6 @@ def kinds_in(texts: list[str]) -> list[str] | None:
         return None
     kinds = []
     for kind in values:
-        # Empty is a real answer — a block drawn by hand was classified by
-        # nothing — but anything else goes into a prompt.
         if kind in (None, ""):
             kinds.append("")
         elif kind in KINDS.values():
@@ -340,8 +335,6 @@ def mask_in(image: Image.Image) -> Image.Image | None:
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise BadRequest(f"the mask is not a usable image: {exc}") from exc
 
-    # An alpha channel is not the same as transparency: a browser canvas always
-    # exports one. So alpha is only believed when some of it is clear.
     alpha = sent_mask.getchannel("A") if "A" in sent_mask.getbands() else None
     shaped = alpha is not None and alpha.getextrema()[0] < 255
     mask = alpha if shaped else sent_mask.convert("L")
@@ -366,9 +359,6 @@ def png(image: Image.Image):
     image.save(buffer, format="PNG", optimize=True)
     buffer.seek(0)
     return send_file(buffer, mimetype="image/png", download_name="page.png")
-
-
-# --- The app --------------------------------------------------------------
 
 
 def create_app(

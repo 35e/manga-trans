@@ -19,9 +19,7 @@ import { ViewBar } from './ViewBar'
 import { PageIcon } from './icons'
 import { Button, Spinner } from './ui'
 
-/** Correcting what the detector found, before anything is done with it. */
 export type Inspecting = {
-  /** What the page is lettered in: who reads it, and which way round. */
   languages: Language[]
   language: string
   onLanguage: (code: string) => void
@@ -31,20 +29,16 @@ export type Inspecting = {
   onToggleExcluded: (index: number) => void
 }
 
-/** Marking what to hide, and hiding it. */
 export type Masking = {
   onClean: (marks: Blob) => void
-  /** The traced lettering for this page, once it has been asked for. */
   letters: ImageBitmap | null
   onTrace: () => Promise<ImageBitmap | null>
-  /** How far past the ink a tracing reaches, in the detector's pixels. */
   spread: number
   onSpread: (spread: number) => void
   fill: Fill
   onFill: (fill: Fill) => void
 }
 
-/** Setting the translation over the page. */
 export type Translating = {
   models: string[]
   model: string
@@ -72,12 +66,7 @@ type Props = {
   onSelect: (index: number | null) => void
   mode: BoardMode
   onMode: (mode: BoardMode) => void
-  /**
-   * A folder is being run through, so board actions are shut: a second page in
-   * the air would leave the run's progress saying whatever was asked for last.
-   */
   runningFolder: boolean
-  /** Whether the board is showing the cleaned page or the one that came in. */
   showCleaned: boolean
   onShowCleaned: (showing: boolean) => void
   onRunAll: () => void
@@ -87,7 +76,6 @@ type Props = {
   translating: Translating
 }
 
-/** What each stage is called while it is happening. */
 const LABELS: Record<Stage, string> = {
   detecting: 'Detecting…',
   reading: 'Reading…',
@@ -97,7 +85,6 @@ const LABELS: Record<Stage, string> = {
   surveying: 'Reading the chapter…',
 }
 
-/** The page, its overlays, and the tools for whichever step is being worked on. */
 export function Board({
   image,
   analysis,
@@ -124,7 +111,6 @@ export function Board({
   const [brush, setBrush] = useState<Brush>({ radius: 16, erase: false })
   const [showBoxes, setShowBoxes] = useState(true)
   const [adding, setAdding] = useState(false)
-  // Only so the buttons that care whether anything is marked catch up.
   const [, setEdits] = useState(0)
   const edited = () => setEdits((count) => count + 1)
 
@@ -133,7 +119,6 @@ export function Board({
   const brushing = mode === 'mask' && !showCleaned
   const marked = Boolean(mask && !mask.empty)
 
-  // Where this page has got to, which is what the steps show.
   const read = analysis?.texts != null
   const lettered = translating.lettering.some(Boolean)
 
@@ -147,8 +132,6 @@ export function Board({
     onTurn: translating.onTurn,
   })
 
-  // Read through refs: dropping a block from a mask that was deliberately
-  // cleared must not seed the whole page again.
   const analysisNow = useRef(analysis)
   analysisNow.current = analysis
   const lettersNow = useRef(masking.letters)
@@ -156,7 +139,6 @@ export function Board({
   const traceNow = useRef(masking.onTrace)
   traceNow.current = masking.onTrace
 
-  /** Mark every block that is not being left alone, tracing first if need be. */
   const markBlocks = async () => {
     const found = analysisNow.current
     if (!mask || !found) return
@@ -166,15 +148,12 @@ export function Board({
     edited()
   }
 
-  // Coming to the mask with blocks found and nothing marked: seed it from the
-  // lettering itself, not the boxes.
   useEffect(() => {
     if (!brushing || !mask || !mask.empty || !analysisNow.current) return
     let dropped = false
 
     void (async () => {
       const letters = lettersNow.current ?? (await traceNow.current())
-      // Someone may have left, or started brushing, while that was in the air.
       if (dropped || !mask.empty) return
       const found = analysisNow.current
       if (found) {
@@ -326,15 +305,9 @@ export function Board({
       )}
 
       <div className="relative min-h-0 flex-1">
-        {/* Isolated so the overlays' z-indices stay inside it: the boxes are z-20
-            and the view bar floating over the page is a sibling with none, so
-            without this they paint over the bar. */}
         <div
           ref={surface}
           onPointerDown={(event) => {
-            // Anywhere on the board that is not a box puts down whichever box is
-            // held: picking one out is only meant to last as long as it is being
-            // worked on.
             if (selected === null) return
             if (!(event.target as Element).closest('[data-box]')) onSelect(null)
           }}
@@ -427,7 +400,6 @@ export function Board({
   )
 }
 
-/** The one button that does the thing this step is for. */
 function Action({
   onClick,
   disabled,

@@ -13,7 +13,6 @@ import { BoxGrips } from './BoxGrips'
 
 type Props = {
   page: { width: number; height: number }
-  /** Drawn pixels per page pixel, for turning a drag into page pixels. */
   scale: number
   lettering: (Lettering | null)[]
   selected: number | null
@@ -22,7 +21,6 @@ type Props = {
   onTurn: (index: number, angle: number) => void
 }
 
-/** The translated lines, set over the page where the originals were. */
 export function TranslationLayer({
   page,
   scale,
@@ -82,9 +80,6 @@ function Line({
   })
   const [x0, y0, x1, y1] = set.box
 
-  // Broken here rather than by the browser, from the same call the canvas
-  // letterer draws from — and only once the face is in, or the breaks would be
-  // the fallback's.
   const fontIn = useLetteringFont()
   const lines = useMemo(
     () => (fontIn ? linesFor(set.text, x1 - x0, set.size) : [set.text.trim()]),
@@ -99,7 +94,6 @@ function Line({
         top: `${(y0 / page.height) * 100}%`,
         width: `${((x1 - x0) / page.width) * 100}%`,
         height: `${((y1 - y0) / page.height) * 100}%`,
-        // About the middle, which is where the canvas turns it too.
         transform: set.angle ? `rotate(${set.angle}deg)` : undefined,
       }}
       className={`absolute ${active ? 'z-20' : 'z-10'}`}
@@ -111,7 +105,6 @@ function Line({
         onPointerUp={drag.release}
         onPointerCancel={drag.release}
         onClick={() => {
-          // The click that ends a drag is not a click on the box.
           if (drag.dragged.current) {
             drag.dragged.current = false
             return
@@ -128,10 +121,6 @@ function Line({
           fontWeight: FONT_WEIGHT,
           fontSize: `${set.size * scale}px`,
           lineHeight: LINE_HEIGHT,
-          // White laid under the letters, not over them: without this the words
-          // are unreadable anywhere the art behind them is dark. Twice the white
-          // wanted, as the canvas sets it — half the stroke falls inside the
-          // letter and is painted over by the fill.
           WebkitTextStrokeWidth: `${strokeFor(set.size) * 2 * scale}px`,
           WebkitTextStrokeColor: '#fff',
           paintOrder: 'stroke fill',
@@ -139,7 +128,6 @@ function Line({
       >
         <span className="block w-full">
           {lines.map((line, at) => (
-            // Already broken to fit, so it must not be broken again.
             <span key={at} className="block whitespace-pre">
               {line}
             </span>

@@ -3,21 +3,14 @@ import type { Box } from './api'
 export type Point = { x: number; y: number }
 export type Brush = { radius: number; erase: boolean }
 
-/**
- * Mark these boxes for hiding: the lettering inside them once it has been
- * traced, and the whole box until then. **The boxes are only the fallback**, for
- * a tracing that failed — see `App.markLetters`.
- */
 export function mark(mask: Mask, boxes: Box[], letters: ImageBitmap | null) {
   if (boxes.length === 0) return
   if (letters) mask.letters(letters, boxes)
   else mask.boxes(boxes)
 }
 
-/** How the mask shows on the board: enough to read through, enough to see. */
 const TINT = 'rgba(79, 70, 229, 0.45)'
 
-/** What is to be painted out: white on transparent, at the page's resolution. */
 export class Mask {
   readonly width: number
   readonly height: number
@@ -41,7 +34,6 @@ export class Mask {
     ctx.lineJoin = 'round'
   }
 
-  /** Nothing has been marked, so there is nothing to clean. */
   get empty(): boolean {
     return !this.marked
   }
@@ -51,7 +43,6 @@ export class Mask {
     if (!erase) this.marked = true
   }
 
-  /** Stamp whole boxes in, or take them back out. */
   boxes(boxes: Box[], erase = false) {
     this.into(erase)
     for (const [x0, y0, x1, y1] of boxes) {
@@ -59,10 +50,6 @@ export class Mask {
     }
   }
 
-  /**
-   * Mark the lettering itself rather than the boxes around it. The traced mask
-   * is drawn only inside `boxes`, so a block left alone stays out of it.
-   */
   letters(source: CanvasImageSource, boxes: Box[]) {
     const drawable = boxes.filter(([x0, y0, x1, y1]) => x1 > x0 && y1 > y0)
     if (drawable.length === 0) return
@@ -82,7 +69,6 @@ export class Mask {
     this.ctx.fill()
   }
 
-  /** The drag between two dots, so a quick stroke does not come out dotted. */
   stroke(from: Point, to: Point, brush: Brush) {
     this.into(brush.erase)
     this.ctx.lineWidth = brush.radius * 2
@@ -98,21 +84,18 @@ export class Mask {
     this.marked = false
   }
 
-  /** Draw the mask onto the canvas the user sees, tinted. */
   showOn(target: HTMLCanvasElement) {
     const ctx = target.getContext('2d')
     if (!ctx) return
     ctx.globalCompositeOperation = 'source-over'
     ctx.clearRect(0, 0, this.width, this.height)
     ctx.drawImage(this.canvas, 0, 0)
-    // Recolour what was just drawn, and only that.
     ctx.globalCompositeOperation = 'source-in'
     ctx.fillStyle = TINT
     ctx.fillRect(0, 0, this.width, this.height)
     ctx.globalCompositeOperation = 'source-over'
   }
 
-  /** The mask as the API reads it: white on black, the size of the page. */
   toBlob(): Promise<Blob> {
     const out = document.createElement('canvas')
     out.width = this.width

@@ -10,11 +10,9 @@ type Props = {
   onSelect: (index: number | null) => void
   onChange: (index: number, patch: Partial<Lettering>) => void
   onFit: (index: number) => void
-  /** Cut this line, and the block it is set in, in two at that point. */
   onSplit: (index: number, at: number) => void
 }
 
-/** The translated lines: the words, and how big they are set. */
 export function TranslationsPanel({
   originals,
   lettering,
@@ -27,8 +25,6 @@ export function TranslationsPanel({
   const list = useRef<HTMLUListElement>(null)
   const set = lettering.filter(Boolean).length
 
-  // Kept after the box loses focus on purpose: pressing Split takes the focus
-  // away, and a cursor forgotten then is a button that can never be pressed.
   const [caret, setCaret] = useState<{ line: number; at: number } | null>(null)
 
   useEffect(() => {
@@ -57,8 +53,6 @@ export function TranslationsPanel({
           {lettering.map((line, index) => {
             if (line === null) return null
 
-            // A cut needs words on both sides of it, so a cursor at either end
-            // of the line is not one.
             const at = caret?.line === index ? caret.at : null
             const splittable =
               at !== null &&
@@ -89,7 +83,6 @@ export function TranslationsPanel({
                     onChange(index, { text: event.target.value })
                     setCaret({ line: index, at: event.target.selectionStart })
                   }}
-                  // Fires whenever the cursor moves, by click or by key.
                   onSelect={(event) =>
                     setCaret({ line: index, at: event.currentTarget.selectionStart })
                   }

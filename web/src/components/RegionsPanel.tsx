@@ -28,11 +28,9 @@ type Props = {
   selected: number | null
   onSelect: (index: number | null) => void
   onToggleExcluded: (index: number) => void
-  /** A block dragged to a different place in the list. */
   onMove: (from: number, to: number) => void
 }
 
-/** What the detector found and what the reader made of it, block by block. */
 export function RegionsPanel({
   analysis,
   reading,
@@ -47,8 +45,6 @@ export function RegionsPanel({
   const excluded = new Set(analysis.excluded)
   const kept = regions.length - excluded.size
 
-  // A drag has to be told apart from a click, or picking a block out by its
-  // handle would start one.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -168,8 +164,6 @@ function Block({
       ref={setNodeRef}
       data-index={index}
       style={{
-        // Translate rather than the whole transform: a row being sorted should
-        // slide past the others, not stretch to their heights.
         transform: CSS.Translate.toString(transform),
         transition,
       }}
@@ -229,9 +223,6 @@ function Block({
             {excluded ? (
               <>
                 <span className="font-medium text-muted">left alone</span>
-                {/* Still says how sure the detector was: that is usually the
-                    reason it is being left alone, and the reason to put it
-                    back. */}
                 {!region.manual && (
                   <span className={unsure ? 'text-warn' : ''}>
                     {' · '}
@@ -274,7 +265,6 @@ function Block({
   )
 }
 
-/** Every block still being cleaned, in reading order, on the clipboard. */
 function CopyAll({ texts }: { texts: string[] }) {
   const [copied, setCopied] = useState(false)
 

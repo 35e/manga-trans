@@ -12,27 +12,19 @@ from PIL import Image
 
 RADIUS = 3
 
-# The hole is grown by this much to say where the fill may *not* be read from.
-# What is replaced is still only what was marked.
 EDGE = 2
 
 LAMA_REPO = "ogkalu/lama-manga-onnx-dynamic"
 LAMA_FILE = "lama-manga-dynamic.onnx"
 LAMA_ENV = "MANGA_TRANS_LAMA"
 
-# Whole multiples only: a size that is not one fails inside a Mul rather than
-# being padded.
 BLOCK = 8
 
 CONTEXT = 1.0
 LEAST = 64
 
-# Marks closer together than this go through as one crop, or the context around
-# one letter holds the next as art to copy from.
 APART = 24
 
-# Over this a crop is worked out smaller and stretched back, which is what keeps
-# the API alive rather than what makes it quick — see DOCS.md.
 LARGEST = 1_000_000
 
 
@@ -54,7 +46,7 @@ def model_path(explicit: str | None = None) -> str:
 
     try:
         return hf_hub_download(LAMA_REPO, LAMA_FILE, local_files_only=True)
-    except Exception:  # noqa: BLE001 — not cached, so go and get it
+    except Exception:  # noqa: BLE001
         print(f"mangatrans: downloading {LAMA_REPO}/{LAMA_FILE}")
         path = hf_hub_download(LAMA_REPO, LAMA_FILE)
         print(f"mangatrans: saved {path}")
@@ -114,8 +106,6 @@ class Lama:
         small = self.working(crop.shape[:2])
         if small is not None:
             crop = cv2.resize(crop, small, interpolation=cv2.INTER_AREA)
-            # Anything the mark touched at all is kept as mark: rounding a thin
-            # stroke *out* of the hole leaves that stroke behind.
             hole = (cv2.resize(hole, small, interpolation=cv2.INTER_AREA) > 0).astype(
                 np.uint8
             ) * 255
@@ -184,14 +174,10 @@ def fill(image: Image.Image, mask: Image.Image, painter=None) -> Image.Image:
     hole = grown(((marks > 0) * 255).astype(np.uint8), EDGE)
 
     if hole.all():
-        # Ahead of the painter, not inside it: a model handed a page that is
-        # entirely hole does not say so, it invents one.
         filled = np.full_like(page, 255)
     else:
         filled = (painter or telea)(page, hole)
 
-    # `hole` was grown and `marks` was not: the rim just outside the mark is kept
-    # out of what the fill is made of, but it is not painted over.
     lay = (marks / 255.0)[:, :, None]
     out = page * (1.0 - lay) + filled * lay
     return Image.fromarray(out.round().astype(np.uint8), "RGB")

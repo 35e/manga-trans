@@ -19,8 +19,8 @@ FONTS = (
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 FONT_MIN = 8
-LINE_SPACING = 0.15  # of the type size
-INSET = 0.06  # margin inside the box, of its shorter side
+LINE_SPACING = 0.15
+INSET = 0.06
 
 ART = "art"
 TELEA = "telea"
@@ -47,9 +47,6 @@ class Layout:
     fits: bool
 
 
-# --- Hiding ---------------------------------------------------------------
-
-
 def marked(
     size: tuple[int, int], boxes: list[Box], mask: Image.Image | None = None
 ) -> Image.Image:
@@ -58,7 +55,6 @@ def marked(
     draw = ImageDraw.Draw(marks)
     for box in boxes:
         if box.w > 0 and box.h > 0:
-            # rectangle() takes both corners inclusive; the box's far edge is not.
             draw.rectangle((box.x0, box.y0, box.x1 - 1, box.y1 - 1), fill=255)
     if mask is not None:
         marks = ImageChops.lighter(marks, mask.convert("L"))
@@ -83,9 +79,6 @@ def hidden(
     if fill == WHITE_OUT:
         return cover_mask(image, marks)
     return inpaint.fill(image, marks, painter if fill == ART else None)
-
-
-# --- Lettering ------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=8)
@@ -156,7 +149,7 @@ def letter(draw, box: Box, text: str, font_path: str | None = None) -> None:
     inset = max(1, round(INSET * min(box.w, box.h)))
     area = Box(box.x0 + inset, box.y0 + inset, box.x1 - inset, box.y1 - inset)
     if area.w < FONT_MIN or area.h < FONT_MIN:
-        area = box  # too small to give any of it away to a margin
+        area = box
 
     layout = fit(draw, text, area, font_path)
     left, top, right, bottom = layout.bbox

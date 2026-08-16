@@ -5,9 +5,7 @@ import { FOCUS } from './ui'
 export type Step = {
   id: BoardMode
   label: string
-  /** Finished, so the next one is worth going to. */
   done: boolean
-  /** There is something to do here yet: greyed out when there is not. */
   open: boolean
 }
 
@@ -17,10 +15,6 @@ type Props = {
   onPick: (step: BoardMode) => void
 }
 
-/**
- * The way through a page as three steps saying which are done. Not a wizard: any
- * of them can be gone to at any time.
- */
 export function Steps({ steps, current, onPick }: Props) {
   return (
     <ol className="flex shrink-0 items-center gap-0.5 rounded-lg border border-line bg-canvas p-0.5">

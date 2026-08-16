@@ -5,17 +5,12 @@ import { DownloadIcon, ZoomInIcon, ZoomOutIcon } from './icons'
 
 type Props = {
   view: BoardView
-  /** The cleaned page as an object URL, once there is one. */
   cleaned: string | null
   name: string
   showCleaned: boolean
   onShowCleaned: (showing: boolean) => void
 }
 
-/**
- * The one bar that sits on the page rather than above it: which version is being
- * looked at, and how closely.
- */
 export function ViewBar({ view, cleaned, name, showCleaned, onShowCleaned }: Props) {
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">

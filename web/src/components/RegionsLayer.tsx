@@ -8,13 +8,10 @@ type Props = {
   scale: number
   selected: number | null
   onSelect: (index: number | null) => void
-  /** A block's box while it is being dragged: every frame of it. */
   onBox: (index: number, box: Box) => void
-  /** The same drag, once it is over, with the box as it was before. */
   onSettled: (index: number, was: Box) => void
 }
 
-/** Every block the detector found, drawn over the lettering it found. */
 export function RegionsLayer({
   analysis,
   scale,
@@ -47,7 +44,6 @@ export function RegionsLayer({
   )
 }
 
-/** One block, draggable and pullable by its edges. */
 function RegionBox({
   region,
   index,
@@ -93,7 +89,6 @@ function RegionBox({
         onPointerUp={drag.release}
         onPointerCancel={drag.release}
         onClick={() => {
-          // The click that ends a drag is not a click on the box.
           if (drag.dragged.current) {
             drag.dragged.current = false
             return

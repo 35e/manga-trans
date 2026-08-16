@@ -1,4 +1,3 @@
-/** The line icons: one 24 grid, one stroke, all `currentColor`. */
 
 type Props = { className?: string }
 
@@ -82,7 +81,6 @@ export function CheckIcon(props: Props) {
   )
 }
 
-/** Put this block back into the clean, after it was left alone. */
 export function RestoreIcon(props: Props) {
   return (
     <Line {...props} width={1.9}>
@@ -108,7 +106,6 @@ export function PageIcon(props: Props) {
   )
 }
 
-/** An archive dropped in, which the gallery keeps as a folder of its pages. */
 export function FolderIcon(props: Props) {
   return (
     <Line {...props} width={1.5}>
@@ -117,7 +114,6 @@ export function FolderIcon(props: Props) {
   )
 }
 
-/** Start a folder of your own, rather than waiting for an archive to make one. */
 export function PlusIcon(props: Props) {
   return (
     <Line {...props}>
@@ -126,7 +122,6 @@ export function PlusIcon(props: Props) {
   )
 }
 
-/** Back out of a folder, to everything that was dropped in. */
 export function BackIcon(props: Props) {
   return (
     <Line {...props}>
@@ -135,7 +130,6 @@ export function BackIcon(props: Props) {
   )
 }
 
-/** The dots on a row that can be dragged to reorder it. */
 export function GripIcon({ className = 'size-3.5' }: Props) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className={className}>

@@ -1,14 +1,7 @@
-/**
- * Editing the blocks on a page. `detection.regions`, `texts` and `excluded` are
- * indexed by the same position, so nothing may insert, move or split a block
- * without carrying all three — which is why every such move lives here.
- * Anything asynchronous uses {@link withReading} instead of an index.
- */
 
 import type { Analysis, Box, Region } from './api'
 import { insertAt, moveAt, movedIndex } from './order'
 
-/** `texts` if the page has been read, else one empty string per block. */
 function texts(analysis: Analysis): string[] {
   return analysis.texts ?? analysis.detection.regions.map(() => '')
 }
@@ -17,7 +10,6 @@ function withRegions(analysis: Analysis, regions: Region[]): Analysis {
   return { ...analysis, detection: { ...analysis.detection, regions } }
 }
 
-/** The boxes a clean should hide: every block that was not left alone. */
 export function toClean(analysis: Analysis): Box[] {
   const skip = new Set(analysis.excluded)
   return analysis.detection.regions
@@ -25,7 +17,6 @@ export function toClean(analysis: Analysis): Box[] {
     .map((region) => region.box)
 }
 
-/** A block put in at `at`, with everything held by position moved along. */
 export function inserted(analysis: Analysis, at: number, region: Region): Analysis {
   return {
     ...analysis,
@@ -38,7 +29,6 @@ export function inserted(analysis: Analysis, at: number, region: Region): Analys
   }
 }
 
-/** A block dragged to a different place in the list. */
 export function moved(analysis: Analysis, from: number, to: number): Analysis {
   const { regions } = analysis.detection
   if (!regions[from] || !regions[to]) return analysis
@@ -50,11 +40,6 @@ export function moved(analysis: Analysis, from: number, to: number): Analysis {
   }
 }
 
-/**
- * A block's box, moved or resized by hand. The balloon goes with it: it was
- * worked out from where the block was, and a stale one letters the translation
- * into the balloon the block came from.
- */
 export function withBox(analysis: Analysis, index: number, box: Box): Analysis {
   const region = analysis.detection.regions[index]
   if (!region) return analysis
@@ -63,17 +48,12 @@ export function withBox(analysis: Analysis, index: number, box: Box): Analysis {
   return withRegions(analysis, regions)
 }
 
-/** Take one block out of what will be cleaned, or put it back. */
 export function toggledExcluded(analysis: Analysis, index: number): Analysis {
   const excluded = new Set(analysis.excluded)
   if (!excluded.delete(index)) excluded.add(index)
   return { ...analysis, excluded: [...excluded] }
 }
 
-/**
- * One block that turned out to be two, cut in two. Both lose their balloon: the
- * one the whole block was said to be in was wrong for at least one half.
- */
 export function split(
   analysis: Analysis,
   index: number,
@@ -93,7 +73,6 @@ export function split(
       regions: insertAt(regions, index + 1, added),
     },
     texts: insertAt(texts(analysis), index + 1, ''),
-    // A block left alone is left alone on both sides of the cut.
     excluded: [
       ...analysis.excluded.map((was) => (was >= index + 1 ? was + 1 : was)),
       ...(analysis.excluded.includes(index) ? [index + 1] : []),
@@ -101,10 +80,6 @@ export function split(
   }
 }
 
-/**
- * What one block says, found again by name because the list may have been added
- * to or reordered while the reader was working.
- */
 export function withReading(
   analysis: Analysis,
   id: string,
@@ -119,10 +94,6 @@ export function withReading(
   return { ...analysis, texts: said }
 }
 
-/**
- * The room each of those blocks is in, by name rather than by position: the list
- * may have moved under the request.
- */
 export function withRooms(
   analysis: Analysis,
   ids: string[],
@@ -138,4 +109,3 @@ export function withRooms(
   })
   return touched ? withRegions(analysis, regions) : analysis
 }
-

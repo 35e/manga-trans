@@ -6,15 +6,9 @@ function carriesFiles(event: DragEvent) {
   return Array.from(event.dataTransfer?.types ?? []).includes('Files')
 }
 
-/**
- * Files dropped anywhere on the page, and files pasted into it. At the window,
- * so a stray drop cannot navigate the browser away from the app.
- */
 export function useFileDrop(onFiles: FileHandler) {
   const [dragging, setDragging] = useState(false)
 
-  // dragenter/dragleave fire for every element the pointer crosses, so the depth
-  // counter is what tells a move between children from a real exit.
   const depth = useRef(0)
   const handler = useRef(onFiles)
   handler.current = onFiles

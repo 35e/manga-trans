@@ -2,11 +2,9 @@ import type { Language } from '../lib/api'
 import { Divider, Field, Hint, Select, Toggle, Toolbar } from './ui'
 
 type Props = {
-  /** Every language the API can read a page in, as it answered. */
   offered: Language[]
   language: string
   onLanguage: (code: string) => void
-  /** Whether the page has been through the detector. */
   found: boolean
   showBoxes: boolean
   onShowBoxes: (showing: boolean) => void
@@ -14,10 +12,6 @@ type Props = {
   onAdding: (adding: boolean) => void
 }
 
-/**
- * What the page is written in, and what can be done to the blocks found in it.
- * The language sits here because this is the step it bears on.
- */
 export function InspectTools({
   offered,
   language,

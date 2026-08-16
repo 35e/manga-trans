@@ -15,20 +15,13 @@ import { Button, FOCUS, Note, Select, Spinner, TextInput } from './ui'
 type Props = {
   images: GalleryImage[]
   folders: GalleryFolder[]
-  /** Which folder is being looked into, held above so a drop can land in it. */
   open: string | null
   onOpenFolder: (id: string | null) => void
-  /** Start one of your own. False when the name is already taken. */
   onNewFolder: (name: string) => boolean
-  /** What the open folder has settled on translating its names as. */
   terms: Term[]
-  /** Where the open folder's chapter has got to, as its last page left it. */
   story: Story | null
-  /** What the open folder's chapter turned out to be, read whole beforehand. */
   bible: Bible | null
-  /** A fact about one of the cast, put right by hand. */
   onCorrect: (name: string, fact: Fact, value: string) => void
-  /** The chapter's own account of itself, put right before it is translated. */
   onCorrectChapter: (field: 'synopsis' | 'register', value: string) => void
   onCorrectTerm: (source: string, target: string) => void
   onForgetTerms: () => void
@@ -42,31 +35,19 @@ type Props = {
   notice: LibraryNotice | null
   onDismissNotice: () => void
   onClearAll: () => void
-  /** Running a whole folder: what is happening, and how to start and stop it. */
   batch: BatchRun | null
   batchStage: Stage | null
-  /** Read the folder: every page found and read, then the chapter itself. */
   onReadFolder: (folder: GalleryFolder) => void
-  /** And hide the words and letter it, every page against the whole chapter. */
   onTranslateFolder: (folder: GalleryFolder) => void
   onStopBatch: () => void
   onDismissBatch: () => void
-  /**
-   * Whether a model has been picked, without which a run reads and cleans but
-   * does not translate.
-   */
   canTranslate: boolean
-  /** The pages that have been lettered, which a run would do over. */
   lettered: string[]
-  /** A folder back out as the archive it came in as. */
   onDownloadFolder: (folder: GalleryFolder) => void
-  /** The pages worth putting in one: anything cleaned or lettered. */
   workedOn: string[]
-  /** How far through packing one, or null when nothing is being packed. */
   packing: { done: number; total: number } | null
 }
 
-/** The rail down the side: what to drop pages into, and every page dropped in. */
 export function Sidebar({
   images,
   folders,
@@ -104,14 +85,11 @@ export function Sidebar({
 }: Props) {
   const folder = folders.find((held) => held.id === open) ?? null
 
-  // Counted for whatever is being looked at: inside a folder, that folder.
   const counted = folder
     ? images.filter((image) => image.folder === folder.id)
     : images
   const total = counted.reduce((sum, image) => sum + image.size, 0)
 
-  // Only an archive sends the rail back out: a loose page dropped into the open
-  // folder stays put.
   const inside = folder ? counted.length : 0
   const held = useRef({ total: images.length, inside })
   useEffect(() => {
@@ -149,7 +127,6 @@ export function Sidebar({
           onStop={onStopBatch}
           onDismiss={onDismissBatch}
           onDownload={
-            // The folder it ran through, which is not always the one open.
             folders.some((held) => held.id === batch.folder)
               ? () => {
                   const ran = folders.find((held) => held.id === batch.folder)
@@ -211,10 +188,6 @@ export function Sidebar({
   )
 }
 
-/**
- * A folder started by hand. Named as it is made, and the field is left open on a
- * name already taken, which is the only way it is refused.
- */
 function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
   const [naming, setNaming] = useState(false)
   const [name, setName] = useState('')
@@ -240,7 +213,6 @@ function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
 
   const settle = () => {
     const called = name.trim()
-    // Nothing typed is a change of mind, not a folder called nothing.
     if (!called) {
       setNaming(false)
       return
@@ -277,13 +249,6 @@ function NewFolder({ onCreate }: { onCreate: (name: string) => boolean }) {
   )
 }
 
-/**
- * The head of an opened folder: the way back out, and the two buttons that run
- * the whole chapter through. Reading comes first and cheaply — the clean is in
- * the second — so the gap between them, which is where the chapter can be
- * corrected by hand, is reached without waiting on LaMa. Each is armed first
- * where the folder already has lettering.
- */
 function FolderBar({
   folder,
   pages,
@@ -307,7 +272,6 @@ function FolderBar({
   folder: GalleryFolder
   pages: GalleryImage[]
   lettered: number
-  /** Pages that have been cleaned or lettered, so there is something to save. */
   done: number
   onBack: () => void
   onRead: () => void
@@ -327,8 +291,6 @@ function FolderBar({
   const [armed, setArmed] = useState(false)
   const [armedTranslate, setArmedTranslate] = useState(false)
 
-  // Whether the chapter that was read still describes this folder — see
-  // `bible.fits`. Said here, because translating drops it silently otherwise.
   const read = !isUnread(bible)
   const stale = read && !fits(bible, pages.length)
 
@@ -344,7 +306,6 @@ function FolderBar({
     return () => clearTimeout(timer)
   }, [armedTranslate])
 
-  // Nothing to lose, so nothing to ask about.
   useEffect(() => {
     if (lettered === 0) {
       setArmed(false)
@@ -399,8 +360,6 @@ function FolderBar({
             : 'Read all'}
       </Button>
 
-      {/* Not hidden without a model: this is also the only way to clean a folder,
-          and with nothing to translate with it does exactly that. */}
       <Button
         variant={armedTranslate ? 'primary' : 'outline'}
         onClick={() => {
@@ -441,10 +400,6 @@ function FolderBar({
         </p>
       )}
 
-      {/* Every page goes in, at the best state it reached — so this is offered as
-          soon as any one of them has been worked on, not only once the whole
-          chapter is through. Nothing worked on is nothing but the originals back,
-          which is not worth handing over. */}
       <Button
         variant="outline"
         onClick={onDownload}
@@ -492,12 +447,6 @@ function FolderBar({
   )
 }
 
-/**
- * What this chapter has settled on calling things and where its story has got
- * to, both shown rather than only used. The cast is the part that can be
- * corrected, and anything set here is **settled**: the model is told so on every
- * page after it and stops being asked to work it out.
- */
 function Chapter({
   terms,
   story,
@@ -541,9 +490,6 @@ function Chapter({
         </button>
       </div>
 
-      {/* Correctable, and this is where correcting is worth most: a name put
-          right here is put right on every page, where put right afterwards it is
-          a chapter already lettered wrong. */}
       {bible && bible.synopsis !== '' && (
         <Writing
           value={bible.synopsis}
@@ -561,8 +507,6 @@ function Chapter({
         />
       )}
 
-      {/* Read-only: a beat is what the sweep saw on a page, and a hand-edited one
-          is a claim about a page nobody read again. */}
       {bible && bible.beats.length > 0 && (
         <>
           <button
@@ -613,10 +557,6 @@ function Chapter({
   )
 }
 
-/**
- * One settled term, its wording open to being put right. The source is the key
- * and stays as it is.
- */
 function TermRow({
   term,
   onCorrect,
@@ -635,8 +575,6 @@ function TermRow({
 
   return (
     <li
-      // What it is, where the page that named it said: too long for the row and
-      // the row is one line on purpose.
       title={term.note ? `${term.source} → ${term.target} — ${term.note}` : undefined}
       className="flex items-baseline gap-1 text-[11px] leading-snug"
     >
@@ -673,10 +611,6 @@ function TermRow({
   )
 }
 
-/**
- * A piece of what the chapter is, open to being written again by hand. Click to
- * edit, Escape to leave it, blur or Enter to settle.
- */
 function Writing({
   value,
   rows,
@@ -732,10 +666,6 @@ function Writing({
   )
 }
 
-/**
- * One of the cast, and the two things about them that can be put right. Setting
- * one back to `unknown` hands the question to the model again.
- */
 function Person({
   person,
   onCorrect,
@@ -803,14 +733,10 @@ function Person({
       ) : (
         <button
           type="button"
-          // Taken from the person rather than from what was typed last time: a
-          // page since may have said something, and this row is not the record.
           onClick={() => {
             setNote(person.note ?? '')
             setNoting(true)
           }}
-          // A survey describes a character in a sentence, which is longer than
-          // this rail: shown to two lines and whole on hover.
           title={
             person.note ||
             (settled.includes('note')
@@ -828,7 +754,6 @@ function Person({
   )
 }
 
-/** Two taps to empty the gallery, without a browser dialog. */
 function ClearAll({ onClear }: { onClear: () => void }) {
   const [armed, setArmed] = useState(false)
 

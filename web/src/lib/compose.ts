@@ -1,10 +1,6 @@
 import type { Lettering } from './api'
 import { LINE_HEIGHT, fontFor, linesFor, ready, strokeFor } from './fit'
 
-/**
- * The page with the translations set into it, as a PNG. Shares `lib/fit.ts` with
- * the board's preview, so what was arranged there is what comes out.
- */
 export async function compose(
   source: string,
   width: number,
@@ -26,7 +22,6 @@ export async function compose(
   context.strokeStyle = '#fff'
   context.textAlign = 'center'
   context.textBaseline = 'middle'
-  // Round joins, or the outline grows spikes off the corners of a letter.
   context.lineJoin = 'round'
   context.miterLimit = 2
 
@@ -44,29 +39,22 @@ export async function compose(
   })
 }
 
-/** One translated line, centred in its box the way the board centres it. */
 function set(context: CanvasRenderingContext2D, line: Lettering) {
   const [x0, y0, x1, y1] = line.box
   context.font = fontFor(line.size)
-  // Half of a stroke falls inside the letter and half outside, so it is set to
-  // twice the white wanted around it — and drawn under the fill, below.
   context.lineWidth = strokeFor(line.size) * 2
 
   const lines = linesFor(line.text, x1 - x0, line.size)
   const step = line.size * LINE_HEIGHT
 
-  // About the middle of the box, the same point the board turns about.
   context.save()
   context.translate((x0 + x1) / 2, (y0 + y1) / 2)
   if (line.angle) context.rotate((line.angle * Math.PI) / 180)
 
-  // Centred on the box, so the first line starts half a block above the middle.
   const top = -((lines.length - 1) * step) / 2
 
   lines.forEach((text, index) => {
     const y = top + index * step
-    // Stroke first, fill over it: the white sits behind the letter rather than
-    // eating into it, which is what `paint-order: stroke fill` does on the board.
     context.strokeText(text, 0, y)
     context.fillText(text, 0, y)
   })
@@ -82,13 +70,11 @@ function loadImage(source: string): Promise<HTMLImageElement> {
   })
 }
 
-/** Hand a finished page to the browser to save. */
 export function save(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
   link.download = name
   link.click()
-  // Revoked late: pulling the URL out from under the download can cancel it.
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }

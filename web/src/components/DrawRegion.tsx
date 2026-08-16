@@ -2,7 +2,6 @@ import { useRef, useState } from 'react'
 import type { Box } from '../lib/api'
 import type { Point } from '../lib/mask'
 
-/** A stray click is not a block: it takes a real drag, this many page pixels. */
 const SMALLEST = 6
 
 type Props = {
@@ -10,10 +9,6 @@ type Props = {
   onAdd: (box: Box) => void
 }
 
-/**
- * The whole page as a drawing surface, for a block the detector missed. Laid
- * *over* the blocks: while one is being drawn, a pointer down anywhere starts it.
- */
 export function DrawRegion({ page, onAdd }: Props) {
   const from = useRef<Point | null>(null)
   const [drawn, setDrawn] = useState<Box | null>(null)
@@ -26,7 +21,6 @@ export function DrawRegion({ page, onAdd }: Props) {
     }
   }
 
-  /** The box between two corners, in page pixels, corners put in order. */
   const between = (one: Point, other: Point): Box => [
     Math.max(0, Math.round(Math.min(one.x, other.x))),
     Math.max(0, Math.round(Math.min(one.y, other.y))),

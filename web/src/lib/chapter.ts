@@ -4,18 +4,12 @@ import type { GalleryFolder, GalleryImage } from './images'
 import { stem } from './images'
 import type { Packed } from './zip'
 
-/** How a page ended up, which is what decides what goes into the archive. */
 export type Reached = 'lettered' | 'cleaned' | 'original'
 
-/** The bytes behind an object URL, which is where a cleaned page is kept. */
 async function bytesOf(blob: Blob): Promise<Uint8Array> {
   return new Uint8Array(await blob.arrayBuffer())
 }
 
-/**
- * The best version of one page, named for the archive. Anything drawn on is a
- * PNG; anything untouched is passed through byte for byte under its own name.
- */
 export async function finished(
   page: GalleryImage,
   lettering: (Lettering | null)[] | undefined,
@@ -49,7 +43,6 @@ export async function finished(
   return { name: page.name, bytes: await bytesOf(page.file), reached: 'original' }
 }
 
-/** A name safe to save under, out of a language a person typed. */
 function slug(said: string): string {
   return (
     said
@@ -60,10 +53,6 @@ function slug(said: string): string {
   )
 }
 
-/**
- * What the finished chapter is called, kept as whatever kind of archive it
- * arrived as: which one a reader picks up can depend on the extension.
- */
 export function archiveName(
   folder: GalleryFolder,
   target: string,

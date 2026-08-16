@@ -1,11 +1,9 @@
 import type { CastMember, Fact, Gender, Story } from './api'
 
-/** As many people as the API carries — `ollama.CAST_LIMIT`. */
 const CAST_LIMIT = 12
 
 export const NOBODY: Story = { scene: '', cast: [] }
 
-/** Nothing has been worked out yet — a page that settled nothing leaves this. */
 export function isEmpty(story: Story | null | undefined): boolean {
   return !story || (story.scene === '' && story.cast.length === 0)
 }
@@ -14,10 +12,6 @@ function settledIn(person: CastMember): Fact[] {
   return person.settled ?? []
 }
 
-/**
- * One fact, merged. `unknown` never overwrites something known and an empty note
- * never clears one; a settled fact is not the model's to move either way.
- */
 function keptFact<T>(held: T, said: T, settled: boolean, blank: T): T {
   if (settled) return held
   return said === blank ? held : said
@@ -37,7 +31,6 @@ function joined(held: CastMember, said: CastMember): CastMember {
   }
 }
 
-/** The story as this page leaves it: the scene replaced, the cast merged. */
 export function merged(held: Story | undefined, said: Story): Story {
   const was = held ?? NOBODY
   const cast = was.cast.map((person) => {
@@ -56,10 +49,6 @@ export function merged(held: Story | undefined, said: Story): Story {
   return { scene: said.scene.trim() === '' ? was.scene : said.scene, cast }
 }
 
-/**
- * A fact set by hand, which settles it: {@link merged} will not move it.
- * Clearing one unsettles it and hands it back.
- */
 export function withFact(
   story: Story | undefined,
   name: string,

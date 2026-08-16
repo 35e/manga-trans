@@ -1,9 +1,5 @@
 import type { BoxDrag, Grip } from '../hooks/useBoxDrag'
 
-/**
- * Where each handle sits, and how far around it the pointer catches it. The
- * element is the target and is drawn nothing; what shows is the square inside it.
- */
 const GRIPS: { grip: Grip; className: string; cursor: string }[] = [
   { grip: 'n', className: 'top-0 left-1/2 h-3 w-6 -translate-x-1/2 -translate-y-1/2', cursor: 'ns-resize' },
   { grip: 's', className: 'bottom-0 left-1/2 h-3 w-6 -translate-x-1/2 translate-y-1/2', cursor: 'ns-resize' },
@@ -12,7 +8,6 @@ const GRIPS: { grip: Grip; className: string; cursor: string }[] = [
   { grip: 'se', className: 'right-0 bottom-0 size-3.5 translate-x-1/2 translate-y-1/2', cursor: 'nwse-resize' },
 ]
 
-/** The handles on a picked-out box: one per edge, one at the corner, one to turn. */
 export function BoxGrips({ drag }: { drag: BoxDrag }) {
   return (
     <>
@@ -27,8 +22,6 @@ export function BoxGrips({ drag }: { drag: BoxDrag }) {
           style={{ cursor: 'grab' }}
           className="absolute bottom-full left-1/2 z-10 grid size-5 -translate-x-1/2 touch-none place-items-center"
         >
-          {/* Round, where the ones that resize are square: the shape is what
-              says which it is, since both are too small to say anything else. */}
           <span className="pointer-events-none size-1.5 rounded-full bg-white ring-1 ring-accent" />
         </span>
       )}

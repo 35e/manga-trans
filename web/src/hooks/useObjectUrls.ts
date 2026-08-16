@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-/**
- * Blobs held under a key and handed out as URLs. **Nothing here happens inside a
- * state updater**: those run twice under StrictMode, and a URL made twice is one
- * leaked.
- */
 export function useObjectUrls() {
   const [urls, setUrls] = useState<Record<string, string>>({})
 

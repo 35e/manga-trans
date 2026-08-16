@@ -12,16 +12,12 @@ import type { GalleryImage } from '../lib/images'
 const ZOOM_MIN = 0.05
 const ZOOM_MAX = 8
 
-/** One press of a zoom button, or one notch of a wheel. */
 const STEP = 1.25
 
-/** Breathing room left around the page, in screen pixels. */
 const PAD = 28
 
-/** What the floating bar takes up, kept out of the room the page is fitted in. */
 const BAR = 56
 
-/** Past this the page is drawn pixel for pixel, which is the point of going in. */
 const CRISP_AT = 3
 
 const clamp = (value: number, low: number, high: number) =>
@@ -30,21 +26,13 @@ const clamp = (value: number, low: number, high: number) =>
 type Size = { width: number; height: number }
 
 export type BoardView = {
-  /** The size the page is drawn at, or null when there is no page. */
   page: Size | null
-  /** The mat the page is laid on, which is what makes the board scroll. */
   content: Size
-  /** Where on the mat the page's top left corner goes. */
   origin: { x: number; y: number }
-  /** Drawn pixels per page pixel. Everything laid over the page reads this. */
   scale: number
-  /** How far apart the mat's dots are drawn, so the mat zooms with the page. */
   grid: number
-  /** Sitting at the size the whole page fits at, so Fit has nothing to do. */
   fitted: boolean
-  /** Being dragged about with the middle button or a held space. */
   panning: boolean
-  /** Worth drawing pixel for pixel rather than smoothed. */
   crisp: boolean
   fit: () => void
   actual: () => void
@@ -52,17 +40,11 @@ export type BoardView = {
   zoomOut: () => void
 }
 
-/**
- * The page on the board: how large it is drawn, and how it is moved about.
- * `surface` is a scroll box, so panning is the browser's own; what is added here
- * is the zoom, and the arithmetic that keeps the point under the pointer still.
- */
 export function useBoardView(
   surface: React.RefObject<HTMLDivElement | null>,
   image: GalleryImage | null,
 ): BoardView {
   const [box, setBox] = useState<Size>({ width: 0, height: 0 })
-  // Null while the page follows the board's size, which is what "fitted" means.
   const [zoom, setZoom] = useState<number | null>(null)
   const [panning, setPanning] = useState(false)
 
@@ -72,19 +54,14 @@ export function useBoardView(
   useEffect(() => {
     const element = surface.current
     if (!element) return
-    // ResizeObserver reports the box once on observe, so no separate first
-    // measurement is needed — and none taken a different way.
     const observer = new ResizeObserver(([entry]) => setBox(entry.contentRect))
     observer.observe(element)
     return () => observer.disconnect()
   }, [surface])
 
-  // The zoom belonged to that page, not to the board.
   const id = image?.id
   useEffect(() => setZoom(null), [id])
 
-  // Nothing is drawn until the board has been measured, or the page goes up at
-  // full size for a frame first.
   const measured = box.width > 0 && box.height > 0
   const showing = measured && width > 0 && height > 0
 
@@ -101,9 +78,6 @@ export function useBoardView(
 
   const scale = zoom ?? fitScale
 
-  // Held by identity as well as by value, and **floored**: a page that rounds
-  // its way past the board puts scrollbars up, which shrinks the board and
-  // refits, forever.
   const page = useMemo(
     () =>
       showing
@@ -120,10 +94,6 @@ export function useBoardView(
     [box.width, box.height, page],
   )
 
-  /**
-   * Where the page sits on the mat. Worked out here and nowhere else, because
-   * the zoom keeps a point still by measuring against it.
-   */
   const origin = useMemo(
     () => ({
       x: (content.width - (page?.width ?? 0)) / 2,
@@ -132,15 +102,9 @@ export function useBoardView(
     [content, page],
   )
 
-  // Read by the wheel and pan listeners, which are subscribed once and must not
-  // be resubscribed on every pixel of zoom.
   const now = useRef({ scale, origin, page })
   now.current = { scale, origin, page }
 
-  /**
-   * What was under the pointer when the zoom began, applied once the new size
-   * has been laid out.
-   */
   const anchor = useRef<{ x: number; y: number; left: number; top: number } | null>(
     null,
   )
@@ -157,7 +121,6 @@ export function useBoardView(
     element.scrollTop = at.y + held.y * scale - held.top
   }, [surface, scale])
 
-  /** Zoom about a point on the board, given in client coordinates. */
   const zoomAt = useCallback(
     (factor: number, clientX?: number, clientY?: number) => {
       const element = surface.current
@@ -167,7 +130,6 @@ export function useBoardView(
 
       if (element && drawn) {
         const rect = element.getBoundingClientRect()
-        // The middle of the board when no point was given.
         const left = (clientX ?? rect.left + rect.width / 2) - rect.left
         const top = (clientY ?? rect.top + rect.height / 2) - rect.top
         anchor.current = {
@@ -182,8 +144,6 @@ export function useBoardView(
     [surface],
   )
 
-  // Ctrl or command with the wheel, which is also how a trackpad pinch arrives.
-  // A plain wheel is left alone: that is the board scrolling.
   useEffect(() => {
     const element = surface.current
     if (!element) return
@@ -198,8 +158,6 @@ export function useBoardView(
     return () => element.removeEventListener('wheel', onWheel)
   }, [surface, zoomAt])
 
-  // Space held down, which turns a plain drag into a pan. Tracked rather than
-  // swallowed: space still works the button it is pressed on.
   const spacing = useRef(false)
 
   useEffect(() => {
@@ -223,10 +181,6 @@ export function useBoardView(
     }
   }, [])
 
-  /**
-   * Panning with the middle button, or with space held. Caught in the **capture**
-   * phase, so a pan over the page never reaches the brush and starts drawing.
-   */
   useEffect(() => {
     const element = surface.current
     if (!element) return
@@ -266,7 +220,6 @@ export function useBoardView(
     element.addEventListener('pointermove', move)
     element.addEventListener('pointerup', up)
     element.addEventListener('pointercancel', up)
-    // The middle button opens a paste on some platforms and scrolls on others.
     const noAuxiliary = (event: MouseEvent) => {
       if (event.button === 1) event.preventDefault()
     }

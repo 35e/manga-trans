@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { models as listModels } from '../lib/api'
 
-/** What the API's Ollama has to translate with, and which of them to use. */
 export function useOllama() {
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')

@@ -11,24 +11,16 @@ import numpy as np
 
 from .geometry import Box
 
-# How much of the block the balloon's inside has to hold to be believed.
 COVER = 0.85
 
-# Left clear inside the outline, as a share of the balloon's shorter side.
 INSET = 0.06
 
-# The block is shrunk by this before being painted in: a detector box often takes
-# in a little of the outline, and a seed laid across it bridges it.
 SHRINK = 0.12
 
 GRID = 128
 
-# How much of a full-size pixel must be inside the balloon for its square on that
-# grid to count. Well over half: reaching past the outline is worse than stopping
-# short of it.
 MOSTLY = 200
 
-# How much of a block a balloon has to hold to be the balloon it was written in.
 HELD = 0.85
 
 
@@ -90,12 +82,8 @@ def holding(mask: np.ndarray, block: Box) -> Box | None:
 
     best, biggest = None, 0
     for y0 in range(top, block.y0 + 1):
-        # Every rectangle starting on this row, by the row it ends on: no wider
-        # than the narrowest reach among the rows it has taken in.
         near = np.maximum.accumulate(left[y0 - top :])
         far = np.minimum.accumulate(right[y0 - top :])
-        # The first that reaches the foot of the block; above that it is no
-        # rectangle of the block's.
         first = block.y1 - y0 - 1
         areas = (far[first:] - near[first:]) * np.arange(first + 1, len(near) + 1)
         pick = int(areas.argmax())
@@ -310,7 +298,5 @@ def rooms(
             if room is None:
                 continue
             share = cropped(room, cell)
-            # A cell only cuts across a block where the blocks themselves
-            # overlap, and there the box it came in with is the honest answer.
             found[where] = share if within(share, blocks[where]) >= HELD else None
     return found

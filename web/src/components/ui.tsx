@@ -1,15 +1,11 @@
 import type { ReactNode } from 'react'
 
-/** The handful of controls the whole app is built from. */
-
 export const FOCUS =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 
 type Variant = 'primary' | 'outline' | 'ghost' | 'danger'
 type Size = 'sm' | 'md'
 
-// Every variant carries a border, transparent where it is not drawn: without it
-// the outlined one is two pixels taller and a row of buttons does not line up.
 const VARIANTS: Record<Variant, string> = {
   primary: 'border border-transparent bg-accent text-white hover:bg-accent-lit',
   outline: 'border border-line text-muted hover:border-line hover:bg-raised hover:text-ink',
@@ -42,7 +38,6 @@ export function Button({
   )
 }
 
-/** A square button holding nothing but an icon. */
 export function IconButton({
   label,
   variant = 'ghost',
@@ -69,7 +64,6 @@ export type Choice<T extends string> = {
   title?: string
 }
 
-/** One of a few, shown as a row of pills. */
 export function Segmented<T extends string>({
   value,
   onChange,
@@ -109,7 +103,6 @@ export function Segmented<T extends string>({
   )
 }
 
-/** A control that is either on or off, shown as one pill. */
 export function Toggle({
   on,
   onChange,
@@ -138,7 +131,6 @@ export function Toggle({
   )
 }
 
-/** A label with its control beside it, which is most of every toolbar. */
 export function Field({
   label,
   title,
@@ -176,7 +168,6 @@ export function TextInput({
   ref,
   ...rest
 }: React.InputHTMLAttributes<HTMLInputElement> & {
-  /** Taken so a field that appears on a click can be typed into straight away. */
   ref?: React.Ref<HTMLInputElement>
 }) {
   return (
@@ -188,7 +179,6 @@ export function TextInput({
   )
 }
 
-/** The row every mode's tools sit in. */
 export function Toolbar({ children }: { children: ReactNode }) {
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-2 border-b border-line bg-surface px-4 py-2">
@@ -197,17 +187,14 @@ export function Toolbar({ children }: { children: ReactNode }) {
   )
 }
 
-/** A hairline between groups in a toolbar. */
 export function Divider() {
   return <span aria-hidden="true" className="h-5 w-px shrink-0 bg-line" />
 }
 
-/** Something worth saying about the state of things, but not an error. */
 export function Note({ children }: { children: ReactNode }) {
   return <span className="text-xs text-warn">{children}</span>
 }
 
-/** A quiet aside: how to work the thing it sits beside. */
 export function Hint({ children }: { children: ReactNode }) {
   return <span className="text-xs text-faint">{children}</span>
 }

@@ -5,11 +5,6 @@ import { held, keep } from '../lib/dom'
 
 const LANGUAGE_KEY = 'manga-trans:language'
 
-/**
- * What the pages are lettered in, remembered in this browser because the API
- * keeps no settings. The list is the API's. Until it arrives the code stands on
- * its own and the page is read right to left.
- */
 export function useLanguage() {
   const [offered, setOffered] = useState<Language[]>([])
   const [code, remember] = useState(() => held(LANGUAGE_KEY) ?? LANGUAGE_DEFAULT)
@@ -20,8 +15,6 @@ export function useLanguage() {
       (found) => {
         if (dropped) return
         setOffered(found)
-        // A code kept from an API that read something this one does not would
-        // otherwise be sent on every page and refused.
         remember((chosen) =>
           found.some((language) => language.code === chosen)
             ? chosen

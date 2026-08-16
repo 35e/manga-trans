@@ -4,7 +4,6 @@ import { typingInto } from '../lib/dom'
 import type { Lines } from '../lib/lettering'
 import type { BoardView } from './useBoardView'
 
-/** The zoom, from the keyboard: the same keys every viewer uses. */
 export function useZoomKeys(view: BoardView, enabled: boolean) {
   const { zoomIn, zoomOut, fit, actual } = view
 
@@ -38,15 +37,11 @@ type BlockKeys = {
   mode: BoardMode
   selected: number | null
   lettering: Lines
-  /** Delete, away from the translate tab: drop the block from the clean. */
   onToggleExcluded: (index: number) => void
-  /** Up and down on the translate tab: set the line larger and smaller. */
   onSize: (index: number, by: number) => void
-  /** Left and right on the translate tab: turn it. */
   onTurn: (index: number, angle: number) => void
 }
 
-/** The keys that work on whichever block is picked out. */
 export function useBlockKeys({
   mode,
   selected,
@@ -55,8 +50,6 @@ export function useBlockKeys({
   onSize,
   onTurn,
 }: BlockKeys) {
-  // Read through a ref: turning by a step needs to know where the line stands
-  // now, and depending on the lettering would resubscribe on every degree.
   const now = useRef(lettering)
   now.current = lettering
 

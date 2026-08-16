@@ -137,12 +137,8 @@ class StubLama:
         return out
 
 
-# Held for the whole module because `server.create_app` reaches for the
-# client per request: a patch around building it would already have lifted.
 _stub_lama = mock.patch.object(inpaint, "Lama", StubLama)
 
-# Kept from before that patch goes on, so the real class can still be
-# tested.
 Lama = inpaint.Lama
 
 
@@ -318,7 +314,7 @@ class TestPainter(unittest.TestCase):
                 return [np.zeros_like(image)]
 
         made.session = Session()
-        crop = np.full((50, 30, 3), 200, np.uint8)  # neither side a multiple of 8
+        crop = np.full((50, 30, 3), 200, np.uint8)
         hole = np.zeros((50, 30), np.uint8)
         hole[10:20, 10:20] = 255
         self.assertEqual(made.patch(crop, hole).shape, crop.shape)
@@ -358,7 +354,7 @@ class TestPainter(unittest.TestCase):
 
     def test_a_thin_stroke_survives_being_scaled_down(self):
         hole = np.zeros((2400, 2000), np.uint8)
-        hole[1200:1202, 500:1500] = 255  # two pixels tall
+        hole[1200:1202, 500:1500] = 255
         small = Lama.working(hole.shape)
         shrunk = cv2.resize(hole, small, interpolation=cv2.INTER_AREA)
         self.assertTrue((shrunk > 0).any(), "the mark was rounded away")
@@ -408,7 +404,7 @@ class TestPageMask(unittest.TestCase):
         """A per-pixel map with ``box`` — in page pixels — lit."""
         seg = np.zeros((detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
         if box is not None:
-            scale = detect.INPUT_SIZE / 200  # the page's long side fills the square
+            scale = detect.INPUT_SIZE / 200
             seg[
                 round(box.y0 * scale) : round(box.y1 * scale),
                 round(box.x0 * scale) : round(box.x1 * scale),
@@ -749,7 +745,7 @@ class TestSplit(unittest.TestCase):
 
     def test_a_lone_line_needs_a_wider_gap_than_a_block_of_several(self):
         """The rule that makes a gap this small safe to cut on at all."""
-        gap = EM  # one character of blank, in the middle of both
+        gap = EM
 
         alone = lettering(20, 20, 1, 5) + lettering(20, 20 + 5 * EM + gap, 1, 5)
         self.assertEqual(
@@ -1200,10 +1196,10 @@ class TestDivided(unittest.TestCase):
     def test_blocks_two_across_and_two_down_get_a_quarter_each(self):
         """The arrangement one line of cuts cannot describe."""
         blocks = [
-            Box(140, 130, 220, 220),  # top left
-            Box(380, 130, 460, 220),  # top right
-            Box(140, 280, 220, 370),  # bottom left
-            Box(380, 280, 460, 370),  # bottom right
+            Box(140, 130, 220, 220),
+            Box(380, 130, 460, 220),
+            Box(140, 280, 220, 370),
+            Box(380, 280, 460, 370),
         ]
         shares = bubble.divided(self.room, blocks)
         for one in range(len(shares)):
@@ -1218,9 +1214,9 @@ class TestDivided(unittest.TestCase):
 
     def test_blocks_in_an_ell_are_each_given_their_own_room(self):
         blocks = [
-            Box(380, 130, 460, 220),  # top right
-            Box(140, 200, 220, 300),  # middle left
-            Box(380, 280, 460, 370),  # bottom right
+            Box(380, 130, 460, 220),
+            Box(140, 200, 220, 300),
+            Box(380, 280, 460, 370),
         ]
         shares = bubble.divided(self.room, blocks)
         for one in range(len(shares)):
@@ -1474,7 +1470,7 @@ class TestOllama(unittest.TestCase):
 
     def test_a_miscounted_page_is_asked_again_whole(self):
         answers = [
-            reply(translations("only one")),  # two were asked about
+            reply(translations("only one")),
             reply(translations("first", "second")),
         ]
         with mock.patch.object(ollama, "ask", side_effect=answers) as ask:
@@ -1498,7 +1494,7 @@ class TestOllama(unittest.TestCase):
 
     def test_losing_count_twice_falls_back_to_one_line_at_a_time(self):
         answers = [
-            reply(translations("only one")),  # two were asked about
+            reply(translations("only one")),
             reply(translations("still only one")),
             reply(translations("first")),
             reply(translations("second")),
@@ -1712,8 +1708,8 @@ class TestGlossary(unittest.TestCase):
 
     def test_a_glossary_holds_when_it_falls_back_to_one_at_a_time(self):
         asked, patched = self.asking(
-            reply(translations("only one")),  # two were asked about
-            reply(translations("only one")),  # and again on the second ask
+            reply(translations("only one")),
+            reply(translations("only one")),
             reply(translations("a line")),
         )
         with patched:
@@ -1727,8 +1723,8 @@ class TestGlossary(unittest.TestCase):
     def test_a_miscounted_page_keeps_the_terms_it_did_return(self):
         named = [{"source": "タロウ", "target": "Taro"}]
         answers = [
-            reply(with_terms(["only one"], named)),  # two were asked about
-            reply(translations("only one")),  # and again on the second ask
+            reply(with_terms(["only one"], named)),
+            reply(translations("only one")),
             reply(translations("first")),
             reply(translations("second")),
         ]
@@ -1740,7 +1736,7 @@ class TestGlossary(unittest.TestCase):
     def test_a_page_asked_again_keeps_the_terms_of_the_first_answer(self):
         named = [{"source": "タロウ", "target": "Taro"}]
         answers = [
-            reply(with_terms(["only one"], named)),  # two were asked about
+            reply(with_terms(["only one"], named)),
             reply(translations("first", "second")),
         ]
         with mock.patch.object(ollama, "ask", side_effect=answers):

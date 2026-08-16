@@ -5,17 +5,12 @@ import { expand, isZip } from '../lib/zip'
 
 export type LibraryNotice = { id: string; text: string }
 
-/**
- * The dropped images and everything that changes them. An archive comes in as a
- * folder of its pages, so a chapter can be run as a chapter.
- */
 export function useImageLibrary() {
   const [images, setImages] = useState<GalleryImage[]>([])
   const [folders, setFolders] = useState<GalleryFolder[]>([])
   const [notice, setNotice] = useState<LibraryNotice | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // Through a ref, so the unmount cleanup does not re-revoke on every add.
   const latest = useRef(images)
   latest.current = images
   const heldFolders = useRef(folders)
@@ -31,10 +26,6 @@ export function useImageLibrary() {
     setNotice({ id: crypto.randomUUID(), text })
   }, [])
 
-  /**
-   * A folder of one's own, empty until pages are dropped into it. A name already
-   * taken is **refused rather than made unique**: `folderFor` matches by name.
-   */
   const makeFolder = useCallback(
     (name: string): string | null => {
       const called = name.trim()
@@ -69,17 +60,11 @@ export function useImageLibrary() {
       const unopenable: string[] = []
       const hollow: string[] = []
 
-      /**
-       * The folder for this archive, matched on the stem so re-dropping fills
-       * the same one and the extension that named it first sticks.
-       */
       const folderFor = (archive: string): GalleryFolder => {
         const name = stem(archive)
         const held =
           heldFolders.current.find((folder) => folder.name === name) ??
           opened.find((folder) => folder.name === name)
-        // The first zip dropped into a hand-made folder fills its `archive` in.
-        // Noted rather than written here: state is not edited in place.
         if (held) {
           if (!held.archive) named.set(held.id, archive)
           return held
@@ -90,8 +75,6 @@ export function useImageLibrary() {
       }
 
       for (const file of dropped) {
-        // Loose pages land in the folder being looked at; an archive still makes
-        // one of its own.
         if (!isZip(file)) {
           taken.push({ file, folder: into })
           continue
@@ -117,8 +100,6 @@ export function useImageLibrary() {
       ).filter((image) => image !== null)
       setBusy(false)
 
-      // Out here rather than inside the updater: an updater runs twice under
-      // StrictMode, and this one counts and releases as it goes.
       const seen = new Set(
         latest.current.map((image) => fingerprint(image.file, image.folder)),
       )
@@ -136,7 +117,6 @@ export function useImageLibrary() {
         fresh.push(image)
       }
 
-      // Only the folders that ended up holding something.
       const filled = opened.filter((folder) =>
         fresh.some((image) => image.folder === folder.id),
       )
@@ -179,8 +159,6 @@ export function useImageLibrary() {
     URL.revokeObjectURL(going.url)
     setImages((current) => current.filter((image) => image.id !== id))
 
-    // An archive's folder with nothing left in it is not a folder. One made by
-    // hand is: it was made empty and is meant to be filled.
     const folder = going.folder
     if (
       folder &&
@@ -191,7 +169,6 @@ export function useImageLibrary() {
     }
   }, [])
 
-  /** A folder and every page in it. */
   const dropFolder = useCallback((id: string) => {
     for (const image of latest.current) {
       if (image.folder === id) URL.revokeObjectURL(image.url)

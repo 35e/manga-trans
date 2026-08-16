@@ -6,15 +6,12 @@ type Props = {
   onModel: (model: string) => void
   target: string
   onTarget: (target: string) => void
-  /** Translate the page over again, against the blocks as they stand now. */
   onTranslate: () => void
   canTranslate: boolean
-  /** Whether there is anything set on the page yet. */
   lettered: boolean
   note: string | null
 }
 
-/** Which model, into what, and the button that sets it going. */
 export function TranslateTools({
   models,
   model,

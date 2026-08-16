@@ -1,40 +1,27 @@
-/** An archive that was dropped in, as a folder of its pages. */
 export type GalleryFolder = {
   id: string
   name: string
   addedAt: number
-  /** The only record of whether the chapter arrived as a `.zip` or a `.cbz`. */
   archive?: string
-  /**
-   * Made by hand, and so kept when it is emptied. Held rather than read off a
-   * missing `archive`, which the first zip dropped into one fills in.
-   */
   manual?: true
 }
 
 export type GalleryImage = {
   id: string
   file: File
-  /** Object URL for `file`; revoked when the image leaves the library. */
   url: string
   name: string
   size: number
   addedAt: number
   width: number
   height: number
-  /** The folder this page came out of, or nothing for one dropped loose. */
   folder?: string
 }
 
-/**
- * Same name, size and mtime, in the same folder: the same file dropped twice.
- * Scoped by folder, because two chapters both hold a `001.png`.
- */
 export function fingerprint(file: File, folder = '') {
   return `${folder}:${file.name}:${file.size}:${file.lastModified}`
 }
 
-/** A file name without its extension, to build a saved page's name from. */
 export function stem(name: string) {
   return name.replace(/\.[^.]+$/, '')
 }
@@ -43,7 +30,6 @@ export function isImage(file: File) {
   return file.type.startsWith('image/')
 }
 
-/** A file as a gallery entry, or null where the browser cannot decode it. */
 export function loadImage(file: File, folder?: string): Promise<GalleryImage | null> {
   const url = URL.createObjectURL(file)
 
@@ -84,7 +70,6 @@ export function formatBytes(bytes: number) {
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`
 }
 
-/** "3 pages", "1 page" — plural without the (s). */
 export function plural(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
 }

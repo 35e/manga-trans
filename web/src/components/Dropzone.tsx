@@ -29,7 +29,6 @@ export function Dropzone({ onFiles, dragging, busy }: Props) {
         className="sr-only"
         onChange={(event) => {
           onFiles(event.target.files)
-          // Let the same file be chosen twice in a row.
           event.target.value = ''
         }}
       />

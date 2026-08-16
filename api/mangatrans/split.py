@@ -14,28 +14,18 @@ import numpy as np
 
 from .geometry import Box
 
-# In characters, for a cut standing through several lines at once.
 GAP = 0.8
 
-# The same for a cut along a single line, where nothing else agrees with it.
 GAP_ALONE = 1.5
 
-# How many lines a cut must stand through to be read the first way.
 LINES = 2.5
 
-# How far two spans must be shifted, at both ends, to be separate blocks.
 STAGGER = 0.5
 
-# The blank a staggered pair still needs, so lettering that runs together is
-# never cut on alignment alone.
 GAP_STAGGERED = 0.3
 
-# A floor in pixels, for text small enough that a speck of blank would cut a line
-# in half.
 GAP_MIN = 8
 
-# How large one character is, as a percentile of the ink marks. A mean, not a
-# median: punctuation and small kana drag a median down.
 CHARACTER = 75
 
 
@@ -132,7 +122,6 @@ def where(text: np.ndarray, em: float) -> tuple[int, int] | None:
     narrowest = max(GAP_MIN, round(GAP_STAGGERED * em))
 
     walls = []
-    # A cut across x is a wall standing through the height, and the other way about.
     for axis, through in ((0, height / em), (1, width / em)):
         for start, run in blanks(text.any(axis=axis)):
             cut = start + run // 2

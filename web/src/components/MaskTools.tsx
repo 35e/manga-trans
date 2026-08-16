@@ -5,7 +5,6 @@ import { Button, Divider, Field, Note, Segmented, Select, Toolbar } from './ui'
 type Props = {
   brush: Brush
   onBrush: (brush: Brush) => void
-  /** Mark the lettering inside every block the detector found. */
   onMarkLetters: () => void
   canMark: boolean
   tracing: boolean
@@ -13,7 +12,6 @@ type Props = {
   canClear: boolean
   spread: number
   onSpread: (spread: number) => void
-  /** What the clean puts where the marked lettering was. */
   fill: Fill
   onFill: (fill: Fill) => void
   note: string | null
@@ -23,7 +21,6 @@ const SPREADS = [0, 2, 4, 6, 8, 12, 16]
 
 const SIZES = { min: 4, max: 160 }
 
-/** The brush, and the shortcuts worth having beside it. */
 export function MaskTools({
   brush,
   onBrush,

@@ -28,8 +28,6 @@ MODEL_ENV = "MANGA_TRANS_OCR_MODEL"
 PPOCR_ENV = "MANGA_TRANS_OCR_MODELS"
 PPOCR_DIR = "~/.cache/manga-trans/ppocr"
 
-# The newest weights PP-OCR has, and the languages that take the last set that
-# did.
 PPOCR_VERSION = "PP-OCRv5"
 PPOCR_OLDER = {"chinese_cht": "PP-OCRv4"}
 
@@ -38,13 +36,10 @@ PAD_MIN = 2
 
 SMALLEST = 4
 
-# A run of ink thinner than this is a speck rather than a line of text.
 SPECK = 3
 
-# The gap left between two characters when a column is set out as a line.
 LOOSE = 0.06
 
-# The one line :func:`quieted` takes out.
 GPU_HUNT = ("device_discovery.cc", "GetGpuDevices")
 
 
@@ -91,9 +86,6 @@ def padded(box: Box, width: int, height: int) -> Box:
     return Box(box.x0 - pad, box.y0 - pad, box.x1 + pad, box.y1 + pad).clipped(
         width, height
     )
-
-
-# --- Handing a balloon to a reader that only knows lines --------------------
 
 
 def inked(crop: Image.Image) -> np.ndarray:
@@ -186,11 +178,8 @@ def pieces(crop: Image.Image, language: Language) -> list[Image.Image]:
         return [crop]
 
     if upright(ink):
-        # A tall block of a script that does not stack is a line turned on its
-        # side, which PP-OCR turns back itself.
         if not language.stacked:
             return [crop]
-        # Columns, right to left, whichever way round the pages are.
         cut = [
             unstacked(crop.crop((start, 0, end, crop.height)), ink[:, start:end])
             for start, end in reversed(runs(ink.any(axis=0)))
@@ -201,9 +190,6 @@ def pieces(crop: Image.Image, language: Language) -> list[Image.Image]:
             for start, end in runs(ink.any(axis=1))
         ]
     return cut or [crop]
-
-
-# --- The readers ------------------------------------------------------------
 
 
 class Unfetched(RuntimeError):
@@ -277,7 +263,6 @@ class Ppocr:
         """What one line says."""
         if image.width < SMALLEST or image.height < SMALLEST:
             return ""
-        # An array is taken as BGR, which is what the models were trained on.
         pixels = np.ascontiguousarray(np.array(image.convert("RGB"))[:, :, ::-1])
         found = self.engine(pixels, use_det=False, use_cls=False, use_rec=True)
         return " ".join(said.strip() for said in (found.txts or ()) if said.strip())
@@ -296,8 +281,6 @@ class Reader:
     """
 
     def __init__(self, model: str | None = None, ocr=None) -> None:
-        # ``ocr`` is anything turning one image into one string, and stands in
-        # for every language — which is what the tests pass.
         self.given = ocr
         self.model = model
         self.held: dict[str, Callable[[Image.Image], str]] = {}
@@ -343,8 +326,6 @@ class Reader:
                 continue
             crop = padded(box, image.width, image.height)
             piece = image.crop((crop.x0, crop.y0, crop.x1, crop.y1))
-            # Held for one crop, not the page: a second request is only ever a
-            # box behind.
             with self._lock:
                 texts.append(ocr(piece).strip())
         return texts

@@ -20,8 +20,6 @@ import numpy as np
 
 from .geometry import Box
 
-# --- comic-text-detector, for the ink mask ----------------------------------
-
 MODEL_NAME = "comictextdetector.pt.onnx"
 MODEL_URL = (
     "https://github.com/zyddnys/manga-image-translator/releases/download/"
@@ -32,24 +30,15 @@ MODEL_DIRS = ("/opt/models", "~/.cache/manga-trans")
 
 INPUT_SIZE = 1024
 
-# The segmentation head answers per pixel, between 0 and 1.
 SEG_THRESHOLD = 0.5
 
-# How far the ink mask is grown to cover the halo around a hidden letter.
-# Measured in the *detector's* pixels, not the page's: held in page pixels the
-# same value is three canvas pixels of allowance on a small page and barely one
-# on a 300 dpi scan. Anything else measured against the mask is in these units.
 GROW = 4
 GROW_MAX = 64
-
-# --- comic-text-and-bubble-detector, for the boxes --------------------------
 
 REGIONS_REPO = "ogkalu/comic-text-and-bubble-detector"
 REGIONS_FILE = "detector_int8.onnx"
 REGIONS_ENV = "MANGA_TRANS_REGIONS"
 
-# A plain resize to a square, rescaled to 0..1, no normalisation — straight from
-# the model's own preprocessor_config.json.
 REGIONS_SIZE = 640
 
 BUBBLE, TEXT_BUBBLE, TEXT_FREE = 0, 1, 2
@@ -57,15 +46,10 @@ BUBBLE, TEXT_BUBBLE, TEXT_FREE = 0, 1, 2
 SPEECH, FREE = "speech", "free"
 KINDS = {TEXT_BUBBLE: SPEECH, TEXT_FREE: FREE}
 
-# The floor of what the dashboard is offered, not the line between sure and
-# unsure — that is UNSURE (0.8), and it is the front end's.
 REGIONS_CONF = 0.35
 
-# Two boxes covering this much of the smaller of them are one thing found twice.
 DUPLICATE = 0.75
 
-# A margin left around every block, as a share of its shorter side: the head
-# boxes lettering tightly and sometimes inside it, clipping the edge of a glyph.
 PAD = 0.04
 PAD_MIN = 2
 
@@ -76,7 +60,6 @@ class Block:
 
     box: Box
     confidence: float = 1.0
-    # Empty where nothing said: a block drawn by hand, or asked about on its own.
     kind: str = ""
 
 
@@ -89,13 +72,9 @@ def model_path(explicit: str | None = None) -> Path:
     return next((path for path in candidates if path.is_file()), candidates[-1])
 
 
-# The wait between tries is the half that matters: whatever drops one of these
-# drops the next few as well, so tries in a row all land in the same bad seconds.
 TRIES = 6
 BACKOFF = 8
 
-# The default `Python-urllib/3.x` is refused out of hand by GitHub's release
-# assets, which close the connection rather than saying so.
 AGENT = "Mozilla/5.0 (compatible; manga-trans)"
 
 
@@ -114,7 +93,7 @@ def ensure_model(explicit: str | None = None) -> Path:
             with urllib.request.urlopen(asked) as answer, partial.open("wb") as file:
                 shutil.copyfileobj(answer, file)
             break
-        except Exception as exc:  # noqa: BLE001 — every failure here is the transfer
+        except Exception as exc:  # noqa: BLE001
             partial.unlink(missing_ok=True)
             if attempt == TRIES:
                 raise
@@ -137,7 +116,7 @@ def ensure_regions(explicit: str | None = None) -> str:
 
     try:
         return hf_hub_download(REGIONS_REPO, REGIONS_FILE, local_files_only=True)
-    except Exception:  # noqa: BLE001 — not cached, so go and get it
+    except Exception:  # noqa: BLE001
         print(f"mangatrans: downloading {REGIONS_REPO}/{REGIONS_FILE}")
         path = hf_hub_download(REGIONS_REPO, REGIONS_FILE)
         print(f"mangatrans: saved {path}")
@@ -167,12 +146,9 @@ def page_mask(
         : max(1, round(seg_h * (INPUT_SIZE - pad_h) / INPUT_SIZE)),
         : max(1, round(seg_w * (INPUT_SIZE - pad_w) / INPUT_SIZE)),
     ]
-    # Stretched while still a probability, so the edge of a letter lands where it
-    # should before anything is decided about it.
     full = cv2.resize(kept, (width, height), interpolation=cv2.INTER_LINEAR)
     mask = ((full > SEG_THRESHOLD) * 255).astype(np.uint8)
 
-    # How many page pixels one canvas pixel became — see :data:`GROW`.
     spread = round(grow * max(width, height) / INPUT_SIZE)
     if spread > 0:
         kernel = cv2.getStructuringElement(
@@ -285,13 +261,9 @@ class Regions:
         labels, boxes, scores = self.run(image)
         found = decode(labels, boxes, scores, width, height)
 
-        # Per class: a balloon and the text filling it cover each other almost
-        # entirely and are not two findings of one thing.
         balloons = suppressed(
             [Block(box, score) for kind, box, score in found if kind == BUBBLE]
         )
-        # Thinned on the tight boxes and padded after, never the other way round:
-        # a margin put on first can make two neighbours look like one finding.
         blocks = [
             Block(padded(block.box, width, height), block.confidence, block.kind)
             for block in suppressed(
@@ -303,7 +275,6 @@ class Regions:
             )
         ]
 
-        # `lib/order.ts` sorts by the same key and must go on agreeing.
         across = (lambda box: -box.x1) if rtl else (lambda box: box.x0)
         blocks.sort(key=lambda block: (block.box.y0, across(block.box)))
         return blocks, [balloon.box for balloon in balloons]

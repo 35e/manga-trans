@@ -15,7 +15,6 @@ class Language:
     code: str
     name: str
     reader: str
-    # PP-OCR's own name for the language, which is which weights to fetch.
     recogniser: str = ""
     rtl: bool = False
     stacked: bool = True

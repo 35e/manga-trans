@@ -1,7 +1,3 @@
-/**
- * The arithmetic of a box whose contents are turned. The box itself stays square
- * to the page; only what sits in it turns.
- */
 
 import type { Box } from './api'
 
@@ -10,23 +6,12 @@ function turned(degrees: number) {
   return { cos: Math.cos(radians), sin: Math.sin(radians) }
 }
 
-/**
- * A drag across the screen, read along the box's own axes: the handles turn with
- * the box, so pulling the right one means "wider" whichever way it now points.
- */
 export function alongBox(angle: number, dx: number, dy: number) {
   if (!angle) return { dx, dy }
   const { cos, sin } = turned(angle)
   return { dx: dx * cos + dy * sin, dy: -dx * sin + dy * cos }
 }
 
-/**
- * A pulled box, put back so the edge that was not pulled stays where it looks.
- *
- * Writing a drawn point as `c + R(p − c)`, the shift that holds the untouched
- * edge still is `(I − R)(c − c′)` — the two middles alone, so one correction
- * serves every handle.
- */
 export function anchored(angle: number, was: Box, now: Box): Box {
   if (!angle) return now
   const { cos, sin } = turned(angle)

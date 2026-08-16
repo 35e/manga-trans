@@ -16,8 +16,6 @@ from dataclasses import dataclass, field, replace
 
 OLLAMA_ENV = "MANGA_TRANS_OLLAMA"
 
-# Docker and Podman disagree about what the host machine is called, so each is
-# tried and whichever answers is the one used. Do not bake one into the image.
 OLLAMA_HOSTS = (
     "http://localhost:11434",
     "http://host.docker.internal:11434",
@@ -31,17 +29,10 @@ TIMEOUT = 600
 LISTING_TIMEOUT = 15
 FINDING_TIMEOUT = 5
 
-# Asked for, not taken: Ollama's own default is 4096 and it truncates what it is
-# handed silently, front first — the briefing and the glossary. What running out
-# looks like from outside is a good model that has started miscounting.
 CONTEXT = 12288
 
-# The backstop for a model that has begun looping, which is what the repetition
-# penalty turned off in `request_for` was nominally there to stop.
 PREDICT = 4096
 
-# One term, in both of the answers that carry one: what a survey worked out and
-# what a page named are not told apart downstream.
 TERM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -52,9 +43,6 @@ TERM_SCHEMA = {
     "required": ["source", "target"],
 }
 
-# `gender` is an enum with `unknown` in it rather than a free string: asked for
-# prose a model must pick a pronoun, and page one's guess is then read back as
-# fact by every page after it. Here saying nothing is a value.
 CAST_SCHEMA = {
     "type": "object",
     "properties": {
@@ -65,9 +53,6 @@ CAST_SCHEMA = {
     "required": ["name", "gender"],
 }
 
-# `terms` and `story` are deliberately not required. The count — one translation
-# per line, in order — is what this module protects, and it must not start
-# failing over a model that saw nothing worth naming on a page of "...".
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -84,10 +69,6 @@ SCHEMA = {
     "required": ["translations"],
 }
 
-# `beats` is required and nothing else is, for the reason `translations` is: one
-# line per page is a count, and a beat a place out describes the wrong page with
-# nothing downstream able to tell. A bare list rather than numbered beats — see
-# DOCS.md for why numbering moves the failure rather than removing it.
 SURVEY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -100,20 +81,13 @@ SURVEY_SCHEMA = {
     "required": ["beats"],
 }
 
-# Everything below is capped because it all rides on *every* page of a folder
-# run. Cut rather than refused: there is no second chance to ask.
 GLOSSARY_LIMIT = 40
 NOTE_LIMIT = 80
 SCENE_LIMIT = 600
 CAST_LIMIT = 12
 
-# Wider than NOTE_LIMIT because the two notes are different things: a term's says
-# what decides a wording, where one of the cast's is the character. Twelve of
-# these is around 2400 characters, well inside CONTEXT.
 CAST_NOTE_LIMIT = 200
 
-# A survey window is several pages of raw lettering with the running answer in
-# front of it, where CONTEXT is sized for one page.
 SURVEY_CONTEXT = 16384
 
 SYNOPSIS_LIMIT = 1200
@@ -121,23 +95,15 @@ REGISTER_LIMIT = 200
 BEAT_LIMIT = 160
 BEATS_LIMIT = 400
 
-# More behind than ahead: behind is what the reader has read, and ahead is only
-# there to stop a line contradicting what it is in the middle of setting up.
 BEATS_BEFORE, BEATS_AFTER = 6, 2
 
 MALE, FEMALE, UNKNOWN = "male", "female", "unknown"
 GENDERS = (MALE, FEMALE, UNKNOWN)
 
-# Per fact rather than per person: someone whose gender was set by hand is still
-# someone the chapter can say new things about.
 FACTS = ("gender", "note")
 
-# The cast is keyed on the name, so a placeholder collides with the next unnamed
-# character and turns `asking` into "Still unknown: 先輩, unknown".
 NOT_A_NAME = {"unknown", "unnamed", "none", "n/a", "?", "-", "—"}
 
-# The caller's to replace: the schema is what makes the answer JSON, whatever
-# this says. `{target}` and `{source}` are filled in by `filled`.
 SYSTEM_DEFAULT = (
     "You translate {source} manga dialogue into {target}. You are given the lines "
     "of one page, in order, and they are one conversation: read them together. Reply "
@@ -147,9 +113,6 @@ SYSTEM_DEFAULT = (
     "line."
 )
 
-# Appended by `told`, never written into SYSTEM_DEFAULT: the prompt is the
-# caller's to replace, and the glossary must not stop working when it is. Every
-# note below follows that rule.
 TERMS_NOTE = (
     "Also list, under `terms`, any name, place, honorific or invented word on this "
     "page that a later page would have to render the same way, each with the "
@@ -159,9 +122,6 @@ TERMS_NOTE = (
     "only: nothing that is ordinary vocabulary, and nothing already settled below."
 )
 
-# The two sentences about guessing are what this note is really for, and the
-# cast is keyed on the page's own name rather than an English label because an
-# English one drifts and every drift is a second person.
 STORY_NOTE = (
     "Also give, under `story`, where the chapter has got to. `scene` is one or two "
     "sentences: who is present, what is going on between them, anything a page not "
@@ -189,10 +149,6 @@ GLOSSARY_HEADING = "Terms already used in this chapter. Translate them the same 
 PREVIOUSLY_HEADING = "The story so far, from the pages before this one:"
 CAST_HEADING = "Who is in it:"
 
-# Said only where the lines actually carry a kind. The last sentence is doing
-# real work: a model told a line is a sound effect may decide it needs no
-# translating and answer for the other nineteen, which is the one failure the
-# whole schema exists to prevent.
 KINDS_NOTE = (
     "Each line is marked [speech] where the lettering is inside a balloon and "
     "[free] where it is not — a sound effect, a caption, a sign, a shout across the "
@@ -201,14 +157,12 @@ KINDS_NOTE = (
     "[free] ones included, and do not repeat the markers in your answer."
 )
 
-# Likewise, and never enforced: a line over its budget is still lettered, smaller.
 BUDGET_NOTE = (
     "A line marked <=N has room for about N characters where it will be lettered. "
     "Past that it has to be set too small to read, so say it in fewer words rather "
     "than running over. It is a ceiling and not a target: short is fine."
 )
 
-# The survey's own briefing, the caller's to replace the way SYSTEM_DEFAULT is.
 SURVEY_DEFAULT = (
     "You are reading a chapter of a {source} comic before it is translated into "
     "{target}. You are given the lettering of several pages, in the order it is "
@@ -218,9 +172,6 @@ SURVEY_DEFAULT = (
     "handed before they start."
 )
 
-# Carries the wording about `unknown` harder than STORY_NOTE does: a survey's
-# cast is what every page starts from, so a gender guessed here is guessed once
-# and read as fact forty times.
 SURVEY_NOTE = (
     "Reply with a JSON object. `beats` is one line for each page you are given, in "
     "the same order and the same number of them: what happens on that page, "
@@ -248,9 +199,6 @@ SURVEY_NOTE = (
     "rather than starting over; the beats are only for the pages here."
 )
 
-# Said only where a chapter is actually given, and the note the whole survey
-# stands or falls on: a model shown the ending writes towards it, which is worse
-# than not having read the chapter. Do not soften the last two sentences.
 CHAPTER_NOTE = (
     "You are shown the whole chapter, the pages after this one included, so that a "
     "word can be chosen knowing where it leads — which pronoun someone takes, which "
@@ -266,8 +214,6 @@ SO_FAR_HEADING = "What the pages up to here came to. Write it again with these i
 REGISTER_HEADING = "How it is written:"
 BEATS_HEADING = "The chapter page by page. The page you are translating is marked →:"
 
-# The count is the one thing a model cannot see from the request, so it is told
-# the number rather than only asked again.
 MISCOUNTED = (
     "That was {got} translations for {wanted} lines. Answer again with exactly "
     "{wanted}, one for each numbered line, in the same order. A line you would "
@@ -676,7 +622,6 @@ def told(
             filled(STORY_NOTE, target, source),
             KINDS_NOTE if kinds else "",
             BUDGET_NOTE if budgets else "",
-            # Only where there is a chapter to be careful with.
             filled(CHAPTER_NOTE, target, source) if surveyed else "",
             surveyed,
             previously(story),
@@ -714,8 +659,6 @@ def request_for(
         "options": {
             "temperature": 0.2,
             "num_ctx": CONTEXT,
-            # Off, against a default of 1.1: a page repeats itself on purpose,
-            # and num_predict bounds the looping without touching the wording.
             "repeat_penalty": 1.0,
             "num_predict": PREDICT,
         },
@@ -814,7 +757,6 @@ class Translation:
 
     texts: list[str]
     terms: list[dict]
-    # `{"scene": ..., "cast": [...]}`, empty where the page settled nothing.
     story: dict = field(default_factory=dict)
 
 
@@ -884,13 +826,9 @@ def translate(
     said = ask("/api/chat", body, host=host)["message"]
     reply = answered(said)
     got = counted(reply, len(lines))
-    # Kept even when the count was wrong: naming a character does not depend on
-    # counting lines, and neither pass below has a page left to find one in.
     terms, after = noted(reply), storied(reply)
 
     if got is None:
-        # Shown its own answer and asked again it usually holds, and a page
-        # asked again is still a page — which the fallback below gives up.
         gave = len(reply["translations"]) if reply else 0
         asked_again = corrected(
             body, said, MISCOUNTED.format(got=gave, wanted=len(lines))
@@ -901,8 +839,6 @@ def translate(
         after = after or storied(again)
 
     if got is None:
-        # Twice. One line at a time cannot miscount, and is the worst
-        # translation this produces.
         got = [
             one(line, model, target, host, system, source, glossary, story, chapter, page)
             for line in lines
@@ -996,8 +932,6 @@ def survey(
         )
         again = answered(ask("/api/chat", asked_again, host=host)["message"], "beats")
         beats = beaten(again, len(pages))
-        # The spoiled answer first, the same way a miscounted page keeps its terms:
-        # being asked to count again is not being asked to look again.
         if not (found.synopsis or found.register or found.cast or found.terms):
             found = surveyed(again)
 

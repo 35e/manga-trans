@@ -5,7 +5,6 @@ import { FolderIcon, TrashIcon } from './icons'
 type Props = {
   images: GalleryImage[]
   folders: GalleryFolder[]
-  /** The folder being looked into, or null for everything that was dropped in. */
   open: string | null
   onOpenFolder: (id: string) => void
   activeId: string | null
@@ -14,7 +13,6 @@ type Props = {
   onRemoveFolder: (id: string) => void
 }
 
-/** The rail: every page dropped in, small, the one on the board picked out. */
 export function Gallery({
   images,
   folders,
@@ -69,10 +67,6 @@ export function Gallery({
   )
 }
 
-/**
- * One archive, shown as its first page under a stack. A single click opens it as
- * well as a double: a card that ignores one reads as broken, and touch has no double.
- */
 function Folder({
   folder,
   pages,
@@ -96,7 +90,6 @@ function Folder({
         title={`${folder.name} — ${plural(pages.length, 'page')}, ${formatBytes(total)}. Open it.`}
         className="block w-full rounded-xl border border-line bg-surface p-1 text-left transition-colors hover:border-faint hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        {/* The lip of the pages behind, so a folder does not read as a page. */}
         <span className="relative block">
           <span
             aria-hidden="true"
@@ -132,10 +125,6 @@ function Folder({
   )
 }
 
-/**
- * One page in the rail. The picture sits in a box inside the card's border, and
- * the two radii are concentric so the corner reads as one curve.
- */
 function Thumb({
   image,
   number,
@@ -188,7 +177,6 @@ function Thumb({
   )
 }
 
-/** The corner button that throws a card away, on the card it is over. */
 function Delete({ onClick, what }: { onClick: () => void; what: string }) {
   return (
     <button

@@ -20,13 +20,11 @@ export function isZip(file: File): boolean {
   )
 }
 
-/** The image type a name implies, or nothing if it does not imply one. */
 function typeOf(name: string): string | undefined {
   const dot = name.lastIndexOf('.')
   return dot === -1 ? undefined : TYPES[name.slice(dot + 1).toLowerCase()]
 }
 
-/** Junk an archive carries that was never a page: folders, metadata, dotfiles. */
 function worthKeeping(path: string): boolean {
   const name = path.slice(path.lastIndexOf('/') + 1)
   return (
@@ -40,18 +38,11 @@ function worthKeeping(path: string): boolean {
 
 const order = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
-/** One file on its way into an archive. */
 export type Packed = { name: string; bytes: Uint8Array }
 
-/**
- * Those files as one archive, stored rather than deflated: every entry is
- * already a PNG or a JPEG.
- */
 export function pack(files: Packed[]): Promise<Blob> {
   const held: Record<string, [Uint8Array, { level: 0 }]> = {}
   for (const file of files) {
-    // An archive is keyed by name, and one folder really can hold two pages
-    // called `001.png`. Numbering the second beats losing it silently.
     let name = file.name
     for (let again = 2; name in held; again++) {
       const dot = file.name.lastIndexOf('.')
@@ -77,7 +68,6 @@ export function expand(file: File): Promise<File[]> {
       .then((buffer) => {
         unzip(
           new Uint8Array(buffer),
-          // Before anything is decompressed, not after.
           { filter: (entry) => worthKeeping(entry.name) },
           (error, unpacked) => {
             if (error) {

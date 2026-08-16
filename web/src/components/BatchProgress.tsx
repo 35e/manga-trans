@@ -5,7 +5,6 @@ import { plural } from '../lib/images'
 import { CloseIcon, DownloadIcon } from './icons'
 import { Button, IconButton, Spinner } from './ui'
 
-/** What the page in hand is having done to it, said the way the board says it. */
 const LABELS: Record<Stage, string> = {
   detecting: 'Detecting',
   reading: 'Reading',
@@ -17,17 +16,14 @@ const LABELS: Record<Stage, string> = {
 
 type Props = {
   run: BatchRun
-  /** What the API is doing for the page in hand, if it is doing anything. */
   stage: Stage | null
   onOpen: (id: string) => void
   onStop: () => void
   onDismiss: () => void
-  /** The folder back out as an archive, once there is one to hand back. */
   onDownload?: () => void
   packing: { done: number; total: number } | null
 }
 
-/** How far a folder run has got, shown wherever the rail is. */
 export function BatchProgress({
   run,
   stage,
@@ -40,8 +36,6 @@ export function BatchProgress({
   const share = run.total === 0 ? 0 : run.done / run.total
   const failed = run.failed.length
 
-  // Held between two steps, or the word blinks out in the gap and reads as
-  // something having gone wrong. Cleared before it is filled in, in that order.
   const [held, setHeld] = useState<Stage | null>(stage)
   useEffect(() => setHeld(null), [run.page?.id])
   useEffect(() => {
@@ -54,8 +48,6 @@ export function BatchProgress({
       <div className="flex items-center justify-between gap-2">
         <p className="min-w-0 truncate text-[11px] font-medium text-ink">
           {run.label}
-          {/* Which of the two runs this is: a folder is read and then lettered,
-              and the bar has to say which of them it is showing. */}
           <span className="ml-1 font-normal text-faint">· {run.phase}</span>
         </p>
         {run.finished ? (
@@ -108,7 +100,6 @@ export function BatchProgress({
               </button>
             </>
           ) : run.note ? (
-            // Work on the whole chapter, so there is no page to name.
             <>
               <Spinner className="mr-1 inline size-2.5 align-[-1px]" />
               {run.note}
@@ -141,9 +132,6 @@ export function BatchProgress({
         </ul>
       )}
 
-      {/* The moment the chapter is actually ready, which is the moment a person
-          wants it. A run stopped part way still has pages worth saving, so this
-          is offered then too — the archive holds every page either way. */}
       {run.finished && onDownload && (
         <Button
           variant="outline"

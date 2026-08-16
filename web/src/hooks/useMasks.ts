@@ -2,7 +2,6 @@ import { useCallback, useRef } from 'react'
 import type { GalleryImage } from '../lib/images'
 import { Mask } from '../lib/mask'
 
-/** One mask per page, kept for as long as the page is in the library. */
 export function useMasks() {
   const masks = useRef(new Map<string, Mask>())
 
