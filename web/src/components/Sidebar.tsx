@@ -121,7 +121,7 @@ export function Sidebar({
   }, [images.length, inside, onOpenFolder])
 
   return (
-    <aside className="flex shrink-0 flex-col border-line bg-surface max-lg:h-64 max-lg:border-b lg:w-60 lg:border-r xl:w-72">
+    <aside className="flex shrink-0 flex-col overflow-hidden border-line bg-surface max-lg:h-64 max-lg:border-b lg:w-60 lg:border-r xl:w-72">
       <div className="shrink-0 space-y-2 p-3">
         <Dropzone onFiles={onFiles} dragging={dragging} busy={busy} />
         {!folder && <NewFolder onCreate={onNewFolder} />}
@@ -161,40 +161,42 @@ export function Sidebar({
         />
       )}
 
-      {folder && (
-        <FolderBar
-          folder={folder}
-          pages={counted}
-          lettered={counted.filter((image) => lettered.includes(image.id)).length}
-          done={counted.filter((image) => workedOn.includes(image.id)).length}
-          onBack={() => onOpenFolder(null)}
-          onRead={() => onReadFolder(folder)}
-          onTranslate={() => onTranslateFolder(folder)}
-          onDownload={() => onDownloadFolder(folder)}
-          running={batch !== null && !batch.finished}
-          packing={packing}
-          canTranslate={canTranslate}
-          terms={terms}
-          story={story}
-          bible={bible}
-          onCorrect={onCorrect}
-          onCorrectChapter={onCorrectChapter}
-          onCorrectTerm={onCorrectTerm}
-          onForgetTerms={onForgetTerms}
-        />
-      )}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {folder && (
+          <FolderBar
+            folder={folder}
+            pages={counted}
+            lettered={counted.filter((image) => lettered.includes(image.id)).length}
+            done={counted.filter((image) => workedOn.includes(image.id)).length}
+            onBack={() => onOpenFolder(null)}
+            onRead={() => onReadFolder(folder)}
+            onTranslate={() => onTranslateFolder(folder)}
+            onDownload={() => onDownloadFolder(folder)}
+            running={batch !== null && !batch.finished}
+            packing={packing}
+            canTranslate={canTranslate}
+            terms={terms}
+            story={story}
+            bible={bible}
+            onCorrect={onCorrect}
+            onCorrectChapter={onCorrectChapter}
+            onCorrectTerm={onCorrectTerm}
+            onForgetTerms={onForgetTerms}
+          />
+        )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        <Gallery
-          images={images}
-          folders={folders}
-          open={open}
-          onOpenFolder={onOpenFolder}
-          activeId={activeId}
-          onOpen={onOpen}
-          onRemove={onRemove}
-          onRemoveFolder={onRemoveFolder}
-        />
+        <div className="px-3 pb-3">
+          <Gallery
+            images={images}
+            folders={folders}
+            open={open}
+            onOpenFolder={onOpenFolder}
+            activeId={activeId}
+            onOpen={onOpen}
+            onRemove={onRemove}
+            onRemoveFolder={onRemoveFolder}
+          />
+        </div>
       </div>
 
       {counted.length > 0 && (
@@ -351,7 +353,7 @@ function FolderBar({
   }, [lettered])
 
   return (
-    <div className="mx-3 mb-3 shrink-0 rounded-lg border border-line bg-raised px-2 py-2">
+    <div className="mx-3 mb-3 rounded-lg border border-line bg-raised px-2 py-2">
       <div className="flex items-center gap-1">
         <button
           type="button"
