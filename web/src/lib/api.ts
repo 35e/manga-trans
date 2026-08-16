@@ -38,7 +38,7 @@ export type Stage =
   | 'translating'
   | 'surveying'
 
-export type BoardMode = 'inspect' | 'mask' | 'translate'
+export type Tool = 'boxes' | 'mask' | 'text'
 
 export type Fill = 'art' | 'telea' | 'white'
 

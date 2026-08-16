@@ -1,5 +1,5 @@
 import type { Language } from '../lib/api'
-import { Divider, Field, Hint, Select, Toggle, Toolbar } from './ui'
+import { Button, Divider, Field, Hint, Select, Toggle, Toolbar } from './ui'
 
 type Props = {
   offered: Language[]
@@ -10,6 +10,8 @@ type Props = {
   onShowBoxes: (showing: boolean) => void
   adding: boolean
   onAdding: (adding: boolean) => void
+  onDetect: () => void
+  busy: boolean
 }
 
 export function InspectTools({
@@ -21,6 +23,8 @@ export function InspectTools({
   onShowBoxes,
   adding,
   onAdding,
+  onDetect,
+  busy,
 }: Props) {
   return (
     <Toolbar>
@@ -67,6 +71,16 @@ export function InspectTools({
           </Hint>
         </>
       )}
+
+      <Button
+        variant="primary"
+        onClick={onDetect}
+        disabled={busy}
+        className="ml-auto"
+        title="Find the text blocks on this page and read them"
+      >
+        {found ? 'Read again' : 'Detect text'}
+      </Button>
     </Toolbar>
   )
 }

@@ -21,6 +21,7 @@ type Props = {
   onStop: () => void
   onDismiss: () => void
   onDownload?: () => void
+  onReview?: () => void
   packing: { done: number; total: number } | null
 }
 
@@ -31,6 +32,7 @@ export function BatchProgress({
   onStop,
   onDismiss,
   onDownload,
+  onReview,
   packing,
 }: Props) {
   const share = run.total === 0 ? 0 : run.done / run.total
@@ -48,7 +50,10 @@ export function BatchProgress({
       <div className="flex items-center justify-between gap-2">
         <p className="min-w-0 truncate text-[11px] font-medium text-ink">
           {run.label}
-          <span className="ml-1 font-normal text-faint">· {run.phase}</span>
+          <span className="ml-1 font-normal text-faint">
+            · {run.phase}
+            {run.phases > 1 && ` · ${run.phaseAt + 1} of ${run.phases}`}
+          </span>
         </p>
         {run.finished ? (
           <IconButton label="Dismiss" onClick={onDismiss} className="-my-1 size-5">
@@ -113,16 +118,18 @@ export function BatchProgress({
             'Starting…'
           )}
         </p>
-        <p className="shrink-0 text-faint tabular-nums">
-          {run.done} / {run.total}
-        </p>
+        {run.total > 0 && (
+          <p className="shrink-0 text-faint tabular-nums">
+            {run.done} / {run.total}
+          </p>
+        )}
       </div>
 
       {run.finished && failed > 0 && (
         <ul className="mt-1.5 space-y-0.5 border-t border-line pt-1.5 text-[11px] leading-snug text-warn">
           {run.failed.map((page, at) => (
             <li
-              key={`${page.name}:${at}`}
+              key={`${page.id}:${at}`}
               className="truncate"
               title={`${page.name}: ${page.why}`}
             >
@@ -130,6 +137,12 @@ export function BatchProgress({
             </li>
           ))}
         </ul>
+      )}
+
+      {run.finished && !run.stopping && onReview && (
+        <Button variant="outline" onClick={onReview} className="mt-2 w-full">
+          Review chapter
+        </Button>
       )}
 
       {run.finished && onDownload && (

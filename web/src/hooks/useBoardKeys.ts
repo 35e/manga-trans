@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { BoardMode } from '../lib/api'
+import type { Tool } from '../lib/api'
 import { typingInto } from '../lib/dom'
 import type { Lines } from '../lib/lettering'
 import type { BoardView } from './useBoardView'
@@ -34,7 +34,7 @@ export function useZoomKeys(view: BoardView, enabled: boolean) {
 }
 
 type BlockKeys = {
-  mode: BoardMode
+  tool: Tool
   selected: number | null
   lettering: Lines
   onToggleExcluded: (index: number) => void
@@ -43,7 +43,7 @@ type BlockKeys = {
 }
 
 export function useBlockKeys({
-  mode,
+  tool,
   selected,
   lettering,
   onToggleExcluded,
@@ -59,7 +59,7 @@ export function useBlockKeys({
     const onKey = (event: KeyboardEvent) => {
       if (typingInto(event.target)) return
 
-      if (mode === 'translate') {
+      if (tool === 'text') {
         const sizing = event.key === 'ArrowUp' || event.key === 'ArrowDown'
         const turning = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
         if (!sizing && !turning) return
@@ -85,5 +85,5 @@ export function useBlockKeys({
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selected, mode, onToggleExcluded, onSize, onTurn])
+  }, [selected, tool, onToggleExcluded, onSize, onTurn])
 }

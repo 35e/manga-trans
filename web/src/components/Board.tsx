@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useBlockKeys, useZoomKeys } from '../hooks/useBoardKeys'
 import { useBoardView } from '../hooks/useBoardView'
-import type { Analysis, BoardMode, Box, Fill, Language, Stage } from '../lib/api'
+import type { Analysis, Box, Fill, Language, Stage, Tool } from '../lib/api'
 import type { GalleryImage } from '../lib/images'
 import type { Lines } from '../lib/lettering'
 import type { Brush, Mask } from '../lib/mask'
@@ -12,12 +12,11 @@ import { InspectTools } from './InspectTools'
 import { MaskCanvas } from './MaskCanvas'
 import { MaskTools } from './MaskTools'
 import { RegionsLayer } from './RegionsLayer'
-import { Steps } from './Steps'
 import { TranslateTools } from './TranslateTools'
 import { TranslationLayer } from './TranslationLayer'
 import { ViewBar } from './ViewBar'
 import { PageIcon } from './icons'
-import { Button, Spinner } from './ui'
+import { Button, Segmented, Spinner } from './ui'
 
 export type Inspecting = {
   languages: Language[]
@@ -64,8 +63,8 @@ type Props = {
   error: string | null
   selected: number | null
   onSelect: (index: number | null) => void
-  mode: BoardMode
-  onMode: (mode: BoardMode) => void
+  tool: Tool
+  onTool: (tool: Tool) => void
   runningFolder: boolean
   showCleaned: boolean
   onShowCleaned: (showing: boolean) => void
@@ -94,8 +93,8 @@ export function Board({
   error,
   selected,
   onSelect,
-  mode,
-  onMode,
+  tool,
+  onTool,
   runningFolder,
   showCleaned,
   onShowCleaned,
@@ -116,7 +115,7 @@ export function Board({
 
   const busy = stage !== null || runningFolder
   const waiting = runningFolder ? 'wait for the folder being run to finish' : undefined
-  const brushing = mode === 'mask' && !showCleaned
+  const brushing = tool === 'mask' && !showCleaned
   const marked = Boolean(mask && !mask.empty)
 
   const read = analysis?.texts != null
@@ -124,7 +123,7 @@ export function Board({
 
   useZoomKeys(view, image !== null)
   useBlockKeys({
-    mode,
+    tool,
     selected,
     lettering: translating.lettering,
     onToggleExcluded: inspecting.onToggleExcluded,
@@ -183,72 +182,47 @@ export function Board({
 
         {image && (
           <>
-            <Steps
-              current={mode}
-              onPick={onMode}
-              steps={[
-                { id: 'inspect', label: 'Text', done: read, open: true },
-                { id: 'mask', label: 'Clean', done: Boolean(cleaned), open: read },
-                { id: 'translate', label: 'Translate', done: lettered, open: read },
+            <Segmented<Tool>
+              label="Tool"
+              value={tool}
+              onChange={onTool}
+              options={[
+                {
+                  value: 'boxes',
+                  label: 'Boxes',
+                  title: 'Find and adjust the text blocks',
+                },
+                { value: 'mask', label: 'Mask', title: 'Brush over what gets hidden' },
+                { value: 'text', label: 'Text', title: 'Edit the translated lettering' },
               ]}
             />
 
             <div className="flex shrink-0 items-center gap-2">
-              <Button
+              <Action
                 onClick={onRunAll}
                 disabled={busy}
-                size="md"
-                title={waiting ?? 'Detect the text, hide it, and letter the page'}
+                stage={stage}
+                title={waiting ?? 'Read the page, translate it, then clean it'}
               >
-                Do all three
-              </Button>
+                Translate
+              </Action>
 
-              {mode === 'inspect' && (
-                <Action onClick={onDetect} disabled={busy} stage={stage} title={waiting}>
-                  {analysis ? 'Read again' : 'Detect text'}
-                </Action>
-              )}
-
-              {mode === 'mask' && (
-                <Action
-                  onClick={() => {
-                    if (mask && !mask.empty) mask.toBlob().then(masking.onClean)
-                  }}
-                  disabled={busy || !marked}
-                  stage={stage}
-                  title={waiting ?? (marked ? undefined : 'Mark something to hide first')}
+              {lettered && (
+                <Button
+                  size="md"
+                  onClick={translating.onApply}
+                  disabled={busy || translating.applying}
+                  title="Set the lettering into the page and save it"
                 >
-                  {cleaned ? 'Clean again' : 'Clean page'}
-                </Action>
-              )}
-
-              {mode === 'translate' && (
-                <Action
-                  onClick={lettered ? translating.onApply : translating.onTranslate}
-                  disabled={
-                    busy ||
-                    translating.applying ||
-                    (!lettered && !(translating.model && read))
-                  }
-                  stage={stage}
-                  title={
-                    waiting ??
-                    (lettered ? 'Set the lettering into the page and save it' : undefined)
-                  }
-                >
-                  {translating.applying
-                    ? 'Applying…'
-                    : lettered
-                      ? 'Apply to image'
-                      : 'Translate page'}
-                </Action>
+                  {translating.applying ? 'Applying…' : 'Apply to image'}
+                </Button>
               )}
             </div>
           </>
         )}
       </header>
 
-      {mode === 'inspect' && image && (
+      {tool === 'boxes' && image && (
         <InspectTools
           offered={inspecting.languages}
           language={inspecting.language}
@@ -258,6 +232,8 @@ export function Board({
           onShowBoxes={setShowBoxes}
           adding={adding}
           onAdding={setAdding}
+          onDetect={onDetect}
+          busy={busy}
         />
       )}
 
@@ -278,10 +254,16 @@ export function Board({
           fill={masking.fill}
           onFill={masking.onFill}
           note={read ? null : 'find the text first, or brush the page by hand'}
+          onClean={() => {
+            if (mask && !mask.empty) void mask.toBlob().then(masking.onClean)
+          }}
+          canClean={marked}
+          cleaned={Boolean(cleaned)}
+          busy={busy}
         />
       )}
 
-      {mode === 'translate' && image && (
+      {tool === 'text' && image && (
         <TranslateTools
           models={translating.models}
           model={translating.model}
@@ -343,7 +325,7 @@ export function Board({
                   draggable={false}
                 />
 
-                {mode === 'inspect' && analysis && !showCleaned && showBoxes && (
+                {tool === 'boxes' && analysis && !showCleaned && showBoxes && (
                   <RegionsLayer
                     analysis={analysis}
                     scale={view.scale}
@@ -354,11 +336,11 @@ export function Board({
                   />
                 )}
 
-                {mode === 'inspect' && adding && (
+                {tool === 'boxes' && adding && (
                   <DrawRegion page={image} onAdd={inspecting.onAddRegion} />
                 )}
 
-                {mode === 'translate' && (
+                {tool === 'text' && (
                   <TranslationLayer
                     page={image}
                     scale={view.scale}

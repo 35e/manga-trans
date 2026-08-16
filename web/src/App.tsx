@@ -4,8 +4,10 @@ import { RegionsPanel } from './components/RegionsPanel'
 import { Settings } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
 import { TranslationsPanel } from './components/TranslationsPanel'
+import { ChapterReview } from './components/ChapterReview'
 import { GearIcon } from './components/icons'
 import { IconButton } from './components/ui'
+import type { Phase } from './hooks/useBatch'
 import { useBatch } from './hooks/useBatch'
 import { useChapter } from './hooks/useChapter'
 import { useFileDrop } from './hooks/useFileDrop'
@@ -18,7 +20,7 @@ import { useObjectUrls } from './hooks/useObjectUrls'
 import { useOllama } from './hooks/useOllama'
 import { usePrompt } from './hooks/usePrompt'
 import { useStory } from './hooks/useStory'
-import type { Analysis, BoardMode, Box, Fill, Lettering, Region, Stage } from './lib/api'
+import type { Analysis, Box, Fill, Lettering, Region, Stage, Tool } from './lib/api'
 import {
   API_BASE,
   UNSURE,
@@ -140,14 +142,15 @@ function App() {
   const [working, setWorking] = useState<{ id: string; stage: Stage } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
-  const [mode, setMode] = useState<BoardMode>('inspect')
+  const [tool, setTool] = useState<Tool>('boxes')
   const [applying, setApplying] = useState(false)
   const [packing, setPacking] = useState<{ done: number; total: number } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [reviewing, setReviewing] = useState<string | null>(null)
   const [showCleaned, setShowCleaned] = useState(false)
 
   const [spread, setSpread] = useState(4)
-  const [fill, setFill] = useState<Fill>('art')
+  const [fill, setFill] = useState<Fill>('white')
 
   const analysis = active ? (analyses[active.id] ?? null) : null
   const pageLettering = active ? (lettering[active.id] ?? []) : []
@@ -174,6 +177,8 @@ function App() {
   analysesNow.current = analyses
   const cleanedNow = useRef(cleanedPages)
   cleanedNow.current = cleanedPages
+  const letteringNow = useRef(lettering)
+  letteringNow.current = lettering
 
   const activeNow = useRef(activeId)
   activeNow.current = activeId
@@ -202,19 +207,14 @@ function App() {
 
   useEffect(() => {
     if (!activeId) return
-    const found = analysesNow.current[activeId]
-    setMode(
-      !found?.texts ? 'inspect' : !cleanedNow.current[activeId] ? 'mask' : 'translate',
-    )
+    const set = letteringNow.current[activeId]
+    setTool(set?.some(Boolean) ? 'text' : 'boxes')
   }, [activeId])
 
   useEffect(() => setShowCleaned(false), [activeId])
   useEffect(() => {
     if (cleanedPage) setShowCleaned(true)
   }, [cleanedPage])
-  useEffect(() => {
-    if (mode === 'translate' && cleanedPage) setShowCleaned(true)
-  }, [mode, cleanedPage])
 
   const forget = useCallback(
     (id: string) => {
@@ -587,7 +587,7 @@ function App() {
 
   const runClean = useCallback(
     async (marks: Blob) => {
-      if (active && (await cleanPage(active, marks))) setMode('translate')
+      if (active) await cleanPage(active, marks)
     },
     [active, cleanPage],
   )
@@ -608,10 +608,9 @@ function App() {
         return { found: null, why: lastFailure.current ?? 'the text could not be found' }
       }
 
-      if (onBoard(page.id)) setMode('mask')
       return { found, why: null }
     },
-    [detectAndRead, onBoard, held],
+    [detectAndRead, held],
   )
 
   const hidePage = useCallback(
@@ -625,7 +624,6 @@ function App() {
       }
 
       if (!onBoard(page.id)) traced.drop(page.id)
-      else setMode('translate')
       return null
     },
     [marksFor, cleanPage, traced, onBoard],
@@ -634,6 +632,29 @@ function App() {
   const examine = useCallback(
     async (page: GalleryImage) => (await readPage(page)).why,
     [readPage],
+  )
+
+  const translateOne = useCallback(
+    async (page: GalleryImage): Promise<string | null> => {
+      if (!held(page.id)) return null
+      const found = analysesNow.current[page.id]
+      if (!found?.texts || !found.texts.some((text) => text.trim())) return null
+
+      lastFailure.current = null
+      await translatePage(page, found)
+      return lastFailure.current
+    },
+    [held, translatePage],
+  )
+
+  const cleanOne = useCallback(
+    async (page: GalleryImage): Promise<string | null> => {
+      if (!held(page.id)) return null
+      const found = analysesNow.current[page.id]
+      if (!found || cleanedNow.current[page.id]) return null
+      return hidePage(page, found)
+    },
+    [held, hidePage],
   )
 
   const render = useCallback(
@@ -648,15 +669,15 @@ function App() {
       }
       if (!found?.texts) return lastFailure.current ?? 'the text could not be found'
 
-      if (!cleanedNow.current[page.id]) {
-        const why = await hidePage(page, found)
-        if (why) return why
-      }
-
       if (ollama.model && found.texts.some((text) => text.trim())) {
         lastFailure.current = null
         await translatePage(page, found)
         if (lastFailure.current) return lastFailure.current
+      }
+
+      if (!cleanedNow.current[page.id]) {
+        const why = await hidePage(page, found)
+        if (why) return why
       }
       return null
     },
@@ -673,6 +694,15 @@ function App() {
     stop: stopBatch,
     dismiss: dismissBatch,
   } = useBatch()
+
+  const wasRunning = useRef(false)
+  useEffect(() => {
+    const running = batch !== null && !batch.finished
+    if (wasRunning.current && batch?.finished && !batch.stopping) {
+      setReviewing(batch.folder)
+    }
+    wasRunning.current = running
+  }, [batch])
 
   const surveyChapter = useCallback(
     async (
@@ -725,31 +755,37 @@ function App() {
     ],
   )
 
-  const readFolder = useCallback(
-    (folder: GalleryFolder) => {
-      const pages = images.filter((image) => image.folder === folder.id)
-      void startBatch(folder, pages, 'Reading', examine, (say) =>
-        surveyChapter(folder, pages, say),
-      )
-    },
-    [startBatch, images, examine, surveyChapter],
-  )
-
   const translateFolder = useCallback(
     (folder: GalleryFolder) => {
-      void startBatch(
-        folder,
-        images.filter((image) => image.folder === folder.id),
-        'Cleaning & translating',
-        render,
-      )
+      const pages = images.filter((image) => image.folder === folder.id)
+
+      const phases: Phase[] = [{ name: 'Reading', each: examine, blocking: true }]
+      if (ollama.model) {
+        phases.push({
+          name: 'Building context',
+          whole: (say) => surveyChapter(folder, pages, say),
+        })
+        phases.push({ name: 'Translating', each: translateOne })
+      }
+      phases.push({ name: 'Cleaning', each: cleanOne })
+
+      void startBatch(folder, pages, phases)
     },
-    [startBatch, images, render],
+    [
+      startBatch,
+      images,
+      examine,
+      surveyChapter,
+      translateOne,
+      cleanOne,
+      ollama.model,
+    ],
   )
 
   const removeFolder = useCallback(
     (id: string) => {
       if (batch?.folder === id) stopBatch()
+      if (reviewing === id) setReviewing(null)
       for (const image of images) if (image.folder === id) forget(image.id)
       forgetTerms(id)
       forgetStory(id)
@@ -759,6 +795,7 @@ function App() {
     [
       batch?.folder,
       stopBatch,
+      reviewing,
       images,
       forget,
       forgetTerms,
@@ -780,6 +817,7 @@ function App() {
     setLettering({})
     setAnalyses({})
     setActiveId(null)
+    setReviewing(null)
   }, [
     stopBatch,
     clear,
@@ -896,6 +934,13 @@ function App() {
     [lettering, ollama.target, packing],
   )
 
+  const reviewFolder = folders.find((held) => held.id === reviewing) ?? null
+  const reviewFailed = useMemo(
+    () =>
+      Object.fromEntries((batch?.failed ?? []).map((gone) => [gone.id, gone.why])),
+    [batch?.failed],
+  )
+
   const workedOn = useMemo(
     () =>
       Object.keys(cleanedPages).concat(
@@ -966,10 +1011,10 @@ function App() {
           onClearAll={clearAll}
           batch={batch}
           batchStage={working && working.id === batch?.page?.id ? working.stage : null}
-          onReadFolder={readFolder}
           onTranslateFolder={translateFolder}
           onStopBatch={stopBatch}
           onDismissBatch={dismissBatch}
+          onReviewBatch={() => batch && setReviewing(batch.folder)}
           canTranslate={Boolean(ollama.model)}
           lettered={lettered}
           onDownloadFolder={(folder) => void downloadFolder(folder)}
@@ -977,66 +1022,84 @@ function App() {
           packing={packing}
         />
 
-        <Board
-          image={active}
-          analysis={analysis}
-          mask={forPage(active)}
-          cleaned={cleanedPage}
-          stage={stage}
-          error={error}
-          selected={selected}
-          onSelect={setSelected}
-          mode={mode}
-          onMode={setMode}
-          runningFolder={batch !== null && !batch.finished}
-          showCleaned={showCleaned}
-          onShowCleaned={setShowCleaned}
-          onRunAll={runAll}
-          onDetect={runDetect}
-          inspecting={{
-            languages: source.offered,
-            language: source.code,
-            onLanguage: source.setCode,
-            onAddRegion: addRegion,
-            onRegionBox: setRegionBox,
-            onRegionSettled: rereadRegion,
-            onToggleExcluded: toggleExcluded,
-          }}
-          masking={{
-            onClean: runClean,
-            letters: traced.at(active?.id, spread),
-            onTrace: traceLetters,
-            spread,
-            onSpread: setSpread,
-            fill,
-            onFill: setFill,
-          }}
-          translating={{
-            models: ollama.models,
-            model: ollama.model,
-            onModel: ollama.setModel,
-            target: ollama.target,
-            onTarget: ollama.setTarget,
-            onTranslate: runTranslate,
-            lettering: pageLettering,
-            onBox: setLetteringBox,
-            onTurn: setLetteringAngle,
-            onSize: nudgeSize,
-            onApply: applyToImage,
-            applying,
-            note:
-              ollama.problem ??
-              (!analysis?.texts
-                ? 'find the text first: there is nothing to translate yet'
-                : pageLettering.some(Boolean) && !cleanedPage
-                  ? 'this page has not been cleaned yet'
-                  : null),
-          }}
-        />
+        {reviewFolder ? (
+          <ChapterReview
+            folder={reviewFolder}
+            pages={images.filter((image) => image.folder === reviewFolder.id)}
+            analyses={analyses}
+            lettering={lettering}
+            failed={reviewFailed}
+            onEdit={(id) => {
+              setActiveId(id)
+              setReviewing(null)
+            }}
+            onClose={() => setReviewing(null)}
+            onDownload={() => void downloadFolder(reviewFolder)}
+            packing={packing}
+          />
+        ) : (
+          <Board
+            image={active}
+            analysis={analysis}
+            mask={forPage(active)}
+            cleaned={cleanedPage}
+            stage={stage}
+            error={error}
+            selected={selected}
+            onSelect={setSelected}
+            tool={tool}
+            onTool={setTool}
+            runningFolder={batch !== null && !batch.finished}
+            showCleaned={showCleaned}
+            onShowCleaned={setShowCleaned}
+            onRunAll={runAll}
+            onDetect={runDetect}
+            inspecting={{
+              languages: source.offered,
+              language: source.code,
+              onLanguage: source.setCode,
+              onAddRegion: addRegion,
+              onRegionBox: setRegionBox,
+              onRegionSettled: rereadRegion,
+              onToggleExcluded: toggleExcluded,
+            }}
+            masking={{
+              onClean: runClean,
+              letters: traced.at(active?.id, spread),
+              onTrace: traceLetters,
+              spread,
+              onSpread: setSpread,
+              fill,
+              onFill: setFill,
+            }}
+            translating={{
+              models: ollama.models,
+              model: ollama.model,
+              onModel: ollama.setModel,
+              target: ollama.target,
+              onTarget: ollama.setTarget,
+              onTranslate: runTranslate,
+              lettering: pageLettering,
+              onBox: setLetteringBox,
+              onTurn: setLetteringAngle,
+              onSize: nudgeSize,
+              onApply: applyToImage,
+              applying,
+              note:
+                ollama.problem ??
+                (!analysis?.texts
+                  ? 'find the text first: there is nothing to translate yet'
+                  : pageLettering.some(Boolean) && !cleanedPage
+                    ? 'this page has not been cleaned yet'
+                    : null),
+            }}
+          />
+        )}
 
-        {active &&
+        {!reviewFolder &&
+          active &&
           analysis &&
-          (mode === 'translate' ? (
+          (tool === 'text' ? (
             <TranslationsPanel
               originals={analysis.texts ?? analysis.detection.regions.map(() => null)}
               lettering={pageLettering}

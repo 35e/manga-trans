@@ -15,6 +15,10 @@ type Props = {
   fill: Fill
   onFill: (fill: Fill) => void
   note: string | null
+  onClean: () => void
+  canClean: boolean
+  cleaned: boolean
+  busy: boolean
 }
 
 const SPREADS = [0, 2, 4, 6, 8, 12, 16]
@@ -34,6 +38,10 @@ export function MaskTools({
   fill,
   onFill,
   note,
+  onClean,
+  canClean,
+  cleaned,
+  busy,
 }: Props) {
   return (
     <Toolbar>
@@ -109,6 +117,14 @@ export function MaskTools({
         </Field>
         <Button onClick={onClear} disabled={!canClear}>
           Clear mask
+        </Button>
+        <Button
+          variant="primary"
+          onClick={onClean}
+          disabled={busy || !canClean}
+          title={canClean ? undefined : 'Mark something to hide first'}
+        >
+          {cleaned ? 'Clean again' : 'Clean page'}
         </Button>
       </div>
     </Toolbar>

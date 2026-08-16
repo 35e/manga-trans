@@ -37,10 +37,10 @@ type Props = {
   onClearAll: () => void
   batch: BatchRun | null
   batchStage: Stage | null
-  onReadFolder: (folder: GalleryFolder) => void
   onTranslateFolder: (folder: GalleryFolder) => void
   onStopBatch: () => void
   onDismissBatch: () => void
+  onReviewBatch: () => void
   canTranslate: boolean
   lettered: string[]
   onDownloadFolder: (folder: GalleryFolder) => void
@@ -73,10 +73,10 @@ export function Sidebar({
   onClearAll,
   batch,
   batchStage,
-  onReadFolder,
   onTranslateFolder,
   onStopBatch,
   onDismissBatch,
+  onReviewBatch,
   canTranslate,
   lettered,
   onDownloadFolder,
@@ -126,6 +126,7 @@ export function Sidebar({
           onOpen={onOpen}
           onStop={onStopBatch}
           onDismiss={onDismissBatch}
+          onReview={onReviewBatch}
           onDownload={
             folders.some((held) => held.id === batch.folder)
               ? () => {
@@ -146,7 +147,6 @@ export function Sidebar({
             lettered={counted.filter((image) => lettered.includes(image.id)).length}
             done={counted.filter((image) => workedOn.includes(image.id)).length}
             onBack={() => onOpenFolder(null)}
-            onRead={() => onReadFolder(folder)}
             onTranslate={() => onTranslateFolder(folder)}
             onDownload={() => onDownloadFolder(folder)}
             running={batch !== null && !batch.finished}
@@ -255,7 +255,6 @@ function FolderBar({
   lettered,
   done,
   onBack,
-  onRead,
   onTranslate,
   onDownload,
   running,
@@ -274,7 +273,6 @@ function FolderBar({
   lettered: number
   done: number
   onBack: () => void
-  onRead: () => void
   onTranslate: () => void
   onDownload: () => void
   running: boolean
@@ -289,7 +287,6 @@ function FolderBar({
   onForgetTerms: () => void
 }) {
   const [armed, setArmed] = useState(false)
-  const [armedTranslate, setArmedTranslate] = useState(false)
 
   const read = !isUnread(bible)
   const stale = read && !fits(bible, pages.length)
@@ -301,16 +298,7 @@ function FolderBar({
   }, [armed])
 
   useEffect(() => {
-    if (!armedTranslate) return
-    const timer = setTimeout(() => setArmedTranslate(false), 4000)
-    return () => clearTimeout(timer)
-  }, [armedTranslate])
-
-  useEffect(() => {
-    if (lettered === 0) {
-      setArmed(false)
-      setArmedTranslate(false)
-    }
+    if (lettered === 0) setArmed(false)
   }, [lettered])
 
   return (
@@ -339,7 +327,7 @@ function FolderBar({
           if (!armed && lettered > 0) setArmed(true)
           else {
             setArmed(false)
-            onRead()
+            onTranslate()
           }
         }}
         onBlur={() => setArmed(false)}
@@ -349,46 +337,15 @@ function FolderBar({
           running
             ? 'A folder is already being run'
             : canTranslate
-              ? `Find and read the words on all ${plural(pages.length, 'page')}, then read the chapter whole. Nothing is hidden yet`
-              : `Find and read the words on all ${plural(pages.length, 'page')}`
+              ? `Read all ${plural(pages.length, 'page')}, read the chapter whole, translate every page against it, then clean them`
+              : `Read and clean all ${plural(pages.length, 'page')} — no model picked, so nothing is translated`
         }
       >
         {armed
           ? `Do ${plural(lettered, 'lettered page')} again?`
           : canTranslate
-            ? 'Read chapter'
-            : 'Read all'}
-      </Button>
-
-      <Button
-        variant={armedTranslate ? 'primary' : 'outline'}
-        onClick={() => {
-          if (!armedTranslate && lettered > 0) setArmedTranslate(true)
-          else {
-            setArmedTranslate(false)
-            onTranslate()
-          }
-        }}
-        onBlur={() => setArmedTranslate(false)}
-        disabled={running || pages.length === 0}
-        className="mt-1.5 w-full"
-        title={
-          running
-            ? 'A folder is already being run'
-            : !canTranslate
-              ? `Hide the words on all ${plural(pages.length, 'page')}`
-              : stale
-                ? 'The pages have changed since the chapter was read — each page will know only the pages before it'
-                : read
-                  ? 'Every page hidden and translated knowing the whole chapter'
-                  : 'No chapter read yet — each page will know only the pages before it'
-        }
-      >
-        {armedTranslate
-          ? `Do ${plural(lettered, 'lettered page')} again?`
-          : canTranslate
-            ? 'Clean & translate chapter'
-            : 'Clean all'}
+            ? 'Translate folder'
+            : 'Read & clean folder'}
       </Button>
 
       {stale && (
