@@ -81,7 +81,6 @@ const LABELS: Record<Stage, string> = {
   tracing: 'Tracing…',
   cleaning: 'Cleaning…',
   translating: 'Translating…',
-  surveying: 'Reading the chapter…',
 }
 
 export function Board({

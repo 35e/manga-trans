@@ -36,7 +36,6 @@ export type Stage =
   | 'tracing'
   | 'cleaning'
   | 'translating'
-  | 'surveying'
 
 export type Tool = 'boxes' | 'mask' | 'text'
 
@@ -138,38 +137,11 @@ export async function defaultPrompt(): Promise<string> {
   return answer.prompt
 }
 
-export type Term = { source: string; target: string; note?: string }
-
-export type Gender = 'male' | 'female' | 'unknown'
-
-export type Fact = 'gender' | 'note'
-
-export type CastMember = {
-  name: string
-  gender: Gender
-  note?: string
-  settled?: Fact[]
-}
-
-export type Story = { scene: string; cast: CastMember[] }
-
-export type Bible = {
-  synopsis: string
-  register: string
-  beats: string[]
-  cast: CastMember[]
-  terms: Term[]
-}
-
 export type Untranslated = { text: string; kind?: Kind; budget?: number }
 
 export type Against = {
   system?: string | null
   source?: string | null
-  glossary?: Term[] | null
-  previously?: Story | null
-  chapter?: Bible | null
-  page?: number | null
 }
 
 export async function translate(
@@ -177,11 +149,9 @@ export async function translate(
   model: string,
   target: string,
   against: Against = {},
-): Promise<{ texts: string[]; terms: Term[]; story: Story }> {
-  if (lines.length === 0) {
-    return { texts: [], terms: [], story: { scene: '', cast: [] } }
-  }
-  const { system, source, glossary, previously, chapter, page } = against
+): Promise<string[]> {
+  if (lines.length === 0) return []
+  const { system, source } = against
 
   const body = new FormData()
   body.append('texts', JSON.stringify(lines.map((line) => line.text)))
@@ -189,16 +159,6 @@ export async function translate(
   body.append('target', target)
   if (system) body.append('system', system)
   if (source) body.append('source', source)
-  if (glossary && glossary.length > 0) {
-    body.append('glossary', JSON.stringify(glossary))
-  }
-  if (previously && (previously.scene !== '' || previously.cast.length > 0)) {
-    body.append('previously', JSON.stringify(previously))
-  }
-  if (chapter) {
-    body.append('chapter', JSON.stringify(chapter))
-    body.append('page', String(page ?? 0))
-  }
   if (lines.some((line) => line.kind)) {
     body.append('kinds', JSON.stringify(lines.map((line) => line.kind ?? '')))
   }
@@ -207,44 +167,8 @@ export async function translate(
   }
 
   const response = await reach('/api/translate', { method: 'POST', body })
-  const answer = (await response.json()) as {
-    texts: string[]
-    terms?: Term[]
-    story?: Partial<Story>
-  }
-  return {
-    texts: answer.texts,
-    terms: answer.terms ?? [],
-    story: {
-      scene: answer.story?.scene ?? '',
-      cast: answer.story?.cast ?? [],
-    },
-  }
-}
-
-export async function survey(
-  pages: string[][],
-  model: string,
-  target: string,
-  against: { source?: string | null; chapter?: Bible | null; first?: number } = {},
-): Promise<Bible> {
-  const body = new FormData()
-  body.append('pages', JSON.stringify(pages))
-  body.append('model', model)
-  body.append('target', target)
-  if (against.source) body.append('source', against.source)
-  if (against.chapter) body.append('chapter', JSON.stringify(against.chapter))
-  if (against.first) body.append('first', String(against.first))
-
-  const response = await reach('/api/survey', { method: 'POST', body })
-  const answer = (await response.json()) as { chapter?: Partial<Bible> }
-  return {
-    synopsis: answer.chapter?.synopsis ?? '',
-    register: answer.chapter?.register ?? '',
-    beats: answer.chapter?.beats ?? [],
-    cast: answer.chapter?.cast ?? [],
-    terms: answer.chapter?.terms ?? [],
-  }
+  const answer = (await response.json()) as { texts: string[] }
+  return answer.texts
 }
 
 export async function letterMask(file: File, grow?: number): Promise<Blob> {

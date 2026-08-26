@@ -11,7 +11,6 @@ const LABELS: Record<Stage, string> = {
   tracing: 'Tracing',
   cleaning: 'Cleaning',
   translating: 'Translating',
-  surveying: 'Reading the chapter',
 }
 
 type Props = {
@@ -103,11 +102,6 @@ export function BatchProgress({
               >
                 {run.page.name}
               </button>
-            </>
-          ) : run.note ? (
-            <>
-              <Spinner className="mr-1 inline size-2.5 align-[-1px]" />
-              {run.note}
             </>
           ) : run.finished ? (
             <>

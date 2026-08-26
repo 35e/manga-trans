@@ -90,150 +90,6 @@ def maybe_sent(field: str) -> list | None:
     return sent(field)
 
 
-def terms_in(glossary: list | None) -> list[dict] | None:
-    """A glossary as it arrives, refused rather than half-read if it is malformed.
-
-    Strict where `ollama.noted` is lenient: that reads a model's answer, this
-    reads a caller's request.
-    """
-    if glossary is None:
-        return None
-    terms = []
-    for term in glossary:
-        if not isinstance(term, dict):
-            raise BadRequest("'glossary' must be a list of {source, target} objects")
-        source, target = term.get("source"), term.get("target")
-        if not isinstance(source, str) or not isinstance(target, str):
-            raise BadRequest("every term in 'glossary' needs a source and a target")
-        if not (source.strip() and target.strip()):
-            continue
-        note = term.get("note")
-        settled = {"source": source.strip(), "target": target.strip()}
-        if isinstance(note, str) and note.strip():
-            settled["note"] = note.strip()[: ollama.NOTE_LIMIT]
-        terms.append(settled)
-    return terms
-
-
-def object_in(field: str, shape: str) -> dict | None:
-    """A JSON object sent in the form field ``field``, or None if none was."""
-    raw = request.form.get(field)
-    if raw is None:
-        return None
-    try:
-        said = json.loads(raw)
-    except ValueError as exc:
-        raise BadRequest(f"'{field}' is not valid JSON: {exc}") from exc
-    if not isinstance(said, dict):
-        raise BadRequest(f"'{field}' must be a JSON object of {shape}")
-    return said
-
-
-def people_in(cast, field: str) -> list[dict]:
-    """A cast as it arrives, refused rather than half-read if it is malformed.
-
-    Shared by the story a caller carries page to page and the one a survey
-    worked out: they are the same shape on purpose.
-    """
-    if not isinstance(cast, list):
-        raise BadRequest(f"'{field}.cast' must be a list")
-    people = []
-    for person in cast:
-        if not isinstance(person, dict):
-            raise BadRequest(f"every one of '{field}.cast' must be an object")
-        name = str(person.get("name") or "").strip()
-        if not name:
-            raise BadRequest(f"every one of '{field}.cast' needs a name")
-        gender = person.get("gender", ollama.UNKNOWN)
-        if gender not in ollama.GENDERS:
-            raise BadRequest(
-                f"a cast gender must be one of: {', '.join(ollama.GENDERS)}"
-            )
-        settled = person.get("settled") or []
-        if not isinstance(settled, list) or any(
-            fact not in ollama.FACTS for fact in settled
-        ):
-            raise BadRequest(
-                f"'settled' must be a list of: {', '.join(ollama.FACTS)}"
-            )
-        people.append(
-            {
-                "name": name,
-                "gender": gender,
-                "note": str(person.get("note") or "").strip()[
-                    : ollama.CAST_NOTE_LIMIT
-                ],
-                "settled": settled,
-            }
-        )
-    return people[: ollama.CAST_LIMIT]
-
-
-def story_in():
-    """Where the chapter had got to, as the caller has it.
-
-    `settled` is the caller's own — a fact set by hand — and is carried through
-    so the prompt can say so.
-    """
-    said = object_in("previously", "{scene, cast}")
-    if said is None:
-        return None
-    return {
-        "scene": str(said.get("scene") or "").strip()[: ollama.SCENE_LIMIT],
-        "cast": people_in(said.get("cast") or [], "previously"),
-    }
-
-
-def chapter_in():
-    """What a survey made of the whole chapter, as the caller has it.
-
-    `beats` is one line per page and positional with them, so it is carried
-    whole and cut only at the far end.
-    """
-    said = object_in("chapter", "{synopsis, register, beats, cast, terms}")
-    if said is None:
-        return None
-    beats = said.get("beats") or []
-    if not isinstance(beats, list):
-        raise BadRequest("'chapter.beats' must be a list, one line per page")
-    return {
-        "synopsis": str(said.get("synopsis") or "").strip()[: ollama.SYNOPSIS_LIMIT],
-        "register": str(said.get("register") or "").strip()[: ollama.REGISTER_LIMIT],
-        "beats": [
-            str(beat or "").strip()[: ollama.BEAT_LIMIT]
-            for beat in beats[: ollama.BEATS_LIMIT]
-        ],
-        "cast": people_in(said.get("cast") or [], "chapter"),
-        "terms": terms_in(said.get("terms") or []) or [],
-    }
-
-
-def pages_in() -> list[list[str]]:
-    """A chapter's lettering to survey: one list of lines per page, in order.
-
-    A page with nothing on it is kept rather than dropped: the answer is one
-    beat per page given.
-    """
-    pages = sent("pages")
-    read = []
-    for page in pages:
-        if not isinstance(page, list):
-            raise BadRequest("'pages' must be a list of pages, each a list of lines")
-        read.append([str(line) for line in page])
-    return read
-
-
-def whole_in(field: str) -> int:
-    """A whole number sent in a form field, or 0 where none was."""
-    raw = request.form.get(field, "").strip()
-    if not raw:
-        return 0
-    try:
-        return max(0, int(raw))
-    except ValueError as exc:
-        raise BadRequest(f"'{field}' must be a whole number") from exc
-
-
 def beside(field: str, texts: list[str]) -> list | None:
     """A list sent alongside `texts` and lined up with it, or None if none was.
 
@@ -401,7 +257,7 @@ def create_app() -> Flask:
     @app.get("/api/prompt")
     def prompt():
         """What the model is told to do, unless a caller says otherwise."""
-        return jsonify(prompt=ollama.SYSTEM_DEFAULT, survey=ollama.SURVEY_DEFAULT)
+        return jsonify(prompt=ollama.SYSTEM_DEFAULT)
 
     @app.post("/api/translate")
     def translate():
@@ -413,10 +269,7 @@ def create_app() -> Flask:
         target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
         source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
         system = request.form.get("system", "").strip() or None
-        glossary = terms_in(maybe_sent("glossary"))
         kinds, budgets = kinds_in(texts), budgets_in(texts)
-        story = story_in()
-        chapter, page = chapter_in(), whole_in("page")
         try:
             done = ollama.translate(
                 texts,
@@ -424,46 +277,10 @@ def create_app() -> Flask:
                 target,
                 system=system,
                 source=source,
-                glossary=glossary,
                 kinds=kinds,
                 budgets=budgets,
-                story=story,
-                chapter=chapter,
-                page=page,
             )
-            return jsonify(texts=done.texts, terms=done.terms, story=done.story)
-        except ollama.Unreachable as exc:
-            raise ServiceUnavailable(str(exc)) from exc
-
-    @app.post("/api/survey")
-    def survey():
-        """What a chapter is, read a windowful at a time before any is translated."""
-        pages = pages_in()
-        model = request.form.get("model", "").strip()
-        if not model:
-            raise BadRequest("nothing to survey with (form field 'model')")
-        target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
-        source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
-        system = request.form.get("system", "").strip() or None
-        try:
-            found = ollama.survey(
-                pages,
-                model,
-                target,
-                system=system,
-                source=source,
-                chapter=chapter_in(),
-                first=whole_in("first"),
-            )
-            return jsonify(
-                chapter={
-                    "synopsis": found.synopsis,
-                    "register": found.register,
-                    "beats": found.beats,
-                    "cast": found.cast,
-                    "terms": found.terms,
-                }
-            )
+            return jsonify(texts=done)
         except ollama.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 

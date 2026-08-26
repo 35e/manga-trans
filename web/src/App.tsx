@@ -9,9 +9,7 @@ import { GearIcon } from './components/icons'
 import { IconButton } from './components/ui'
 import type { Phase } from './hooks/useBatch'
 import { useBatch } from './hooks/useBatch'
-import { useChapter } from './hooks/useChapter'
 import { useFileDrop } from './hooks/useFileDrop'
-import { useGlossary } from './hooks/useGlossary'
 import { useImageLibrary } from './hooks/useImageLibrary'
 import { useLanguage } from './hooks/useLanguage'
 import { useLetterMasks } from './hooks/useLetterMasks'
@@ -19,7 +17,6 @@ import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
 import { useOllama } from './hooks/useOllama'
 import { usePrompt } from './hooks/usePrompt'
-import { useStory } from './hooks/useStory'
 import type { Analysis, Box, Fill, Lettering, Region, Stage, Tool } from './lib/api'
 import {
   API_BASE,
@@ -30,10 +27,8 @@ import {
   letterMask,
   read,
   said,
-  survey,
   translate,
 } from './lib/api'
-import { SURVEY_PAGES, asStory, fits } from './lib/bible'
 import { archiveName, finished } from './lib/chapter'
 import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, ready } from './lib/fit'
@@ -107,30 +102,6 @@ function App() {
   } = useObjectUrls()
   const ollama = useOllama()
   const source = useLanguage()
-  const {
-    terms: chapterTerms,
-    now: termsNow,
-    learn: learnTerms,
-    correct: correctTerm,
-    forget: forgetTerms,
-    clear: clearTerms,
-  } = useGlossary()
-  const {
-    stories: chapterStories,
-    now: storyNow,
-    learn: learnStory,
-    correct: correctStory,
-    forget: forgetStory,
-    clear: clearStories,
-  } = useStory()
-  const {
-    bibles: chapterBibles,
-    now: bibleNow,
-    learn: learnBible,
-    correct: correctBible,
-    forget: forgetBible,
-    clear: clearBibles,
-  } = useChapter()
   const { prompt, setPrompt, builtIn: builtInPrompt } = usePrompt()
 
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -188,22 +159,6 @@ function App() {
   imagesNow.current = images
   const held = useCallback((id: string) => imagesNow.current.some((it) => it.id === id), [])
 
-  const pagesOf = useCallback(
-    (folder: string) => imagesNow.current.filter((it) => it.folder === folder),
-    [],
-  )
-  const placeOf = useCallback(
-    (page: GalleryImage): number | null => {
-      if (!page.folder) return null
-      const at = pagesOf(page.folder).findIndex((it) => it.id === page.id)
-      return at === -1 ? null : at
-    },
-    [pagesOf],
-  )
-  const pagesIn = useCallback(
-    (folder: string) => pagesOf(folder).length,
-    [pagesOf],
-  )
 
   useEffect(() => {
     if (!activeId) return
@@ -527,7 +482,6 @@ function App() {
         .filter(({ text, index }) => text.trim() && !skip.has(index))
       if (wanted.length === 0) return false
 
-      const chapter = page.folder
       const got = await during(page.id, 'translating', async () => {
         await ready()
         const sending = wanted.map(({ text, index }) => {
@@ -538,28 +492,16 @@ function App() {
             budget: region ? lines.budgetFor(region, text) : undefined,
           }
         })
-        const read = chapter ? bibleNow.current[chapter] : null
-        const of = chapter ? placeOf(page) : null
-        const surveyed = chapter && of !== null && fits(read, pagesIn(chapter))
         return translate(sending, ollama.model, ollama.target, {
           system: prompt,
           source: source.language?.name,
-          glossary: chapter ? termsNow.current[chapter] : null,
-          previously: chapter ? storyNow.current[chapter] : null,
-          chapter: surveyed ? read : null,
-          page: surveyed ? of : null,
         })
       })
       if (!got) return false
 
-      if (chapter) {
-        learnTerms(chapter, got.terms)
-        learnStory(chapter, got.story)
-      }
-
       const set: Lines = found.detection.regions.map(() => null)
       wanted.forEach((line, at) => {
-        const text = (got.texts[at] ?? '').trim()
+        const text = (got[at] ?? '').trim()
         if (text) set[line.index] = lines.laidOut(found, line.index, text)
       })
       setLettering((current) => ({ ...current, [page.id]: set }))
@@ -571,13 +513,6 @@ function App() {
       ollama.target,
       prompt,
       source.language?.name,
-      termsNow,
-      learnTerms,
-      storyNow,
-      learnStory,
-      bibleNow,
-      placeOf,
-      pagesIn,
     ],
   )
 
@@ -704,69 +639,12 @@ function App() {
     wasRunning.current = running
   }, [batch])
 
-  const surveyChapter = useCallback(
-    async (
-      folder: GalleryFolder,
-      pages: GalleryImage[],
-      say: (note: string | null) => void,
-    ): Promise<string | null> => {
-      if (!ollama.model) return null
-
-      const written = pages.map((page) => {
-        const found = analysesNow.current[page.id]
-        if (!found?.texts) return []
-        const skip = new Set(found.excluded)
-        return found.texts.filter((text, at) => text.trim() && !skip.has(at))
-      })
-      if (!written.some((page) => page.length > 0)) return null
-
-      for (let first = 0; first < written.length; first += SURVEY_PAGES) {
-        const window = written.slice(first, first + SURVEY_PAGES)
-        const last = Math.min(first + window.length, written.length)
-        say(`reading pages ${first + 1}–${last} of ${written.length}`)
-        lastFailure.current = null
-        const said = await during(pages[first].id, 'surveying', () =>
-          survey(window, ollama.model as string, ollama.target, {
-            source: source.language?.name,
-            chapter: bibleNow.current[folder.id] ?? null,
-            first,
-          }),
-        )
-        if (!said) return lastFailure.current ?? 'the chapter could not be read'
-        learnBible(folder.id, said, first)
-      }
-
-      const read = bibleNow.current[folder.id]
-      if (read) {
-        learnTerms(folder.id, read.terms)
-        learnStory(folder.id, asStory(read))
-      }
-      return null
-    },
-    [
-      during,
-      ollama.model,
-      ollama.target,
-      source.language?.name,
-      bibleNow,
-      learnBible,
-      learnTerms,
-      learnStory,
-    ],
-  )
-
   const translateFolder = useCallback(
     (folder: GalleryFolder) => {
       const pages = images.filter((image) => image.folder === folder.id)
 
       const phases: Phase[] = [{ name: 'Reading', each: examine, blocking: true }]
-      if (ollama.model) {
-        phases.push({
-          name: 'Building context',
-          whole: (say) => surveyChapter(folder, pages, say),
-        })
-        phases.push({ name: 'Translating', each: translateOne })
-      }
+      if (ollama.model) phases.push({ name: 'Translating', each: translateOne })
       phases.push({ name: 'Cleaning', each: cleanOne })
 
       void startBatch(folder, pages, phases)
@@ -775,7 +653,6 @@ function App() {
       startBatch,
       images,
       examine,
-      surveyChapter,
       translateOne,
       cleanOne,
       ollama.model,
@@ -787,9 +664,6 @@ function App() {
       if (batch?.folder === id) stopBatch()
       if (reviewing === id) setReviewing(null)
       for (const image of images) if (image.folder === id) forget(image.id)
-      forgetTerms(id)
-      forgetStory(id)
-      forgetBible(id)
       dropFolder(id)
     },
     [
@@ -798,9 +672,6 @@ function App() {
       reviewing,
       images,
       forget,
-      forgetTerms,
-      forgetStory,
-      forgetBible,
       dropFolder,
     ],
   )
@@ -811,9 +682,6 @@ function App() {
     clearMasks()
     clearCleaned()
     traced.clear()
-    clearTerms()
-    clearStories()
-    clearBibles()
     setLettering({})
     setAnalyses({})
     setActiveId(null)
@@ -824,9 +692,6 @@ function App() {
     clearMasks,
     clearCleaned,
     traced,
-    clearTerms,
-    clearStories,
-    clearBibles,
   ])
 
   const changeLettering = useCallback(
@@ -981,24 +846,6 @@ function App() {
           open={openFolder}
           onOpenFolder={setOpenFolder}
           onNewFolder={newFolder}
-          terms={openFolder ? (chapterTerms[openFolder] ?? []) : []}
-          story={openFolder ? (chapterStories[openFolder] ?? null) : null}
-          bible={openFolder ? (chapterBibles[openFolder] ?? null) : null}
-          onCorrect={(name, fact, value) =>
-            openFolder && correctStory(openFolder, name, fact, value)
-          }
-          onCorrectChapter={(field, value) =>
-            openFolder && correctBible(openFolder, field, value)
-          }
-          onCorrectTerm={(source, target) =>
-            openFolder && correctTerm(openFolder, source, target)
-          }
-          onForgetTerms={() => {
-            if (!openFolder) return
-            forgetTerms(openFolder)
-            forgetStory(openFolder)
-            forgetBible(openFolder)
-          }}
           activeId={active?.id ?? null}
           onOpen={setActiveId}
           onRemove={removeImage}
