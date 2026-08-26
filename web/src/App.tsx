@@ -505,10 +505,12 @@ function App() {
         if (text) set[line.index] = lines.laidOut(found, line.index, text)
       })
       setLettering((current) => ({ ...current, [page.id]: set }))
+      if (onBoard(page.id)) setTool('text')
       return true
     },
     [
       during,
+      onBoard,
       ollama.model,
       ollama.target,
       prompt,
