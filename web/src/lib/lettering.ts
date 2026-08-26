@@ -1,7 +1,7 @@
 
 import type { Analysis, Box, Lettering, Region } from './api'
 import { fitSize, originalSize, roomInCharacters } from './fit'
-import { insertAt, moveAt } from './order'
+import { insertAt } from './order'
 
 export type Lines = (Lettering | null)[]
 
@@ -49,14 +49,6 @@ function sizeAt(
   const block = analysis.detection.regions[index]
   if (!block) return null
   return sizeFor(text, box, analysis.texts?.[index] ?? '', block.box)
-}
-
-export function inserted(lines: Lines, at: number): Lines {
-  return insertAt(lines, at, null)
-}
-
-export function moved(lines: Lines, from: number, to: number): Lines {
-  return moveAt(lines, from, to)
 }
 
 export function withLine(

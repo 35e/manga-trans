@@ -1,4 +1,4 @@
-"""The HTTP API. An image goes up, boxes or a rendered page comes back.
+"""The HTTP API. An image goes up, boxes or a cleaned page comes back.
 
 Nothing is stored. Every endpoint's fields and behaviour are in README.md.
 """
@@ -47,19 +47,15 @@ def optionally(make: Callable[[], T]) -> Callable[[], T | None]:
     Tried once: a miss is remembered, being a missing file rather than anything
     that might be there next time.
     """
-    held: list[T | None] = []
-    get = lazily(make)
 
-    def maybe() -> T | None:
-        if not held:
-            try:
-                held.append(get())
-            except Exception as exc:  # noqa: BLE001
-                print(f"mangatrans: cleaning with telea instead of lama: {exc}")
-                held.append(None)
-        return held[0]
+    def tried() -> T | None:
+        try:
+            return make()
+        except Exception as exc:  # noqa: BLE001
+            print(f"mangatrans: cleaning with telea instead of lama: {exc}")
+            return None
 
-    return maybe
+    return lazily(tried)
 
 
 def page() -> Image.Image:
@@ -361,21 +357,14 @@ def png(image: Image.Image):
     return send_file(buffer, mimetype="image/png", download_name="page.png")
 
 
-def create_app(
-    font: str | None = None,
-    model: str | None = None,
-    ocr_model: str | None = None,
-    regions_model: str | None = None,
-    lama_model: str | None = None,
-) -> Flask:
+def create_app() -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD
-    font = font or os.environ.get("MANGA_TRANS_FONT")
 
-    regions_of = lazily(lambda: Regions(regions_model))
-    letters_of = lazily(lambda: Letters(model))
-    reader = lazily(lambda: Reader(ocr_model))
-    painter = optionally(lambda: inpaint.Lama(lama_model))
+    regions_of = lazily(Regions)
+    letters_of = lazily(Letters)
+    reader = lazily(Reader)
+    painter = optionally(inpaint.Lama)
 
     @app.errorhandler(Exception)
     def on_error(exc):
@@ -545,24 +534,5 @@ def create_app(
 
         marks = render.marked(image.size, boxes, mask)
         return png(render.hidden(image, marks, fill_in(), painter()))
-
-    @app.post("/api/render")
-    def overlay():
-        """The page back with every box hidden and its text set in its place.
-
-        `fill` defaults to white here, the other way round from /api/clean.
-        """
-        image = page()
-        regions = [
-            render.Region(
-                box=box_in(region.get("box"), image), text=str(region.get("text", ""))
-            )
-            for region in sent("regions")
-        ]
-        return png(
-            render.overlay(
-                image, regions, font, fill_in(render.WHITE_OUT), painter()
-            )
-        )
 
     return app

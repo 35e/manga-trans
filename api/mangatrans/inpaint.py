@@ -53,11 +53,6 @@ def model_path(explicit: str | None = None) -> str:
         return path
 
 
-def ensure_model(explicit: str | None = None) -> str:
-    """Fetch LaMa's weights (~206 MB) unless they are already there."""
-    return model_path(explicit)
-
-
 def patches(hole: np.ndarray, width: int, height: int) -> list[tuple[int, int, int, int]]:
     """The page cut into the pieces worth sending through, one per mark."""
     near = grown(hole, APART)

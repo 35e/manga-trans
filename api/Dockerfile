@@ -5,10 +5,9 @@ FROM python:3.12-slim-bookworm
 RUN printf 'Acquire::Retries "8";\nAcquire::http::Pipeline-Depth "0";\nAcquire::http::No-Cache "true";\n' \
         > /etc/apt/apt.conf.d/99robust
 
-# Runtime libs for opencv-python-headless, plus a font to letter with.
+# Runtime libs for opencv-python-headless.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        libglib2.0-0 libgomp1 fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -48,7 +47,7 @@ COPY mangatrans/__init__.py mangatrans/geometry.py mangatrans/languages.py \
      mangatrans/detect.py mangatrans/read.py mangatrans/inpaint.py /app/mangatrans/
 RUN if [ "$PREFETCH_MODEL" = "true" ]; then \
         python -c "from mangatrans.detect import ensure_model, ensure_regions; ensure_model(); ensure_regions()" \
-        && python -c "from mangatrans.inpaint import ensure_model; ensure_model()" \
+        && python -c "from mangatrans.inpaint import model_path; model_path()" \
         && python -c "from mangatrans.read import ensure_readers; ensure_readers()"; \
     fi
 

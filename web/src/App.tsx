@@ -42,7 +42,7 @@ import { stem } from './lib/images'
 import type { Lines } from './lib/lettering'
 import * as lines from './lib/lettering'
 import { mark } from './lib/mask'
-import { halves, insertionFor, movedIndex } from './lib/order'
+import { halves, insertAt, insertionFor, moveAt, movedIndex } from './lib/order'
 import * as blocks from './lib/regions'
 import type { Packed } from './lib/zip'
 import { pack } from './lib/zip'
@@ -387,7 +387,7 @@ function App() {
       }))
       setLettering((current) =>
         current[active.id]
-          ? { ...current, [active.id]: lines.inserted(current[active.id], at) }
+          ? { ...current, [active.id]: insertAt(current[active.id], at, null) }
           : current,
       )
       setSelected(at)
@@ -435,7 +435,7 @@ function App() {
         current[id] ? { ...current, [id]: blocks.moved(current[id], from, to) } : current,
       )
       setLettering((current) =>
-        current[id] ? { ...current, [id]: lines.moved(current[id], from, to) } : current,
+        current[id] ? { ...current, [id]: moveAt(current[id], from, to) } : current,
       )
       setSelected((now) => (now === null ? now : movedIndex(now, from, to)))
     },

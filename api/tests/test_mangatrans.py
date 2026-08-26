@@ -24,7 +24,6 @@ from mangatrans import (
     read,
     render,
     server,
-    split,
 )
 from mangatrans.detect import FREE, SPEECH, Block
 from mangatrans.geometry import Box
@@ -472,41 +471,6 @@ class TestCoverMask(unittest.TestCase):
         self.assertEqual(tuple(np.array(original)[0, 0]), DARK)
 
 
-class TestOverlay(unittest.TestCase):
-    box = Box(20, 20, 180, 120)
-
-    def rendered(self, text: str) -> np.ndarray:
-        out = render.overlay(page(), [render.Region(self.box, text)])
-        return patch(out, self.box)
-
-    def test_the_text_is_drawn_dark_on_the_white(self):
-        inside = self.rendered("HELLO THERE")
-        self.assertTrue((inside < 128).any(), "no lettering was drawn")
-        self.assertTrue((inside == 255).any(), "the box was not whited out")
-
-    def test_a_region_with_no_text_is_only_hidden(self):
-        self.assertTrue((self.rendered("   ") == 255).all())
-
-    def test_long_text_is_wrapped_onto_several_lines(self):
-        font = render.load_font(None, 20)
-        lines = render.wrap("one two three four five six seven", font, 60)
-        self.assertGreater(len(lines), 1)
-        self.assertTrue(all(line for line in lines))
-
-    def test_more_words_are_set_smaller(self):
-        draw = ImageDraw.Draw(page())
-        short = render.fit(draw, "HI", self.box, None)
-        long = render.fit(draw, "HI " * 40, self.box, None)
-        self.assertLess(long.font.size, short.font.size)
-
-    def test_text_that_cannot_fit_is_still_drawn(self):
-        draw = ImageDraw.Draw(page())
-        layout = render.fit(draw, "WAY TOO MANY WORDS " * 30, Box(0, 0, 24, 12), None)
-        self.assertFalse(layout.fits)
-        self.assertEqual(layout.font.size, render.FONT_MIN)
-        self.assertTrue((self.rendered("WAY TOO MANY WORDS " * 30) < 128).any())
-
-
 def ballooned(
     balloon: Box = Box(120, 60, 480, 300),
     column: Box = Box(285, 100, 315, 260),
@@ -693,180 +657,6 @@ def lettering(x: int, y: int, columns: int, rows: int, em: int = EM) -> list[Box
     ]
 
 
-def written(*groups: list[Box], size=(400, 400)) -> np.ndarray:
-    """A per-pixel text mask with every one of those glyphs set in it."""
-    mask = np.zeros((size[1], size[0]), bool)
-    for group in groups:
-        for glyph in group:
-            mask[glyph.y0 : glyph.y1, glyph.x0 : glyph.x1] = True
-    return mask
-
-
-def around(*groups: list[Box]) -> Box:
-    """The one box a detector would draw around all of them."""
-    every = [glyph for group in groups for glyph in group]
-    return Box(
-        min(g.x0 for g in every),
-        min(g.y0 for g in every),
-        max(g.x1 for g in every),
-        max(g.y1 for g in every),
-    )
-
-
-class TestSplit(unittest.TestCase):
-    """Cutting a block that holds two balloons back into one block each."""
-
-    def test_two_balloons_side_by_side_come_apart(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 2 * EM + 3 * EM, 30, 2, 5)
-        pieces = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(len(pieces), 2)
-
-    def test_two_balloons_one_above_the_other_come_apart(self):
-        one = lettering(20, 20, 2, 4)
-        other = lettering(30, 20 + 4 * EM + 3 * EM, 2, 4)
-        pieces = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(len(pieces), 2)
-
-    def test_three_run_together_come_apart_into_three(self):
-        groups = [lettering(20 + i * 5 * EM, 20, 2, 4) for i in range(3)]
-        pieces = split.pieces(written(*groups), around(*groups))
-        self.assertEqual(len(pieces), 3)
-
-    def test_the_columns_of_one_balloon_are_left_alone(self):
-        one = lettering(20, 20, 5, 6)
-        box = around(one)
-        self.assertEqual(split.pieces(written(one), box), [box])
-
-    def test_a_single_column_is_left_alone(self):
-        one = lettering(20, 20, 1, 10)
-        box = around(one)
-        self.assertEqual(split.pieces(written(one), box), [box])
-
-    def test_a_lone_line_needs_a_wider_gap_than_a_block_of_several(self):
-        """The rule that makes a gap this small safe to cut on at all."""
-        gap = EM
-
-        alone = lettering(20, 20, 1, 5) + lettering(20, 20 + 5 * EM + gap, 1, 5)
-        self.assertEqual(
-            split.pieces(written(alone), around(alone)),
-            [around(alone)],
-            "a single column was cut at the gap between two characters",
-        )
-
-        several = lettering(20, 20, 3, 5) + lettering(20, 20 + 5 * EM + gap, 3, 5)
-        self.assertEqual(
-            len(split.pieces(written(several), around(several))),
-            2,
-            "three columns falling blank at once is a wall and was not cut",
-        )
-
-    def test_lettering_too_close_to_cut_on_its_gap_still_comes_apart_when_staggered(
-        self,
-    ):
-        """Text set at different heights was never one block, however close."""
-        ink = round(EM * 0.85)
-        gap = round(EM * 0.55)
-        near = 20 + EM + ink + gap
-
-        one = lettering(20, 20, 2, 5)
-        alongside = lettering(near, 20, 2, 5)
-        self.assertEqual(
-            split.pieces(written(one, alongside), around(one, alongside)),
-            [around(one, alongside)],
-            "text starting at the same height was cut apart on the gap alone",
-        )
-
-        lower = lettering(near, 20 + round(EM * 1.5), 2, 5)
-        self.assertEqual(
-            len(split.pieces(written(one, lower), around(one, lower))),
-            2,
-            "text starting at a different height was left as one block",
-        )
-
-    def test_a_column_that_stops_early_is_not_a_second_block(self):
-        short = lettering(20, 20, 1, 5) + lettering(20 + EM, 20, 1, 2)
-        self.assertEqual(
-            split.pieces(written(short), around(short)), [around(short)]
-        )
-
-    def test_columns_centred_against_each_other_are_not_two_blocks(self):
-        long_one = lettering(20, 20, 1, 8)
-        middle = lettering(20 + EM, 20 + 3 * EM, 1, 2)
-        both = long_one + middle
-        self.assertEqual(split.pieces(written(both), around(both)), [around(both)])
-
-    def test_two_balloons_a_character_apart_come_apart(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 2 * EM + EM, 25, 2, 5)
-        pieces = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(len(pieces), 2)
-
-    def test_a_block_that_holds_one_balloon_is_handed_back_untouched(self):
-        one = lettering(20, 20, 3, 4)
-        box = Box(10, 10, 200, 200)
-        self.assertEqual(split.pieces(written(one), box), [box])
-
-    def test_each_piece_is_boxed_around_its_own_lettering(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 5 * EM, 30, 2, 5)
-        first, second = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(first, around(one))
-        self.assertEqual(second, around(other))
-
-    def test_no_piece_reaches_outside_the_block_it_came_from(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 5 * EM, 30, 2, 5)
-        box = around(one, other)
-        for piece in split.pieces(written(one, other), box):
-            self.assertEqual(piece, piece.clipped(box.x1, box.y1))
-            self.assertGreaterEqual(piece.x0, box.x0)
-            self.assertGreaterEqual(piece.y0, box.y0)
-
-    def test_a_block_with_nothing_written_in_it_is_left_alone(self):
-        box = Box(10, 10, 100, 100)
-        self.assertEqual(split.pieces(written(), box), [box])
-
-    def test_a_wider_gap_wins_over_a_narrower_one(self):
-        left = lettering(20, 20, 2, 3)
-        right = lettering(20 + 6 * EM, 20, 2, 3)
-        below = lettering(20, 20 + 3 * EM + 4 * EM, 2, 3)
-        pieces = split.pieces(written(left, right, below), around(left, right, below))
-        self.assertEqual(len(pieces), 3)
-
-    def test_the_gap_is_measured_in_characters_not_pixels(self):
-        for em in (EM, EM * 2):
-            one = lettering(20, 20, 2, 4, em)
-            other = lettering(20 + 5 * em, 20, 2, 4, em)
-            pieces = split.pieces(
-                written(one, other, size=(600, 600)), around(one, other)
-            )
-            self.assertEqual(len(pieces), 2, f"at {em}px to the character")
-
-
-class TestCharacter(unittest.TestCase):
-    """Reading the size of one character off the ink."""
-
-    def test_it_lands_near_the_size_the_lettering_was_set_at(self):
-        mask = written(lettering(20, 20, 4, 6))
-        found = split.character(mask[20:20 + 6 * EM, 20:20 + 4 * EM])
-        self.assertGreater(found, EM * 0.6)
-        self.assertLessEqual(found, EM)
-
-    def test_punctuation_does_not_drag_it_down(self):
-        column = lettering(20, 20, 1, 10)
-        small = [Box(g.x0, g.y0, g.x0 + 4, g.y0 + 4) for g in column[:5]]
-        mask = written(column[5:], small)
-        found = split.character(mask[20 : 20 + 10 * EM, 20 : 20 + EM])
-        self.assertGreater(found, EM * 0.6, "the marks were read as tiny")
-
-    def test_characters_set_solid_enough_to_touch_do_not_read_as_one_long_mark(self):
-        column = [Box(20, 20 + r * EM, 20 + EM, 20 + (r + 1) * EM) for r in range(8)]
-        mask = written(column)
-        found = split.character(mask[20 : 20 + 8 * EM, 20 : 20 + EM])
-        self.assertLessEqual(found, EM * 1.5)
-
-
 class TestRegionBlocks(unittest.TestCase):
     """The wiring in Regions.__call__: decode, pad, tell the classes apart, sort."""
 
@@ -972,53 +762,6 @@ class TestRegionBlocks(unittest.TestCase):
         self.assertLess(found[0].box.x0, found[1].box.x0)
 
 
-class TestStaggered(unittest.TestCase):
-    """Whether the two sides of a cut were set as one block or two."""
-
-    def sides(self, first: Box, second: Box) -> np.ndarray:
-        mask = np.zeros((200, 200), bool)
-        for box in (first, second):
-            mask[box.y0 : box.y1, box.x0 : box.x1] = True
-        return mask
-
-    def test_the_same_height_is_not_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(50, 10, 70, 100))
-        self.assertFalse(split.staggered(mask, 0, 40, 20))
-
-    def test_shifted_the_same_way_at_both_ends_is_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(50, 40, 70, 130))
-        self.assertTrue(split.staggered(mask, 0, 40, 20))
-
-    def test_one_lying_inside_the_other_is_not_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 150), Box(50, 50, 70, 110))
-        self.assertFalse(split.staggered(mask, 0, 40, 20))
-
-    def test_a_shift_smaller_than_a_character_is_not_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(50, 12, 70, 102))
-        self.assertFalse(split.staggered(mask, 0, 40, 20))
-
-    def test_it_reads_across_the_cut_whichever_way_that_runs(self):
-        mask = self.sides(Box(10, 10, 100, 30), Box(40, 50, 130, 70))
-        self.assertTrue(split.staggered(mask, 1, 40, 20))
-
-    def test_a_side_with_nothing_on_it_is_no_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(12, 10, 28, 100))
-        self.assertFalse(split.staggered(mask, 0, 150, 20))
-
-
-class TestBlanks(unittest.TestCase):
-    def test_every_run_between_two_marks_is_found(self):
-        profile = np.array([1, 0, 0, 1, 0, 1, 1], bool)
-        self.assertEqual(split.blanks(profile), [(1, 2), (4, 1)])
-
-    def test_blank_at_either_end_is_no_run(self):
-        profile = np.array([0, 0, 1, 1, 0, 0], bool)
-        self.assertEqual(split.blanks(profile), [])
-
-    def test_nothing_written_is_no_run(self):
-        self.assertEqual(split.blanks(np.zeros(10, bool)), [])
-
-
 class TestKeptPass(unittest.TestCase):
     """The last page's forward pass is kept, because it is asked for twice."""
 
@@ -1108,33 +851,6 @@ class TestKeptPass(unittest.TestCase):
         made.run(self.page(0))
         made.run(self.page(7))
         self.assertEqual(made.passes, 2)
-
-
-class TestWidestBlank(unittest.TestCase):
-    def test_it_finds_the_run_between_two_marks(self):
-        profile = np.array([1, 1, 0, 0, 0, 1, 1], bool)
-        self.assertEqual(split.widest_blank(profile), (2, 3))
-
-    def test_blank_at_either_end_is_only_slack_in_the_box(self):
-        profile = np.array([0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0], bool)
-        self.assertEqual(split.widest_blank(profile), (6, 1))
-
-    def test_nothing_written_is_no_run(self):
-        self.assertEqual(split.widest_blank(np.zeros(10, bool)), (0, 0))
-
-    def test_one_mark_on_its_own_is_no_run(self):
-        profile = np.array([0, 1, 0], bool)
-        self.assertEqual(split.widest_blank(profile), (0, 0))
-
-
-class TestInked(unittest.TestCase):
-    def test_it_boxes_everything_written(self):
-        mask = np.zeros((40, 50), bool)
-        mask[10:20, 5:25] = True
-        self.assertEqual(split.inked(mask), Box(5, 10, 25, 20))
-
-    def test_nothing_written_has_no_box(self):
-        self.assertIsNone(split.inked(np.zeros((10, 10), bool)))
 
 
 class TestSuppressed(unittest.TestCase):
@@ -2993,45 +2709,6 @@ class TestApi(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("JSON", response.json["error"])
-
-    def test_render_sets_the_text_in_the_box(self):
-        response = client().post(
-            "/api/render",
-            data=payload(
-                page(), regions=[{"box": [20, 20, 180, 120], "text": "HELLO THERE"}]
-            ),
-        )
-        self.assertEqual(response.status_code, 200)
-        inside = patch(opened(response), Box(20, 20, 180, 120))
-        self.assertTrue((inside < 128).any())
-        self.assertTrue((inside == 255).any())
-
-    def test_render_gives_the_new_text_a_clear_ground_unasked(self):
-        response = client().post(
-            "/api/render",
-            data=payload(toned(), regions=[{"box": INK.as_list(), "text": "HI"}]),
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue((patch(opened(response), INK) == 255).any())
-
-    def test_render_can_fill_from_the_art_when_asked(self):
-        response = client().post(
-            "/api/render",
-            data=payload(
-                toned(), regions=[{"box": INK.as_list(), "text": "HI"}], fill="art"
-            ),
-        )
-        self.assertEqual(response.status_code, 200)
-        inside = patch(opened(response), INK)
-        self.assertFalse((inside == 255).any(), "the box was whited out")
-        self.assertTrue((inside < 128).any(), "no lettering was drawn")
-
-    def test_render_rejects_a_region_without_a_box(self):
-        response = client().post(
-            "/api/render", data=payload(page(), regions=[{"text": "HELLO"}])
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("box", response.json["error"])
 
     def test_models_are_listed(self):
         with mock.patch.object(
