@@ -61,15 +61,14 @@ def ensure_model(explicit: str | None = None) -> str:
 def patches(hole: np.ndarray, width: int, height: int) -> list[tuple[int, int, int, int]]:
     """The page cut into the pieces worth sending through, one per mark."""
     near = grown(hole, APART)
-    count, labels = cv2.connectedComponents((near > 0).astype(np.uint8), connectivity=8)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(
+        cv2.compare(near, 0, cv2.CMP_GT), connectivity=8
+    )
 
     found = []
-    for mark in range(1, count):
-        ys, xs = np.nonzero(labels == mark)
-        if not len(xs):
-            continue
-        x0, x1 = int(xs.min()), int(xs.max()) + 1
-        y0, y1 = int(ys.min()), int(ys.max()) + 1
+    for x0, y0, wide, tall, _ in stats[1:]:
+        x0, y0, wide, tall = map(int, (x0, y0, wide, tall))
+        x1, y1 = x0 + wide, y0 + tall
         room = max(LEAST, round(CONTEXT * max(x1 - x0, y1 - y0)))
         found.append(
             (
@@ -171,13 +170,15 @@ def fill(image: Image.Image, mask: Image.Image, painter=None) -> Image.Image:
     if not marks.any():
         return Image.fromarray(page, "RGB")
 
-    hole = grown(((marks > 0) * 255).astype(np.uint8), EDGE)
+    hole = grown(cv2.compare(marks, 0, cv2.CMP_GT), EDGE)
 
     if hole.all():
         filled = np.full_like(page, 255)
     else:
         filled = (painter or telea)(page, hole)
 
-    lay = (marks / 255.0)[:, :, None]
-    out = page * (1.0 - lay) + filled * lay
-    return Image.fromarray(out.round().astype(np.uint8), "RGB")
+    return Image.composite(
+        Image.fromarray(filled, "RGB"),
+        Image.fromarray(page, "RGB"),
+        Image.fromarray(marks, "L"),
+    )

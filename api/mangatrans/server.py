@@ -47,19 +47,15 @@ def optionally(make: Callable[[], T]) -> Callable[[], T | None]:
     Tried once: a miss is remembered, being a missing file rather than anything
     that might be there next time.
     """
-    held: list[T | None] = []
-    get = lazily(make)
 
-    def maybe() -> T | None:
-        if not held:
-            try:
-                held.append(get())
-            except Exception as exc:  # noqa: BLE001
-                print(f"mangatrans: cleaning with telea instead of lama: {exc}")
-                held.append(None)
-        return held[0]
+    def make_or_none() -> T | None:
+        try:
+            return make()
+        except Exception as exc:  # noqa: BLE001
+            print(f"mangatrans: cleaning with telea instead of lama: {exc}")
+            return None
 
-    return maybe
+    return lazily(make_or_none)
 
 
 def page() -> Image.Image:
@@ -315,7 +311,7 @@ def box_in(values, image: Image.Image) -> Box:
     """One [x0, y0, x1, y1] from a request, clipped to the page."""
     try:
         box = Box.from_list(values)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise BadRequest(f"not a box: {values!r}") from exc
     return box.clipped(image.width, image.height)
 
@@ -331,19 +327,18 @@ def mask_in(image: Image.Image) -> Image.Image | None:
         return None
     try:
         sent_mask = Image.open(upload.stream)
+        if sent_mask.size != image.size:
+            raise BadRequest(
+                f"the mask is {sent_mask.width}×{sent_mask.height} "
+                f"but the page is {image.width}×{image.height}"
+            )
         sent_mask.load()
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise BadRequest(f"the mask is not a usable image: {exc}") from exc
 
     alpha = sent_mask.getchannel("A") if "A" in sent_mask.getbands() else None
     shaped = alpha is not None and alpha.getextrema()[0] < 255
-    mask = alpha if shaped else sent_mask.convert("L")
-    if mask.size != image.size:
-        raise BadRequest(
-            f"the mask is {mask.width}×{mask.height} "
-            f"but the page is {image.width}×{image.height}"
-        )
-    return mask
+    return alpha if shaped else sent_mask.convert("L")
 
 
 def fill_in(default: str = render.ART) -> str:
@@ -356,7 +351,7 @@ def fill_in(default: str = render.ART) -> str:
 
 def png(image: Image.Image):
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=True)
+    image.save(buffer, format="PNG", compress_level=1)
     buffer.seek(0)
     return send_file(buffer, mimetype="image/png", download_name="page.png")
 
@@ -377,11 +372,17 @@ def create_app(
     reader = lazily(lambda: Reader(ocr_model))
     painter = optionally(lambda: inpaint.Lama(lama_model))
 
+    @app.errorhandler(HTTPException)
+    def on_http_error(exc):
+        response = exc.get_response()
+        response.data = json.dumps({"error": exc.description})
+        response.content_type = "application/json"
+        return response
+
     @app.errorhandler(Exception)
     def on_error(exc):
-        if isinstance(exc, HTTPException):
-            return jsonify(error=exc.description), exc.code
-        return jsonify(error=str(exc) or type(exc).__name__), 500
+        app.logger.exception("Unhandled exception")
+        return jsonify(error="internal server error"), 500
 
     @app.after_request
     def allow_origin(response):

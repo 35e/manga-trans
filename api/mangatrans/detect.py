@@ -147,7 +147,7 @@ def page_mask(
         : max(1, round(seg_w * (INPUT_SIZE - pad_w) / INPUT_SIZE)),
     ]
     full = cv2.resize(kept, (width, height), interpolation=cv2.INTER_LINEAR)
-    mask = ((full > SEG_THRESHOLD) * 255).astype(np.uint8)
+    mask = cv2.compare(full, SEG_THRESHOLD, cv2.CMP_GT)
 
     spread = round(grow * max(width, height) / INPUT_SIZE)
     if spread > 0:
@@ -219,7 +219,7 @@ class Regions:
             )
         self.answers = [tensor.name for tensor in self.session.get_outputs()]
         self._lock = threading.Lock()
-        self._last: tuple[bytes, tuple] | None = None
+        self._last: tuple[tuple[tuple[int, ...], bytes], tuple] | None = None
 
     def run(self, image) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """One pass: the classes, the boxes and the scores, in the page's pixels.
@@ -228,7 +228,10 @@ class Regions:
         other way round returns the same balloons transposed.
         """
         page = np.ascontiguousarray(image)
-        key = hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest()
+        key = (
+            page.shape,
+            hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest(),
+        )
 
         with self._lock:
             if self._last is not None and self._last[0] == key:
@@ -291,7 +294,7 @@ class Letters:
         path = ensure_model(str(weights) if weights else None)
         self.net = cv2.dnn.readNetFromONNX(str(path))
         self._lock = threading.Lock()
-        self._last: tuple[bytes, tuple] | None = None
+        self._last: tuple[tuple[tuple[int, ...], bytes], tuple] | None = None
 
     def run(self, image):
         """One pass: the per-pixel text map and the padding put on to get it.
@@ -300,7 +303,10 @@ class Letters:
         asked for, so they are told apart by shape rather than by position.
         """
         page = np.ascontiguousarray(image)
-        key = hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest()
+        key = (
+            page.shape,
+            hashlib.blake2b(page, digest_size=16, key=b"mangatrans").digest(),
+        )
 
         with self._lock:
             if self._last is not None and self._last[0] == key:

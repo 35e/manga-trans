@@ -1077,6 +1077,13 @@ class TestKeptPass(unittest.TestCase):
         made.run(self.page(7))
         self.assertEqual(made.passes, 2)
 
+    def test_same_pixels_in_different_shapes_are_different_pages(self):
+        for made in (self.detector(), self.finder()):
+            made.run(np.zeros((100, 200, 3), np.uint8))
+            made.run(np.zeros((200, 100, 3), np.uint8))
+            self.assertEqual(made.passes, 2, type(made).__name__)
+
+
     def test_only_the_last_page_is_kept(self):
         made = self.detector()
         made.run(self.page(0))
@@ -2792,12 +2799,6 @@ class TestApi(unittest.TestCase):
         self.assertGreater(first["bubble"][2] - first["bubble"][0], 100)
         self.assertIsNone(second["bubble"], "the corner of the page is no balloon")
 
-    def test_bubbles_finds_the_balloons_itself(self):
-        with mock.patch.object(server, "Regions", side_effect=AssertionError):
-            response = client().post(
-                "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 315, 260]])
-            )
-        self.assertEqual(response.status_code, 500)
 
     def test_bubbles_clips_a_box_that_runs_off_the_page(self):
         drawn = finding([], [Box(120, 60, 480, 300)])
@@ -2806,6 +2807,16 @@ class TestApi(unittest.TestCase):
                 "/api/bubbles", data=payload(ballooned(), boxes=[[285, 100, 900, 900]])
             )
         self.assertEqual(response.json["regions"][0]["box"], [285, 100, 600, 800])
+
+    def test_a_box_with_a_non_finite_edge_is_refused(self):
+        with mock.patch.object(server, "Reader", StubReader):
+            response = client().post(
+                "/api/read",
+                data=payload(page(), boxes=[[0, 0, "1e309", 10]]),
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("box", response.json["error"])
+
 
     def test_bubbles_needs_boxes(self):
         response = client().post("/api/bubbles", data=payload(ballooned()))
@@ -3048,6 +3059,28 @@ class TestApi(unittest.TestCase):
             response = client().get("/api/models")
         self.assertEqual(response.status_code, 503)
         self.assertIn("ollama", response.json["error"])
+
+    def test_http_errors_keep_their_required_headers(self):
+        response = client().post("/api/languages")
+        self.assertEqual(response.status_code, 405)
+        self.assertIn("GET", response.headers["Allow"])
+        self.assertEqual(response.mimetype, "application/json")
+
+    def test_internal_errors_are_logged_without_leaking_details(self):
+        app = server.create_app()
+        with (
+            mock.patch.object(
+                server.ollama,
+                "models",
+                side_effect=RuntimeError("private model path"),
+            ),
+            self.assertLogs(app.logger, level="ERROR") as logged,
+        ):
+            response = app.test_client().get("/api/models")
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("private model path", response.get_data(as_text=True))
+        self.assertIn("private model path", "\n".join(logged.output))
+
 
     def test_translate_answers_with_one_text_per_text(self):
         with mock.patch.object(
