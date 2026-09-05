@@ -1256,7 +1256,7 @@ class TestLlamaCpp(unittest.TestCase):
             self.assertTrue(said.startswith("Mine."), said)
 
     def test_where_llama_cpp_is_can_be_said(self):
-        self.assertEqual(llamacpp.base("http://elsewhere:8081/"), "http://elsewhere:8081")
+        self.assertEqual(llamacpp.base("http://elsewhere:9931/"), "http://elsewhere:9931")
 
 
 class TestSaidAboutEachLine(unittest.TestCase):
@@ -1401,12 +1401,12 @@ class TestLlamaCppHost(unittest.TestCase):
         return mock.patch.object(llamacpp, "ask", ask)
 
     def test_the_host_that_answers_is_the_one_used(self):
-        with self.answering("http://host.docker.internal:8081"):
-            self.assertEqual(llamacpp.base(), "http://host.docker.internal:8081")
+        with self.answering("http://host.docker.internal:9931"):
+            self.assertEqual(llamacpp.base(), "http://host.docker.internal:9931")
 
     def test_every_usual_place_is_tried(self):
-        with self.answering("http://host.containers.internal:8081"):
-            self.assertEqual(llamacpp.base(), "http://host.containers.internal:8081")
+        with self.answering("http://host.containers.internal:9931"):
+            self.assertEqual(llamacpp.base(), "http://host.containers.internal:9931")
         self.assertEqual(self.asked, list(llamacpp.LLAMA_CPP_HOSTS))
 
     def test_the_one_that_answered_is_not_looked_for_again(self):
@@ -1431,10 +1431,10 @@ class TestLlamaCppHost(unittest.TestCase):
 
     def test_a_host_that_was_set_is_never_looked_for(self):
         with mock.patch.dict(
-            os.environ, {llamacpp.LLAMA_CPP_ENV: "http://said:8081/"}
+            os.environ, {llamacpp.LLAMA_CPP_ENV: "http://said:9931/"}
         ):
             with self.answering(*llamacpp.LLAMA_CPP_HOSTS):
-                self.assertEqual(llamacpp.base(), "http://said:8081")
+                self.assertEqual(llamacpp.base(), "http://said:9931")
         self.assertEqual(self.asked, [], "it went looking anyway")
 
 

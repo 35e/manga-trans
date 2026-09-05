@@ -16,9 +16,9 @@ from dataclasses import dataclass, replace
 LLAMA_CPP_ENV = "MANGA_TRANS_LLAMA_CPP"
 
 LLAMA_CPP_HOSTS = (
-    "http://localhost:8081",
-    "http://host.docker.internal:8081",
-    "http://host.containers.internal:8081",
+    "http://localhost:9931",
+    "http://host.docker.internal:9931",
+    "http://host.containers.internal:9931",
 )
 
 TARGET_DEFAULT = "English"
