@@ -1,8 +1,8 @@
-"""Translating the lettering with a model running under Ollama.
+"""Translating the lettering with a model running under llama.cpp.
 
 The whole page goes over in one request, held to a JSON schema so the answers
 come back countable; :func:`survey` reads a chapter first, a window at a time,
-so a page can be translated against all of it. See DOCS.md.
+so a page can be translated against all of it.
 """
 
 from __future__ import annotations
@@ -14,22 +14,19 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 
-OLLAMA_ENV = "MANGA_TRANS_OLLAMA"
+LLAMA_CPP_ENV = "MANGA_TRANS_LLAMA_CPP"
 
-OLLAMA_HOSTS = (
-    "http://localhost:11434",
-    "http://host.docker.internal:11434",
-    "http://host.containers.internal:11434",
+LLAMA_CPP_HOSTS = (
+    "http://localhost:8081",
+    "http://host.docker.internal:8081",
+    "http://host.containers.internal:8081",
 )
-OLLAMA_DEFAULT = OLLAMA_HOSTS[0]
 
 TARGET_DEFAULT = "English"
 SOURCE_DEFAULT = "Japanese"
 TIMEOUT = 600
 LISTING_TIMEOUT = 15
 FINDING_TIMEOUT = 5
-
-CONTEXT = 12288
 
 PREDICT = 4096
 
@@ -87,8 +84,6 @@ SCENE_LIMIT = 600
 CAST_LIMIT = 12
 
 CAST_NOTE_LIMIT = 200
-
-SURVEY_CONTEXT = 16384
 
 SYNOPSIS_LIMIT = 1200
 REGISTER_LIMIT = 200
@@ -252,7 +247,7 @@ class Chapter:
 
 
 class Unreachable(RuntimeError):
-    """Ollama is not answering where it was expected to be."""
+    """llama.cpp is not answering where it was expected to be."""
 
 
 _answering: str | None = None
@@ -260,36 +255,32 @@ _finding = threading.Lock()
 
 
 def base(explicit: str | None = None) -> str:
-    """Where Ollama is: the one asked for, the one set, else wherever it answers."""
-    said = explicit or os.environ.get(OLLAMA_ENV)
+    """Where llama.cpp is: the one asked for, set, or found."""
+    said = explicit or os.environ.get(LLAMA_CPP_ENV)
     return said.rstrip("/") if said else answering()
 
 
 def answering() -> str:
-    """The first of the usual places Ollama answers at, kept once one does.
-
-    Only a hit is remembered: Ollama is as often started after the dashboard as
-    before it, so a miss must not settle the question for the life of the process.
-    """
+    """The first usual llama.cpp address that answers, cached after a hit."""
     global _answering
     with _finding:
         if _answering:
             return _answering
-        for host in OLLAMA_HOSTS:
+        for host in LLAMA_CPP_HOSTS:
             try:
-                ask("/api/tags", timeout=FINDING_TIMEOUT, host=host)
+                ask("/models", timeout=FINDING_TIMEOUT, host=host)
             except Unreachable:
                 continue
             _answering = host
             return host
     raise Unreachable(
-        f"no ollama answering at any of {', '.join(OLLAMA_HOSTS)} — "
-        f"start it, or set {OLLAMA_ENV} to say where it is"
+        f"no llama.cpp server answering at any of {', '.join(LLAMA_CPP_HOSTS)} — "
+        f"start llama-server, or set {LLAMA_CPP_ENV}"
     )
 
 
 def ask(path: str, body: dict | None = None, timeout: int = TIMEOUT, host=None) -> dict:
-    """One call to Ollama, GET when there is nothing to send."""
+    """One call to llama.cpp, GET when there is nothing to send."""
     where = base(host)
     request = urllib.request.Request(
         f"{where}{path}",
@@ -301,16 +292,32 @@ def ask(path: str, body: dict | None = None, timeout: int = TIMEOUT, host=None) 
             return json.load(answer)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
-        raise Unreachable(f"ollama at {where} answered {exc.code}: {detail}") from exc
+        raise Unreachable(
+            f"llama.cpp at {where} answered {exc.code}: {detail}"
+        ) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise Unreachable(f"no ollama answering at {where}: {exc}") from exc
+        raise Unreachable(f"no llama.cpp server answering at {where}: {exc}") from exc
+
+
+def completed(body: dict, host=None) -> dict:
+    """The assistant message from one OpenAI-compatible chat completion."""
+    completion = ask("/v1/chat/completions", body, host=host)
+    try:
+        message = completion["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise Unreachable("llama.cpp returned no chat completion") from exc
+    if not isinstance(message, dict):
+        raise Unreachable("llama.cpp returned an invalid chat completion")
+    return message
 
 
 def models(host=None) -> list[str]:
-    """Every model pulled on that Ollama, by name."""
-    listing = ask("/api/tags", timeout=LISTING_TIMEOUT, host=host)
+    """Every model llama.cpp currently offers, by identifier."""
+    listing = ask("/models", timeout=LISTING_TIMEOUT, host=host)
     return sorted(
-        model["name"] for model in listing.get("models", []) if model.get("name")
+        model["id"]
+        for model in listing.get("data", [])
+        if isinstance(model, dict) and model.get("id")
     )
 
 
@@ -332,12 +339,8 @@ def as_json(text: str):
 
 
 def answered(message: dict, key: str = "translations") -> dict | None:
-    """The whole answer out of one reply, translations and terms together.
-
-    Some Ollama builds put the whole answer under `thinking` rather than
-    `content`, so both are read.
-    """
-    for where in ("content", "thinking"):
+    """The structured answer from an OpenAI-compatible assistant message."""
+    for where in ("content", "reasoning_content"):
         found = as_json(message.get(where) or "")
         if isinstance(found, dict) and isinstance(found.get(key), list):
             return found
@@ -345,8 +348,10 @@ def answered(message: dict, key: str = "translations") -> dict | None:
 
 
 def text_of(message: dict) -> str:
-    """Whatever a reply said, wherever it filed it — see :func:`answered`."""
-    return (message.get("content") or message.get("thinking") or "").strip()
+    """Whatever a completion said, wherever llama.cpp filed it."""
+    return (
+        message.get("content") or message.get("reasoning_content") or ""
+    ).strip()
 
 
 def noted(reply: dict | None) -> list[dict]:
@@ -655,14 +660,19 @@ def request_for(
     return {
         "model": model,
         "stream": False,
-        "think": False,
-        "options": {
-            "temperature": 0.2,
-            "num_ctx": CONTEXT,
-            "repeat_penalty": 1.0,
-            "num_predict": PREDICT,
+        "temperature": 0.2,
+        "repeat_penalty": 1.0,
+        "max_tokens": PREDICT,
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "translation",
+                "strict": True,
+                "schema": SCHEMA,
+            },
         },
-        "format": SCHEMA,
         "messages": [
             {
                 "role": "system",
@@ -742,13 +752,12 @@ def one(
     body = request_for(
         [line], model, target, system, source, glossary, story, chapter, page
     )
-    sent = ask("/api/chat", body, host=host)
-    message = sent["message"]
+    message = completed(body, host)
     reply = answered(message)
     got = reply["translations"] if reply else None
     if got:
         return str(got[0]).strip()
-    return (message.get("content") or "").strip()
+    return text_of(message)
 
 
 @dataclass(frozen=True)
@@ -823,7 +832,7 @@ def translate(
     body = request_for(
         lines, model, target, system, source, glossary, story, chapter, page
     )
-    said = ask("/api/chat", body, host=host)["message"]
+    said = completed(body, host)
     reply = answered(said)
     got = counted(reply, len(lines))
     terms, after = noted(reply), storied(reply)
@@ -833,7 +842,7 @@ def translate(
         asked_again = corrected(
             body, said, MISCOUNTED.format(got=gave, wanted=len(lines))
         )
-        again = answered(ask("/api/chat", asked_again, host=host)["message"])
+        again = answered(completed(asked_again, host))
         got = counted(again, len(lines))
         terms = terms or noted(again)
         after = after or storied(again)
@@ -875,14 +884,19 @@ def survey_request_for(
     return {
         "model": model,
         "stream": False,
-        "think": False,
-        "options": {
-            "temperature": 0.2,
-            "num_ctx": SURVEY_CONTEXT,
-            "repeat_penalty": 1.0,
-            "num_predict": PREDICT,
+        "temperature": 0.2,
+        "repeat_penalty": 1.0,
+        "max_tokens": PREDICT,
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "chapter_survey",
+                "strict": True,
+                "schema": SURVEY_SCHEMA,
+            },
         },
-        "format": SURVEY_SCHEMA,
         "messages": [
             {
                 "role": "system",
@@ -920,7 +934,7 @@ def survey(
         return Chapter()
 
     body = survey_request_for(pages, model, target, system, source, chapter, first)
-    said = ask("/api/chat", body, host=host)["message"]
+    said = completed(body, host)
     reply = answered(said, "beats")
     beats = beaten(reply, len(pages))
     found = surveyed(reply)
@@ -930,7 +944,7 @@ def survey(
         asked_again = corrected(
             body, said, MISBEATEN.format(got=gave, wanted=len(pages))
         )
-        again = answered(ask("/api/chat", asked_again, host=host)["message"], "beats")
+        again = answered(completed(asked_again, host), "beats")
         beats = beaten(again, len(pages))
         if not (found.synopsis or found.register or found.cast or found.terms):
             found = surveyed(again)

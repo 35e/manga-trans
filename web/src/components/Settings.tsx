@@ -99,7 +99,7 @@ export function Settings({ onClose, prompt, fallback, onSave, apiBase, models }:
                 <dd className="truncate text-muted">{apiBase}</dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-faint">Models on its Ollama</dt>
+                <dt className="text-faint">Models on llama.cpp</dt>
                 <dd className="truncate text-muted">
                   {models.length > 0 ? models.join(', ') : 'none found'}
                 </dd>

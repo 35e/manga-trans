@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { models as listModels } from '../lib/api'
 
-export function useOllama() {
+export function useLlamaCpp() {
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')
   const [target, setTarget] = useState('English')
@@ -14,7 +14,7 @@ export function useOllama() {
         if (dropped) return
         setModels(found)
         setModel((chosen) => chosen || found[0] || '')
-        setProblem(found.length === 0 ? 'Ollama has no models pulled' : null)
+        setProblem(found.length === 0 ? 'llama.cpp has no models loaded' : null)
       },
       (cause: unknown) => {
         if (dropped) return

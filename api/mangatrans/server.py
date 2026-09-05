@@ -16,7 +16,7 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
 
-from . import bubble, inpaint, languages, ollama, render
+from . import bubble, inpaint, languages, llamacpp, render
 from .detect import GROW, GROW_MAX, KINDS, Letters, Regions
 from .geometry import Box
 from .read import Reader
@@ -93,7 +93,7 @@ def maybe_sent(field: str) -> list | None:
 def terms_in(glossary: list | None) -> list[dict] | None:
     """A glossary as it arrives, refused rather than half-read if it is malformed.
 
-    Strict where `ollama.noted` is lenient: that reads a model's answer, this
+    Strict where `llamacpp.noted` is lenient: that reads a model's answer, this
     reads a caller's request.
     """
     if glossary is None:
@@ -110,7 +110,7 @@ def terms_in(glossary: list | None) -> list[dict] | None:
         note = term.get("note")
         settled = {"source": source.strip(), "target": target.strip()}
         if isinstance(note, str) and note.strip():
-            settled["note"] = note.strip()[: ollama.NOTE_LIMIT]
+            settled["note"] = note.strip()[: llamacpp.NOTE_LIMIT]
         terms.append(settled)
     return terms
 
@@ -144,29 +144,29 @@ def people_in(cast, field: str) -> list[dict]:
         name = str(person.get("name") or "").strip()
         if not name:
             raise BadRequest(f"every one of '{field}.cast' needs a name")
-        gender = person.get("gender", ollama.UNKNOWN)
-        if gender not in ollama.GENDERS:
+        gender = person.get("gender", llamacpp.UNKNOWN)
+        if gender not in llamacpp.GENDERS:
             raise BadRequest(
-                f"a cast gender must be one of: {', '.join(ollama.GENDERS)}"
+                f"a cast gender must be one of: {', '.join(llamacpp.GENDERS)}"
             )
         settled = person.get("settled") or []
         if not isinstance(settled, list) or any(
-            fact not in ollama.FACTS for fact in settled
+            fact not in llamacpp.FACTS for fact in settled
         ):
             raise BadRequest(
-                f"'settled' must be a list of: {', '.join(ollama.FACTS)}"
+                f"'settled' must be a list of: {', '.join(llamacpp.FACTS)}"
             )
         people.append(
             {
                 "name": name,
                 "gender": gender,
                 "note": str(person.get("note") or "").strip()[
-                    : ollama.CAST_NOTE_LIMIT
+                    : llamacpp.CAST_NOTE_LIMIT
                 ],
                 "settled": settled,
             }
         )
-    return people[: ollama.CAST_LIMIT]
+    return people[: llamacpp.CAST_LIMIT]
 
 
 def story_in():
@@ -179,7 +179,7 @@ def story_in():
     if said is None:
         return None
     return {
-        "scene": str(said.get("scene") or "").strip()[: ollama.SCENE_LIMIT],
+        "scene": str(said.get("scene") or "").strip()[: llamacpp.SCENE_LIMIT],
         "cast": people_in(said.get("cast") or [], "previously"),
     }
 
@@ -197,11 +197,11 @@ def chapter_in():
     if not isinstance(beats, list):
         raise BadRequest("'chapter.beats' must be a list, one line per page")
     return {
-        "synopsis": str(said.get("synopsis") or "").strip()[: ollama.SYNOPSIS_LIMIT],
-        "register": str(said.get("register") or "").strip()[: ollama.REGISTER_LIMIT],
+        "synopsis": str(said.get("synopsis") or "").strip()[: llamacpp.SYNOPSIS_LIMIT],
+        "register": str(said.get("register") or "").strip()[: llamacpp.REGISTER_LIMIT],
         "beats": [
-            str(beat or "").strip()[: ollama.BEAT_LIMIT]
-            for beat in beats[: ollama.BEATS_LIMIT]
+            str(beat or "").strip()[: llamacpp.BEAT_LIMIT]
+            for beat in beats[: llamacpp.BEATS_LIMIT]
         ],
         "cast": people_in(said.get("cast") or [], "chapter"),
         "terms": terms_in(said.get("terms") or []) or [],
@@ -404,16 +404,16 @@ def create_app(
 
     @app.get("/api/models")
     def models():
-        """Every model Ollama has to translate with."""
+        """Every model llama.cpp has to translate with."""
         try:
-            return jsonify(models=ollama.models())
-        except ollama.Unreachable as exc:
+            return jsonify(models=llamacpp.models())
+        except llamacpp.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 
     @app.get("/api/prompt")
     def prompt():
         """What the model is told to do, unless a caller says otherwise."""
-        return jsonify(prompt=ollama.SYSTEM_DEFAULT, survey=ollama.SURVEY_DEFAULT)
+        return jsonify(prompt=llamacpp.SYSTEM_DEFAULT, survey=llamacpp.SURVEY_DEFAULT)
 
     @app.post("/api/translate")
     def translate():
@@ -422,15 +422,15 @@ def create_app(
         model = request.form.get("model", "").strip()
         if not model:
             raise BadRequest("nothing to translate with (form field 'model')")
-        target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
-        source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
+        target = request.form.get("target", "").strip() or llamacpp.TARGET_DEFAULT
+        source = request.form.get("source", "").strip() or llamacpp.SOURCE_DEFAULT
         system = request.form.get("system", "").strip() or None
         glossary = terms_in(maybe_sent("glossary"))
         kinds, budgets = kinds_in(texts), budgets_in(texts)
         story = story_in()
         chapter, page = chapter_in(), whole_in("page")
         try:
-            done = ollama.translate(
+            done = llamacpp.translate(
                 texts,
                 model,
                 target,
@@ -444,7 +444,7 @@ def create_app(
                 page=page,
             )
             return jsonify(texts=done.texts, terms=done.terms, story=done.story)
-        except ollama.Unreachable as exc:
+        except llamacpp.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 
     @app.post("/api/survey")
@@ -454,11 +454,11 @@ def create_app(
         model = request.form.get("model", "").strip()
         if not model:
             raise BadRequest("nothing to survey with (form field 'model')")
-        target = request.form.get("target", "").strip() or ollama.TARGET_DEFAULT
-        source = request.form.get("source", "").strip() or ollama.SOURCE_DEFAULT
+        target = request.form.get("target", "").strip() or llamacpp.TARGET_DEFAULT
+        source = request.form.get("source", "").strip() or llamacpp.SOURCE_DEFAULT
         system = request.form.get("system", "").strip() or None
         try:
-            found = ollama.survey(
+            found = llamacpp.survey(
                 pages,
                 model,
                 target,
@@ -476,7 +476,7 @@ def create_app(
                     "terms": found.terms,
                 }
             )
-        except ollama.Unreachable as exc:
+        except llamacpp.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 
     @app.post("/api/detect")

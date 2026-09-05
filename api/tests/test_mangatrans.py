@@ -20,7 +20,7 @@ from mangatrans import (
     detect,
     inpaint,
     languages,
-    ollama,
+    llamacpp,
     read,
     render,
     server,
@@ -1378,9 +1378,19 @@ class TestRooms(unittest.TestCase):
                 self.assertGreaterEqual(bubble.within(room, boxes[at]), 0.85)
 
 
-def reply(content: str = "", thinking: str = "") -> dict:
-    """One answer from Ollama, shaped the way it shapes them."""
-    return {"message": {"role": "assistant", "content": content, "thinking": thinking}}
+def reply(content: str = "", reasoning: str = "") -> dict:
+    """One llama.cpp answer, shaped as an OpenAI chat completion."""
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "reasoning_content": reasoning,
+                }
+            }
+        ]
+    }
 
 
 def translations(*texts) -> str:
@@ -1418,15 +1428,15 @@ def with_beats(
     return json.dumps(said)
 
 
-def person(name: str, gender: str = ollama.UNKNOWN, note: str = "") -> dict:
+def person(name: str, gender: str = llamacpp.UNKNOWN, note: str = "") -> dict:
     return {"name": name, "gender": gender, "note": note}
 
 
 def translated(
     texts: list[str], terms: list[dict] | None = None, story: dict | None = None
-) -> ollama.Translation:
-    """What `ollama.translate` hands the server back."""
-    return ollama.Translation(texts, terms or [], story or {})
+) -> llamacpp.Translation:
+    """What `llamacpp.translate` hands the server back."""
+    return llamacpp.Translation(texts, terms or [], story or {})
 
 
 def surveyed(
@@ -1435,18 +1445,18 @@ def surveyed(
     register: str = "",
     cast: list[dict] | None = None,
     terms: list[dict] | None = None,
-) -> ollama.Chapter:
-    """What `ollama.survey` hands the server back."""
-    return ollama.Chapter(beats or [], synopsis, register, cast or [], terms or [])
+) -> llamacpp.Chapter:
+    """What `llamacpp.survey` hands the server back."""
+    return llamacpp.Chapter(beats or [], synopsis, register, cast or [], terms or [])
 
 
-class TestOllama(unittest.TestCase):
-    """The talking to Ollama. Nothing here goes near the network."""
+class TestLlamaCpp(unittest.TestCase):
+    """The talking to llama.cpp. Nothing here goes near the network."""
 
     def test_models_come_back_named_and_sorted(self):
-        listing = {"models": [{"name": "qwen3:8b"}, {"name": "gemma4:12b"}]}
-        with mock.patch.object(ollama, "ask", return_value=listing):
-            self.assertEqual(ollama.models(), ["gemma4:12b", "qwen3:8b"])
+        listing = {"data": [{"id": "qwen3:8b"}, {"id": "gemma4:12b"}]}
+        with mock.patch.object(llamacpp, "ask", return_value=listing):
+            self.assertEqual(llamacpp.models(), ["gemma4:12b", "qwen3:8b"])
 
     def test_a_page_goes_over_in_one_request(self):
         asked = []
@@ -1455,24 +1465,24 @@ class TestOllama(unittest.TestCase):
             asked.append((path, body))
             return reply(translations("Good morning", "What is this?"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            got = ollama.translate(["おはよう", "なにこれ"], "gemma4:12b").texts
+        with mock.patch.object(llamacpp, "ask", ask):
+            got = llamacpp.translate(["おはよう", "なにこれ"], "gemma4:12b").texts
         self.assertEqual(got, ["Good morning", "What is this?"])
         self.assertEqual(len(asked), 1, "the lines were not sent together")
-        self.assertEqual(asked[0][0], "/api/chat")
+        self.assertEqual(asked[0][0], "/v1/chat/completions")
         self.assertIn("1. おはよう", asked[0][1]["messages"][1]["content"])
 
-    def test_the_answer_is_taken_from_thinking_when_content_is_empty(self):
+    def test_the_answer_is_taken_from_reasoning_when_content_is_empty(self):
         with mock.patch.object(
-            ollama, "ask", return_value=reply("", translations("Good morning"))
+            llamacpp, "ask", return_value=reply("", translations("Good morning"))
         ):
-            done = ollama.translate(["おはよう"], "m")
+            done = llamacpp.translate(["おはよう"], "m")
         self.assertEqual(done.texts, ["Good morning"])
 
     def test_a_fenced_answer_is_still_read(self):
         fenced = f"```json\n{translations('Good morning')}\n```"
-        with mock.patch.object(ollama, "ask", return_value=reply(fenced)):
-            done = ollama.translate(["おはよう"], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=reply(fenced)):
+            done = llamacpp.translate(["おはよう"], "m")
         self.assertEqual(done.texts, ["Good morning"])
 
     def test_a_miscounted_page_is_asked_again_whole(self):
@@ -1480,8 +1490,8 @@ class TestOllama(unittest.TestCase):
             reply(translations("only one")),
             reply(translations("first", "second")),
         ]
-        with mock.patch.object(ollama, "ask", side_effect=answers) as ask:
-            got = ollama.translate(["いち", "に"], "m").texts
+        with mock.patch.object(llamacpp, "ask", side_effect=answers) as ask:
+            got = llamacpp.translate(["いち", "に"], "m").texts
         self.assertEqual(got, ["first", "second"])
         self.assertEqual(ask.call_count, 2, "it did not simply ask again")
 
@@ -1492,8 +1502,8 @@ class TestOllama(unittest.TestCase):
             asked.append(body["messages"])
             return reply(translations("only one"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["いち", "に"], "m")
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(["いち", "に"], "m")
         again = asked[1]
         self.assertEqual(again[2]["role"], "assistant")
         self.assertIn("only one", again[2]["content"])
@@ -1506,22 +1516,11 @@ class TestOllama(unittest.TestCase):
             reply(translations("first")),
             reply(translations("second")),
         ]
-        with mock.patch.object(ollama, "ask", side_effect=answers) as ask:
-            got = ollama.translate(["いち", "に"], "m").texts
+        with mock.patch.object(llamacpp, "ask", side_effect=answers) as ask:
+            got = llamacpp.translate(["いち", "に"], "m").texts
         self.assertEqual(got, ["first", "second"])
         self.assertEqual(ask.call_count, 4, "it did not ask again line by line")
 
-    def test_the_context_is_asked_for(self):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body)
-            return reply(translations("Good morning"))
-
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["おはよう"], "m")
-        self.assertEqual(asked[0]["options"]["num_ctx"], ollama.CONTEXT)
-        self.assertGreater(ollama.CONTEXT, 4096)
 
     def test_an_empty_line_stays_empty_and_is_never_sent(self):
         def ask(path, body=None, **kwargs):
@@ -1533,20 +1532,20 @@ class TestOllama(unittest.TestCase):
             )
             return reply(translations("Good morning", "Let's go"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            got = ollama.translate(["おはよう", "   ", "行こう"], "m").texts
+        with mock.patch.object(llamacpp, "ask", ask):
+            got = llamacpp.translate(["おはよう", "   ", "行こう"], "m").texts
         self.assertEqual(got, ["Good morning", "", "Let's go"])
 
     def test_nothing_to_translate_asks_nothing(self):
-        with mock.patch.object(ollama, "ask", side_effect=AssertionError("asked")):
-            self.assertEqual(ollama.translate(["", "  "], "m"), translated(["", ""]))
+        with mock.patch.object(llamacpp, "ask", side_effect=AssertionError("asked")):
+            self.assertEqual(llamacpp.translate(["", "  "], "m"), translated(["", ""]))
 
     def test_the_briefing_says_what_to_translate_into(self):
-        self.assertIn("Dutch", ollama.briefing("Dutch"))
+        self.assertIn("Dutch", llamacpp.briefing("Dutch"))
 
     def test_the_briefing_says_what_the_page_was_written_in(self):
-        self.assertIn("Korean", ollama.briefing("Dutch", source="Korean"))
-        self.assertIn("Japanese", ollama.briefing("Dutch"))
+        self.assertIn("Korean", llamacpp.briefing("Dutch", source="Korean"))
+        self.assertIn("Japanese", llamacpp.briefing("Dutch"))
 
     def test_the_source_reaches_the_request(self):
         asked = []
@@ -1555,16 +1554,16 @@ class TestOllama(unittest.TestCase):
             asked.append(body["messages"][0]["content"])
             return reply(translations("Goedemorgen"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["안녕"], "m", "Dutch", source="Korean")
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(["안녕"], "m", "Dutch", source="Korean")
         self.assertIn("Korean", asked[0])
 
     def test_a_briefing_of_your_own_is_used_instead(self):
-        said = ollama.briefing("Dutch", "Turn this into {target}, in pirate.")
+        said = llamacpp.briefing("Dutch", "Turn this into {target}, in pirate.")
         self.assertEqual(said, "Turn this into Dutch, in pirate.")
 
     def test_a_briefing_may_have_braces_of_its_own(self):
-        said = ollama.briefing("Dutch", 'Answer like {"a": 1} but in {target}.')
+        said = llamacpp.briefing("Dutch", 'Answer like {"a": 1} but in {target}.')
         self.assertEqual(said, 'Answer like {"a": 1} but in Dutch.')
 
     def test_the_briefing_reaches_the_request(self):
@@ -1574,8 +1573,8 @@ class TestOllama(unittest.TestCase):
             asked.append(body["messages"][0]["content"])
             return reply(translations("Goedemorgen"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["おはよう"], "m", "Dutch", system="Be brief in {target}.")
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(["おはよう"], "m", "Dutch", system="Be brief in {target}.")
         self.assertTrue(asked[0].startswith("Be brief in Dutch."), asked[0])
 
     def test_the_briefing_holds_when_it_falls_back_to_one_at_a_time(self):
@@ -1587,59 +1586,59 @@ class TestOllama(unittest.TestCase):
                 translations("a line")
             )
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["いち", "に"], "m", "Dutch", system="Mine.")
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(["いち", "に"], "m", "Dutch", system="Mine.")
         self.assertEqual(len(asked), 4, "it did not ask again line by line")
         for said in asked:
             self.assertTrue(said.startswith("Mine."), said)
 
-    def test_where_ollama_is_can_be_said(self):
-        self.assertEqual(ollama.base("http://elsewhere:11434/"), "http://elsewhere:11434")
+    def test_where_llama_cpp_is_can_be_said(self):
+        self.assertEqual(llamacpp.base("http://elsewhere:8081/"), "http://elsewhere:8081")
 
 
 class TestSaidAboutEachLine(unittest.TestCase):
     """What the caller knows about a block and the model cannot see."""
 
     def asking(self, answer):
-        """Ollama patched to answer that, collecting the whole request."""
+        """llama.cpp patched to answer that, collecting the whole request."""
         asked = []
 
         def ask(path, body=None, **kwargs):
             asked.append(body["messages"])
             return answer
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def test_a_line_says_whether_it_is_spoken(self):
         asked, patched = self.asking(reply(translations("Morning", "THUD")))
         with patched:
-            ollama.translate(["おはよう", "ドン"], "m", kinds=[SPEECH, FREE])
+            llamacpp.translate(["おはよう", "ドン"], "m", kinds=[SPEECH, FREE])
         system, page = asked[0][0]["content"], asked[0][1]["content"]
         self.assertIn("1. [speech] おはよう", page)
         self.assertIn("2. [free] ドン", page)
-        self.assertIn(ollama.KINDS_NOTE, system)
+        self.assertIn(llamacpp.KINDS_NOTE, system)
 
     def test_a_line_says_how_much_room_it_has(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m", budgets=[28])
+            llamacpp.translate(["おはよう"], "m", budgets=[28])
         system, page = asked[0][0]["content"], asked[0][1]["content"]
         self.assertIn("1. <=28 おはよう", page)
-        self.assertIn(ollama.BUDGET_NOTE, system)
+        self.assertIn(llamacpp.BUDGET_NOTE, system)
 
     def test_a_line_with_nothing_said_about_it_is_sent_as_it_was(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m")
+            llamacpp.translate(["おはよう"], "m")
         system, page = asked[0][0]["content"], asked[0][1]["content"]
         self.assertEqual(page, "1. おはよう")
-        self.assertNotIn(ollama.KINDS_NOTE, system)
-        self.assertNotIn(ollama.BUDGET_NOTE, system)
+        self.assertNotIn(llamacpp.KINDS_NOTE, system)
+        self.assertNotIn(llamacpp.BUDGET_NOTE, system)
 
     def test_what_is_said_about_a_line_follows_a_blank_being_dropped(self):
         asked, patched = self.asking(reply(translations("Morning", "THUD")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう", "   ", "ドン"],
                 "m",
                 kinds=[SPEECH, SPEECH, FREE],
@@ -1654,7 +1653,7 @@ class TestSaidAboutEachLine(unittest.TestCase):
     def test_what_is_said_about_a_line_holds_when_it_is_asked_about_alone(self):
         asked, patched = self.asking(reply(translations("only one")))
         with patched:
-            ollama.translate(["おはよう", "ドン"], "m", kinds=[SPEECH, FREE])
+            llamacpp.translate(["おはよう", "ドン"], "m", kinds=[SPEECH, FREE])
         self.assertEqual(len(asked), 4)
         self.assertIn("1. [speech] おはよう", asked[2][1]["content"])
         self.assertIn("1. [free] ドン", asked[3][1]["content"])
@@ -1664,28 +1663,28 @@ class TestGlossary(unittest.TestCase):
     """Carrying a chapter's names from one page to the next."""
 
     def asking(self, *answers):
-        """Ollama patched to give these answers, collecting the system messages."""
+        """llama.cpp patched to give these answers, collecting the system messages."""
         asked = []
 
         def ask(path, body=None, **kwargs):
             asked.append(body["messages"][0]["content"])
             return answers[min(len(asked) - 1, len(answers) - 1)]
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def test_terms_come_back_beside_the_translations(self):
         named = [{"source": "タロウ", "target": "Taro"}]
         answer = reply(with_terms(["Taro is here"], named))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["タロウだ"], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["タロウだ"], "m")
         self.assertEqual(done.texts, ["Taro is here"])
         self.assertEqual(done.terms, named)
 
     def test_a_page_that_named_nothing_still_translates(self):
         with mock.patch.object(
-            ollama, "ask", return_value=reply(translations("Good morning"))
+            llamacpp, "ask", return_value=reply(translations("Good morning"))
         ):
-            done = ollama.translate(["おはよう"], "m")
+            done = llamacpp.translate(["おはよう"], "m")
         self.assertEqual(done.texts, ["Good morning"])
         self.assertEqual(done.terms, [])
 
@@ -1693,14 +1692,14 @@ class TestGlossary(unittest.TestCase):
         ragged = [{"source": "タロウ"}, {"target": "only"}, "nonsense", {}]
         kept = [{"source": "先輩", "target": "senpai"}]
         answer = reply(with_terms(["Morning"], ragged + kept))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
         self.assertEqual(done.terms, kept)
 
     def test_the_glossary_is_put_in_front_of_the_page(self):
         asked, patched = self.asking(reply(translations("Taro is here")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["タロウだ"],
                 "m",
                 glossary=[{"source": "タロウ", "target": "Taro"}],
@@ -1710,8 +1709,8 @@ class TestGlossary(unittest.TestCase):
     def test_a_page_with_no_glossary_is_not_told_about_one(self):
         asked, patched = self.asking(reply(translations("Good morning")))
         with patched:
-            ollama.translate(["おはよう"], "m")
-        self.assertNotIn(ollama.GLOSSARY_HEADING, asked[0])
+            llamacpp.translate(["おはよう"], "m")
+        self.assertNotIn(llamacpp.GLOSSARY_HEADING, asked[0])
 
     def test_a_glossary_holds_when_it_falls_back_to_one_at_a_time(self):
         asked, patched = self.asking(
@@ -1720,7 +1719,7 @@ class TestGlossary(unittest.TestCase):
             reply(translations("a line")),
         )
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["いち", "に"], "m", glossary=[{"source": "タロウ", "target": "Taro"}]
             )
         self.assertEqual(len(asked), 4, "it did not ask again line by line")
@@ -1735,8 +1734,8 @@ class TestGlossary(unittest.TestCase):
             reply(translations("first")),
             reply(translations("second")),
         ]
-        with mock.patch.object(ollama, "ask", side_effect=answers):
-            done = ollama.translate(["いち", "に"], "m")
+        with mock.patch.object(llamacpp, "ask", side_effect=answers):
+            done = llamacpp.translate(["いち", "に"], "m")
         self.assertEqual(done.texts, ["first", "second"])
         self.assertEqual(done.terms, named)
 
@@ -1746,8 +1745,8 @@ class TestGlossary(unittest.TestCase):
             reply(with_terms(["only one"], named)),
             reply(translations("first", "second")),
         ]
-        with mock.patch.object(ollama, "ask", side_effect=answers):
-            done = ollama.translate(["いち", "に"], "m")
+        with mock.patch.object(llamacpp, "ask", side_effect=answers):
+            done = llamacpp.translate(["いち", "に"], "m")
         self.assertEqual(done.texts, ["first", "second"])
         self.assertEqual(done.terms, named)
 
@@ -1755,15 +1754,15 @@ class TestGlossary(unittest.TestCase):
         many = [{"source": f"あ{at}", "target": f"A{at}"} for at in range(80)]
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m", glossary=many)
+            llamacpp.translate(["おはよう"], "m", glossary=many)
         self.assertIn("あ0 = A0", asked[0])
-        self.assertNotIn(f"あ{ollama.GLOSSARY_LIMIT} =", asked[0])
+        self.assertNotIn(f"あ{llamacpp.GLOSSARY_LIMIT} =", asked[0])
 
     def test_the_terms_note_is_said_whatever_the_prompt_is(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m", system="Pirate, please.")
-        self.assertIn(ollama.TERMS_NOTE, asked[0])
+            llamacpp.translate(["おはよう"], "m", system="Pirate, please.")
+        self.assertIn(llamacpp.TERMS_NOTE, asked[0])
 
 
 class TestSaidTwice(unittest.TestCase):
@@ -1776,19 +1775,19 @@ class TestSaidTwice(unittest.TestCase):
             asked.append(body["messages"][1]["content"])
             return answer
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def test_the_same_line_twice_is_one_question(self):
         asked, patched = self.sending(reply(translations("...", "Let's go")))
         with patched:
-            done = ollama.translate(["……", "行こう", "……"], "m")
+            done = llamacpp.translate(["……", "行こう", "……"], "m")
         self.assertEqual(asked[0].splitlines(), ["1. ……", "2. 行こう"])
         self.assertEqual(done.texts, ["...", "Let's go", "..."])
 
     def test_the_same_words_in_different_lettering_are_two_questions(self):
         asked, patched = self.sending(reply(translations("Wham!", "wham")))
         with patched:
-            done = ollama.translate(
+            done = llamacpp.translate(
                 ["ドン", "ドン"], "m", kinds=[FREE, SPEECH]
             )
         self.assertEqual(len(asked[0].splitlines()), 2)
@@ -1797,105 +1796,112 @@ class TestSaidTwice(unittest.TestCase):
     def test_the_tightest_room_of_the_two_is_the_one_asked_for(self):
         asked, patched = self.sending(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう", "おはよう"], "m", budgets=[40, 18])
+            llamacpp.translate(["おはよう", "おはよう"], "m", budgets=[40, 18])
         self.assertEqual(asked[0], "1. <=18 おはよう")
 
-    def test_a_page_is_not_pushed_to_vary_what_it_repeats(self):
+    def test_translation_uses_the_llama_cpp_completion_contract(self):
         asked = []
 
         def ask(path, body=None, **kwargs):
-            asked.append(body["options"])
+            asked.append((path, body))
             return reply(translations("Morning"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["おはよう"], "m")
-        self.assertEqual(asked[0]["repeat_penalty"], 1.0)
-        self.assertEqual(asked[0]["num_predict"], ollama.PREDICT)
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(["おはよう"], "m")
+        path, body = asked[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual(body["repeat_penalty"], 1.0)
+        self.assertEqual(body["max_tokens"], llamacpp.PREDICT)
+        self.assertEqual(body["reasoning_effort"], "none")
+        self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(
+            body["response_format"]["json_schema"]["schema"], llamacpp.SCHEMA
+        )
 
 
 class TestStory(unittest.TestCase):
     """Carrying what is going on from one page of a chapter to the next."""
 
     def asking(self, answer):
-        """Ollama patched to answer that, collecting the system messages."""
+        """llama.cpp patched to answer that, collecting the system messages."""
         asked = []
 
         def ask(path, body=None, **kwargs):
             asked.append(body["messages"][0]["content"])
             return answer
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def test_the_story_so_far_comes_back_beside_the_translations(self):
-        cast = [person("タロウ", ollama.MALE, "late for school")]
+        cast = [person("タロウ", llamacpp.MALE, "late for school")]
         answer = reply(with_story(["Taro is here"], "Taro has arrived late.", cast))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["タロウだ"], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["タロウだ"], "m")
         self.assertEqual(done.story["scene"], "Taro has arrived late.")
         self.assertEqual(done.story["cast"], cast)
 
     def test_a_page_that_said_nothing_about_the_story_still_translates(self):
         with mock.patch.object(
-            ollama, "ask", return_value=reply(translations("Good morning"))
+            llamacpp, "ask", return_value=reply(translations("Good morning"))
         ):
-            done = ollama.translate(["おはよう"], "m")
+            done = llamacpp.translate(["おはよう"], "m")
         self.assertEqual(done.texts, ["Good morning"])
         self.assertEqual(done.story, {})
 
     def test_who_a_page_has_not_shown_comes_back_unknown(self):
-        cast = [person("タロウ", ollama.UNKNOWN)]
+        cast = [person("タロウ", llamacpp.UNKNOWN)]
         answer = reply(with_story(["Morning"], "Someone arrives.", cast))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
         self.assertEqual(done.story["cast"][0]["gender"], "unknown")
 
     def test_a_gender_this_does_not_know_is_read_as_unknown(self):
         cast = [{"name": "タロウ", "gender": "a man, probably"}]
         answer = reply(with_story(["Morning"], "", cast))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
-        self.assertEqual(done.story["cast"][0]["gender"], ollama.UNKNOWN)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
+        self.assertEqual(done.story["cast"][0]["gender"], llamacpp.UNKNOWN)
 
     def test_a_placeholder_for_a_name_is_dropped(self):
-        cast = [person("unknown"), person("?"), person("ハナ", ollama.FEMALE)]
+        cast = [person("unknown"), person("?"), person("ハナ", llamacpp.FEMALE)]
         answer = reply(with_story(["Morning"], "", cast))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
-        self.assertEqual(done.story["cast"], [person("ハナ", ollama.FEMALE)])
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
+        self.assertEqual(done.story["cast"], [person("ハナ", llamacpp.FEMALE)])
 
     def test_someone_who_is_not_even_a_name_is_dropped(self):
-        cast = [{"gender": "male"}, {"name": "  "}, person("ハナ", ollama.FEMALE)]
+        cast = [{"gender": "male"}, {"name": "  "}, person("ハナ", llamacpp.FEMALE)]
         answer = reply(with_story(["Morning"], "", cast))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
-        self.assertEqual(done.story["cast"], [person("ハナ", ollama.FEMALE)])
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
+        self.assertEqual(done.story["cast"], [person("ハナ", llamacpp.FEMALE)])
 
     def test_only_so_many_people_are_carried(self):
         crowd = [person(f"人{at}") for at in range(40)]
         answer = reply(with_story(["Morning"], "A crowd.", crowd))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
-        self.assertEqual(len(done.story["cast"]), ollama.CAST_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
+        self.assertEqual(len(done.story["cast"]), llamacpp.CAST_LIMIT)
 
     def test_the_story_so_far_is_put_in_front_of_the_page(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"],
                 "m",
                 story={
                     "scene": "Taro has arrived late.",
-                    "cast": [person("タロウ", ollama.MALE, "the younger brother")],
+                    "cast": [person("タロウ", llamacpp.MALE, "the younger brother")],
                 },
             )
-        self.assertIn(ollama.PREVIOUSLY_HEADING, asked[0])
+        self.assertIn(llamacpp.PREVIOUSLY_HEADING, asked[0])
         self.assertIn("Taro has arrived late.", asked[0])
         self.assertIn("タロウ — male, the younger brother", asked[0])
 
     def test_what_was_set_by_hand_is_put_over_as_settled(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"],
                 "m",
                 story={
@@ -1909,35 +1915,35 @@ class TestStory(unittest.TestCase):
     def test_a_page_with_no_story_yet_is_not_told_about_one(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m")
-        self.assertNotIn(ollama.PREVIOUSLY_HEADING, asked[0])
-        self.assertIn(ollama.filled(ollama.STORY_NOTE, "English", "Japanese"), asked[0])
+            llamacpp.translate(["おはよう"], "m")
+        self.assertNotIn(llamacpp.PREVIOUSLY_HEADING, asked[0])
+        self.assertIn(llamacpp.filled(llamacpp.STORY_NOTE, "English", "Japanese"), asked[0])
 
     def test_the_cast_is_asked_for_in_the_language_of_the_page(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["안녕"], "m", "Dutch", source="Korean")
+            llamacpp.translate(["안녕"], "m", "Dutch", source="Korean")
         self.assertIn("in the Korean they are written in", asked[0])
         self.assertNotIn("{source}", asked[0])
 
     def test_a_scene_that_runs_on_is_cut_rather_than_dropped(self):
         rambled = "It goes on. " * 200
         answer = reply(with_story(["Morning"], rambled))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
-        self.assertEqual(len(done.story["scene"]), ollama.SCENE_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
+        self.assertEqual(len(done.story["scene"]), llamacpp.SCENE_LIMIT)
 
     def test_a_page_does_not_shorten_a_description_the_survey_wrote(self):
         told = person("ハナ", note="who " * 100)
         answer = reply(with_story(["Morning"], "They are arguing.", [told]))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["おはよう"], "m")
-        self.assertEqual(len(done.story["cast"][0]["note"]), ollama.CAST_NOTE_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["おはよう"], "m")
+        self.assertEqual(len(done.story["cast"][0]["note"]), llamacpp.CAST_NOTE_LIMIT)
 
     def test_the_story_holds_when_it_falls_back_to_one_at_a_time(self):
         asked, patched = self.asking(reply(translations("only one")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["いち", "に"], "m", story={"scene": "Taro has arrived late."}
             )
         self.assertEqual(len(asked), 4, "it did not ask again line by line")
@@ -1949,8 +1955,8 @@ class TestStory(unittest.TestCase):
             reply(with_story(["only one"], "They are arguing.")),
             reply(translations("first", "second")),
         ]
-        with mock.patch.object(ollama, "ask", side_effect=answers):
-            done = ollama.translate(["いち", "に"], "m")
+        with mock.patch.object(llamacpp, "ask", side_effect=answers):
+            done = llamacpp.translate(["いち", "に"], "m")
         self.assertEqual(done.story["scene"], "They are arguing.")
 
 
@@ -1964,15 +1970,15 @@ class TestAskingAboutTheUnknown(unittest.TestCase):
             asked.append(body["messages"][1]["content"])
             return answer
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def test_the_page_ends_by_asking_about_whoever_is_unknown(self):
         asked, patched = self.paging(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"],
                 "m",
-                story={"cast": [person("先輩"), person("ハナ", ollama.FEMALE)]},
+                story={"cast": [person("先輩"), person("ハナ", llamacpp.FEMALE)]},
             )
         self.assertIn("Still unknown: 先輩", asked[0])
         self.assertNotIn("ハナ", asked[0], "it asked about someone already known")
@@ -1981,15 +1987,15 @@ class TestAskingAboutTheUnknown(unittest.TestCase):
     def test_a_chapter_with_nobody_unknown_is_asked_nothing(self):
         asked, patched = self.paging(reply(translations("Morning")))
         with patched:
-            ollama.translate(
-                ["おはよう"], "m", story={"cast": [person("ハナ", ollama.FEMALE)]}
+            llamacpp.translate(
+                ["おはよう"], "m", story={"cast": [person("ハナ", llamacpp.FEMALE)]}
             )
         self.assertEqual(asked[0], "1. おはよう")
 
     def test_a_fact_set_by_hand_is_never_asked_about(self):
         asked, patched = self.paging(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"],
                 "m",
                 story={
@@ -2007,23 +2013,23 @@ class TestTermNotes(unittest.TestCase):
     def test_a_term_carries_what_it_is_where_the_model_said(self):
         named = [{"source": "先輩", "target": "senpai", "note": "an older pupil"}]
         answer = reply(with_terms(["Senpai!"], named))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["先輩！"], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["先輩！"], "m")
         self.assertEqual(done.terms, named)
 
     def test_a_term_without_one_stays_a_pair(self):
         named = [{"source": "タロウ", "target": "Taro"}]
         answer = reply(with_terms(["Taro"], named))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["タロウ"], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["タロウ"], "m")
         self.assertEqual(done.terms, named)
 
     def test_a_note_that_runs_on_is_cut(self):
         named = [{"source": "先輩", "target": "senpai", "note": "who " * 100}]
         answer = reply(with_terms(["Senpai!"], named))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            done = ollama.translate(["先輩！"], "m")
-        self.assertEqual(len(done.terms[0]["note"]), ollama.NOTE_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            done = llamacpp.translate(["先輩！"], "m")
+        self.assertEqual(len(done.terms[0]["note"]), llamacpp.NOTE_LIMIT)
 
     def test_a_note_is_put_in_front_of_the_page_with_its_term(self):
         asked = []
@@ -2033,8 +2039,8 @@ class TestTermNotes(unittest.TestCase):
             return reply(translations("Senpai!"))
 
         glossary = [{"source": "先輩", "target": "senpai", "note": "an older pupil"}]
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["先輩！"], "m", glossary=glossary)
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(["先輩！"], "m", glossary=glossary)
         self.assertIn("先輩 = senpai  (an older pupil)", asked[0])
 
 
@@ -2042,14 +2048,14 @@ class TestSurvey(unittest.TestCase):
     """Reading a whole chapter before any of it is translated."""
 
     def asking(self, *answers):
-        """Ollama patched to give these answers, collecting the system messages."""
+        """llama.cpp patched to give these answers, collecting the system messages."""
         asked = []
 
         def ask(path, body=None, **kwargs):
             asked.append(body["messages"][0]["content"])
             return answers[min(len(asked) - 1, len(answers) - 1)]
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def paging(self, *answers):
         """The same, collecting the pages sent rather than the briefing."""
@@ -2059,42 +2065,42 @@ class TestSurvey(unittest.TestCase):
             asked.append(body["messages"][1]["content"])
             return answers[min(len(asked) - 1, len(answers) - 1)]
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def test_one_beat_comes_back_for_each_page(self):
         answer = reply(with_beats(["Taro arrives.", "They argue."]))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["タロウだ"], ["なんだと"]], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["タロウだ"], ["なんだと"]], "m")
         self.assertEqual(found.beats, ["Taro arrives.", "They argue."])
 
     def test_a_page_with_nothing_on_it_still_gets_a_beat(self):
         answer = reply(with_beats(["Taro arrives.", "Nobody speaks."]))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["タロウだ"], []], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["タロウだ"], []], "m")
         self.assertEqual(len(found.beats), 2)
 
     def test_the_page_is_named_even_where_it_says_nothing(self):
         asked, patched = self.paging(reply(with_beats(["one", "two"])))
         with patched:
-            ollama.survey([["タロウだ"], []], "m")
+            llamacpp.survey([["タロウだ"], []], "m")
         self.assertIn("Page 2:", asked[0])
 
     def test_what_the_chapter_is_comes_back_beside_the_beats(self):
-        cast = [person("タロウ", ollama.MALE, "late for school")]
+        cast = [person("タロウ", llamacpp.MALE, "late for school")]
         terms = [{"source": "タロウ", "target": "Taro"}]
         answer = reply(
             with_beats(["He arrives."], "Taro is late.", "Light and modern.", cast, terms)
         )
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["タロウだ"]], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["タロウだ"]], "m")
         self.assertEqual(found.synopsis, "Taro is late.")
         self.assertEqual(found.register, "Light and modern.")
         self.assertEqual(found.cast, cast)
         self.assertEqual(found.terms, terms)
 
     def test_a_window_that_said_nothing_about_the_chapter_still_answers(self):
-        with mock.patch.object(ollama, "ask", return_value=reply(with_beats(["one"]))):
-            found = ollama.survey([["タロウだ"]], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=reply(with_beats(["one"]))):
+            found = llamacpp.survey([["タロウだ"]], "m")
         self.assertEqual(found.beats, ["one"])
         self.assertEqual(found.cast, [])
         self.assertEqual(found.synopsis, "")
@@ -2104,20 +2110,20 @@ class TestSurvey(unittest.TestCase):
             reply(with_beats(["only one"])),
             reply(with_beats(["first", "second"])),
         ]
-        with mock.patch.object(ollama, "ask", side_effect=answers) as asked:
-            found = ollama.survey([["いち"], ["に"]], "m")
+        with mock.patch.object(llamacpp, "ask", side_effect=answers) as asked:
+            found = llamacpp.survey([["いち"], ["に"]], "m")
         self.assertEqual(found.beats, ["first", "second"])
         self.assertEqual(asked.call_count, 2)
 
     def test_a_window_that_lost_count_twice_hands_back_no_beats(self):
-        with mock.patch.object(ollama, "ask", return_value=reply(with_beats(["one"]))):
-            found = ollama.survey([["いち"], ["に"]], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=reply(with_beats(["one"]))):
+            found = llamacpp.survey([["いち"], ["に"]], "m")
         self.assertEqual(found.beats, [])
 
     def test_a_miscounted_window_keeps_what_it_said_about_the_chapter(self):
         answer = reply(with_beats(["one"], "Taro is late.", cast=[person("タロウ")]))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["いち"], ["に"]], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["いち"], ["に"]], "m")
         self.assertEqual(found.synopsis, "Taro is late.")
         self.assertEqual(found.cast, [person("タロウ")])
 
@@ -2128,20 +2134,20 @@ class TestSurvey(unittest.TestCase):
             asked.append(body["messages"][-1]["content"])
             return reply(with_beats(["only one"]))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.survey([["いち"], ["に"]], "m")
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.survey([["いち"], ["に"]], "m")
         self.assertIn("1 beats for 2 pages", asked[1])
 
     def test_what_the_earlier_pages_came_to_is_put_in_front_of_the_next(self):
         asked, patched = self.asking(reply(with_beats(["three"])))
         with patched:
-            ollama.survey(
+            llamacpp.survey(
                 [["さん"]],
                 "m",
                 chapter={
                     "synopsis": "Taro is late.",
                     "register": "Light and modern.",
-                    "cast": [person("タロウ", ollama.MALE)],
+                    "cast": [person("タロウ", llamacpp.MALE)],
                     "terms": [{"source": "タロウ", "target": "Taro"}],
                 },
             )
@@ -2153,83 +2159,86 @@ class TestSurvey(unittest.TestCase):
     def test_the_beats_already_written_are_not_sent_back(self):
         asked, patched = self.asking(reply(with_beats(["three"])))
         with patched:
-            ollama.survey([["さん"]], "m", chapter={"beats": ["he wakes", "he runs"]})
+            llamacpp.survey([["さん"]], "m", chapter={"beats": ["he wakes", "he runs"]})
         self.assertNotIn("he wakes", asked[0])
 
     def test_the_pages_are_numbered_from_where_the_window_starts(self):
         asked, patched = self.paging(reply(with_beats(["nine"])))
         with patched:
-            ollama.survey([["きゅう"]], "m", first=8)
+            llamacpp.survey([["きゅう"]], "m", first=8)
         self.assertIn("Page 9:", asked[0])
 
     def test_the_cast_is_asked_for_in_the_language_of_the_pages(self):
         asked, patched = self.asking(reply(with_beats(["one"])))
         with patched:
-            ollama.survey([["タロウだ"]], "m", source="Korean")
+            llamacpp.survey([["タロウだ"]], "m", source="Korean")
         self.assertIn("in the Korean they are written in", asked[0])
 
     def test_a_synopsis_that_runs_on_is_cut_rather_than_dropped(self):
         answer = reply(with_beats(["one"], "so " * 2000))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["いち"]], "m")
-        self.assertEqual(len(found.synopsis), ollama.SYNOPSIS_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["いち"]], "m")
+        self.assertEqual(len(found.synopsis), llamacpp.SYNOPSIS_LIMIT)
 
     def test_a_register_that_runs_on_is_cut(self):
         answer = reply(with_beats(["one"], register="formal " * 200))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["いち"]], "m")
-        self.assertEqual(len(found.register), ollama.REGISTER_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["いち"]], "m")
+        self.assertEqual(len(found.register), llamacpp.REGISTER_LIMIT)
 
     def test_a_beat_that_runs_on_is_cut(self):
         answer = reply(with_beats(["and then " * 100]))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["いち"]], "m")
-        self.assertEqual(len(found.beats[0]), ollama.BEAT_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["いち"]], "m")
+        self.assertEqual(len(found.beats[0]), llamacpp.BEAT_LIMIT)
 
     def test_only_so_many_people_are_carried(self):
         crowd = [person(f"人{at}") for at in range(40)]
         answer = reply(with_beats(["one"], cast=crowd))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["いち"]], "m")
-        self.assertEqual(len(found.cast), ollama.CAST_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["いち"]], "m")
+        self.assertEqual(len(found.cast), llamacpp.CAST_LIMIT)
 
     def test_a_description_of_someone_is_carried_further_than_a_terms_note(self):
         told = person("ハナ", note="who " * 100)
         answer = reply(with_beats(["one"], cast=[told]))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["いち"]], "m")
-        self.assertEqual(len(found.cast[0]["note"]), ollama.CAST_NOTE_LIMIT)
-        self.assertGreater(ollama.CAST_NOTE_LIMIT, ollama.NOTE_LIMIT)
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["いち"]], "m")
+        self.assertEqual(len(found.cast[0]["note"]), llamacpp.CAST_NOTE_LIMIT)
+        self.assertGreater(llamacpp.CAST_NOTE_LIMIT, llamacpp.NOTE_LIMIT)
 
     def test_the_cast_is_asked_to_say_who_someone_is(self):
         asked, patched = self.asking(reply(with_beats(["one"])))
         with patched:
-            ollama.survey([["いち"]], "m")
+            llamacpp.survey([["いち"]], "m")
         self.assertIn("`note` saying who they are", asked[0])
 
     def test_a_placeholder_for_a_name_is_dropped_here_too(self):
         answer = reply(with_beats(["one"], cast=[person("unknown"), person("ハナ")]))
-        with mock.patch.object(ollama, "ask", return_value=answer):
-            found = ollama.survey([["いち"]], "m")
+        with mock.patch.object(llamacpp, "ask", return_value=answer):
+            found = llamacpp.survey([["いち"]], "m")
         self.assertEqual(found.cast, [person("ハナ")])
 
     def test_a_chapter_with_no_pages_asks_nothing(self):
-        with mock.patch.object(ollama, "ask") as asked:
-            found = ollama.survey([], "m")
+        with mock.patch.object(llamacpp, "ask") as asked:
+            found = llamacpp.survey([], "m")
         asked.assert_not_called()
         self.assertEqual(found.beats, [])
 
-    def test_the_survey_asks_for_a_window_of_its_own(self):
+    def test_the_survey_uses_its_own_structured_output_schema(self):
         sent = []
 
         def ask(path, body=None, **kwargs):
-            sent.append(body)
+            sent.append((path, body))
             return reply(with_beats(["one"]))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.survey([["いち"]], "m")
-        self.assertEqual(sent[0]["options"]["num_ctx"], ollama.SURVEY_CONTEXT)
-        self.assertEqual(sent[0]["format"], ollama.SURVEY_SCHEMA)
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.survey([["いち"]], "m")
+        path, body = sent[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual(
+            body["response_format"]["json_schema"]["schema"], llamacpp.SURVEY_SCHEMA
+        )
 
 
 class TestChapter(unittest.TestCase):
@@ -2242,12 +2251,12 @@ class TestChapter(unittest.TestCase):
             asked.append(body["messages"][0]["content"])
             return answer
 
-        return asked, mock.patch.object(ollama, "ask", ask)
+        return asked, mock.patch.object(llamacpp, "ask", ask)
 
     def test_the_chapter_is_put_in_front_of_the_page(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"],
                 "m",
                 chapter={"synopsis": "Taro is late.", "register": "Light."},
@@ -2258,24 +2267,24 @@ class TestChapter(unittest.TestCase):
     def test_a_page_with_no_chapter_is_not_told_about_one(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m")
-        self.assertNotIn(ollama.SYNOPSIS_HEADING, asked[0])
+            llamacpp.translate(["おはよう"], "m")
+        self.assertNotIn(llamacpp.SYNOPSIS_HEADING, asked[0])
 
     def test_the_note_about_giving_things_away_is_said_only_with_a_chapter(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m")
+            llamacpp.translate(["おはよう"], "m")
         self.assertNotIn("must not be made to hint", asked[0])
 
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m", chapter={"synopsis": "Taro is late."})
+            llamacpp.translate(["おはよう"], "m", chapter={"synopsis": "Taro is late."})
         self.assertIn("must not be made to hint", asked[0])
 
     def test_the_note_is_said_whatever_the_prompt_is(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"], "m", system="Translate.", chapter={"synopsis": "Late."}
             )
         self.assertIn("must not be made to hint", asked[0])
@@ -2283,7 +2292,7 @@ class TestChapter(unittest.TestCase):
     def test_the_note_names_the_language_it_is_about(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["안녕"], "m", source="Korean", chapter={"synopsis": "Late."}
             )
         self.assertIn("Where the Korean is vague on purpose", asked[0])
@@ -2291,7 +2300,7 @@ class TestChapter(unittest.TestCase):
     def test_the_page_being_translated_is_marked_among_the_beats(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"], "m", chapter={"beats": ["one", "two", "three"]}, page=1
             )
         self.assertIn("→ 2. two", asked[0])
@@ -2301,7 +2310,7 @@ class TestChapter(unittest.TestCase):
         beats = [f"beat{at}" for at in range(40)]
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m", chapter={"beats": beats}, page=20)
+            llamacpp.translate(["おはよう"], "m", chapter={"beats": beats}, page=20)
         self.assertIn("beat20", asked[0])
         self.assertNotIn("beat13", asked[0])
         self.assertNotIn("beat23", asked[0])
@@ -2309,7 +2318,7 @@ class TestChapter(unittest.TestCase):
     def test_the_window_is_cut_at_the_ends_of_the_chapter(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"],
                 "m",
                 chapter={"beats": [f"beat{at}" for at in range(5)]},
@@ -2321,8 +2330,8 @@ class TestChapter(unittest.TestCase):
     def test_a_chapter_of_nothing_is_not_put_in_front_of_the_page(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(["おはよう"], "m", chapter={"beats": ["", ""]})
-        self.assertNotIn(ollama.BEATS_HEADING, asked[0])
+            llamacpp.translate(["おはよう"], "m", chapter={"beats": ["", ""]})
+        self.assertNotIn(llamacpp.BEATS_HEADING, asked[0])
 
     def test_the_chapter_holds_when_it_falls_back_to_one_at_a_time(self):
         asked = []
@@ -2331,8 +2340,8 @@ class TestChapter(unittest.TestCase):
             asked.append(body["messages"][0]["content"])
             return reply(translations("only one"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(
                 ["いち", "に"], "m", chapter={"synopsis": "Taro is late."}
             )
         self.assertIn("Taro is late.", asked[-1])
@@ -2344,8 +2353,8 @@ class TestChapter(unittest.TestCase):
             asked.append(body["messages"][1]["content"])
             return reply(translations("Morning"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(
                 ["おはよう"], "m", chapter={"beats": ["one", "two", "three"]}, page=1
             )
         self.assertIn("This is page 2 of 3", asked[0])
@@ -2358,14 +2367,14 @@ class TestChapter(unittest.TestCase):
             asked.append(body["messages"][1]["content"])
             return reply(translations("Morning"))
 
-        with mock.patch.object(ollama, "ask", ask):
-            ollama.translate(["おはよう"], "m")
+        with mock.patch.object(llamacpp, "ask", ask):
+            llamacpp.translate(["おはよう"], "m")
         self.assertEqual(asked[0], "1. おはよう")
 
     def test_the_chapter_comes_before_the_story_so_far(self):
         asked, patched = self.asking(reply(translations("Morning")))
         with patched:
-            ollama.translate(
+            llamacpp.translate(
                 ["おはよう"],
                 "m",
                 chapter={"synopsis": "Taro is late."},
@@ -2376,62 +2385,64 @@ class TestChapter(unittest.TestCase):
         )
 
 
-class TestOllamaHost(unittest.TestCase):
-    """Finding Ollama when nothing said where it is."""
+class TestLlamaCppHost(unittest.TestCase):
+    """Finding llama.cpp when nothing said where it is."""
 
     def setUp(self):
         for patch in (
-            mock.patch.dict(os.environ, {ollama.OLLAMA_ENV: ""}),
-            mock.patch.object(ollama, "_answering", None),
+            mock.patch.dict(os.environ, {llamacpp.LLAMA_CPP_ENV: ""}),
+            mock.patch.object(llamacpp, "_answering", None),
         ):
             patch.start()
             self.addCleanup(patch.stop)
 
     def answering(self, *hosts: str):
-        """An Ollama that answers at those hosts and nowhere else."""
+        """A llama.cpp server that answers at those hosts and nowhere else."""
         self.asked: list[str] = []
 
         def ask(path, body=None, timeout=None, host=None):
             self.asked.append(host)
             if host not in hosts:
-                raise ollama.Unreachable(f"no ollama answering at {host}")
-            return {"models": []}
+                raise llamacpp.Unreachable(f"no llama.cpp answering at {host}")
+            return {"data": []}
 
-        return mock.patch.object(ollama, "ask", ask)
+        return mock.patch.object(llamacpp, "ask", ask)
 
     def test_the_host_that_answers_is_the_one_used(self):
-        with self.answering("http://host.docker.internal:11434"):
-            self.assertEqual(ollama.base(), "http://host.docker.internal:11434")
+        with self.answering("http://host.docker.internal:8081"):
+            self.assertEqual(llamacpp.base(), "http://host.docker.internal:8081")
 
     def test_every_usual_place_is_tried(self):
-        with self.answering("http://host.containers.internal:11434"):
-            self.assertEqual(ollama.base(), "http://host.containers.internal:11434")
-        self.assertEqual(self.asked, list(ollama.OLLAMA_HOSTS))
+        with self.answering("http://host.containers.internal:8081"):
+            self.assertEqual(llamacpp.base(), "http://host.containers.internal:8081")
+        self.assertEqual(self.asked, list(llamacpp.LLAMA_CPP_HOSTS))
 
     def test_the_one_that_answered_is_not_looked_for_again(self):
-        with self.answering(*ollama.OLLAMA_HOSTS):
-            ollama.base()
-            ollama.base()
-        self.assertEqual(self.asked, [ollama.OLLAMA_HOSTS[0]], "it looked twice")
+        with self.answering(*llamacpp.LLAMA_CPP_HOSTS):
+            llamacpp.base()
+            llamacpp.base()
+        self.assertEqual(self.asked, [llamacpp.LLAMA_CPP_HOSTS[0]], "it looked twice")
 
     def test_a_miss_is_not_remembered(self):
         with self.answering():
-            with self.assertRaises(ollama.Unreachable):
-                ollama.base()
-        with self.answering(ollama.OLLAMA_HOSTS[-1]):
-            self.assertEqual(ollama.base(), ollama.OLLAMA_HOSTS[-1])
+            with self.assertRaises(llamacpp.Unreachable):
+                llamacpp.base()
+        with self.answering(llamacpp.LLAMA_CPP_HOSTS[-1]):
+            self.assertEqual(llamacpp.base(), llamacpp.LLAMA_CPP_HOSTS[-1])
 
     def test_nothing_answering_says_everywhere_it_looked(self):
         with self.answering():
-            with self.assertRaises(ollama.Unreachable) as caught:
-                ollama.base()
-        for host in ollama.OLLAMA_HOSTS:
+            with self.assertRaises(llamacpp.Unreachable) as caught:
+                llamacpp.base()
+        for host in llamacpp.LLAMA_CPP_HOSTS:
             self.assertIn(host, str(caught.exception))
 
     def test_a_host_that_was_set_is_never_looked_for(self):
-        with mock.patch.dict(os.environ, {ollama.OLLAMA_ENV: "http://said:11434/"}):
-            with self.answering(*ollama.OLLAMA_HOSTS):
-                self.assertEqual(ollama.base(), "http://said:11434")
+        with mock.patch.dict(
+            os.environ, {llamacpp.LLAMA_CPP_ENV: "http://said:8081/"}
+        ):
+            with self.answering(*llamacpp.LLAMA_CPP_HOSTS):
+                self.assertEqual(llamacpp.base(), "http://said:8081")
         self.assertEqual(self.asked, [], "it went looking anyway")
 
 
@@ -3046,19 +3057,21 @@ class TestApi(unittest.TestCase):
 
     def test_models_are_listed(self):
         with mock.patch.object(
-            server.ollama, "models", return_value=["gemma4:12b"]
+            server.llamacpp, "models", return_value=["gemma4:12b"]
         ):
             response = client().get("/api/models")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json, {"models": ["gemma4:12b"]})
 
-    def test_models_says_so_when_ollama_is_not_there(self):
+    def test_models_says_so_when_llama_cpp_is_not_there(self):
         with mock.patch.object(
-            server.ollama, "models", side_effect=server.ollama.Unreachable("no ollama")
+            server.llamacpp,
+            "models",
+            side_effect=server.llamacpp.Unreachable("no llama.cpp"),
         ):
             response = client().get("/api/models")
         self.assertEqual(response.status_code, 503)
-        self.assertIn("ollama", response.json["error"])
+        self.assertIn("llama.cpp", response.json["error"])
 
     def test_http_errors_keep_their_required_headers(self):
         response = client().post("/api/languages")
@@ -3070,7 +3083,7 @@ class TestApi(unittest.TestCase):
         app = server.create_app()
         with (
             mock.patch.object(
-                server.ollama,
+                server.llamacpp,
                 "models",
                 side_effect=RuntimeError("private model path"),
             ),
@@ -3084,7 +3097,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_answers_with_one_text_per_text(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated(["Good morning"])
+            server.llamacpp, "translate", return_value=translated(["Good morning"])
         ) as translating:
             response = client().post(
                 "/api/translate",
@@ -3098,7 +3111,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_takes_the_language_to_translate_into(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as into:
             client().post(
                 "/api/translate",
@@ -3109,7 +3122,7 @@ class TestApi(unittest.TestCase):
     def test_translate_hands_back_the_terms_the_page_named(self):
         named = [{"source": "タロウ", "target": "Taro"}]
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated(["Taro is here"], named)
+            server.llamacpp, "translate", return_value=translated(["Taro is here"], named)
         ):
             response = client().post(
                 "/api/translate",
@@ -3120,7 +3133,7 @@ class TestApi(unittest.TestCase):
     def test_translate_passes_a_glossary_on(self):
         named = [{"source": "タロウ", "target": "Taro"}]
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3134,14 +3147,14 @@ class TestApi(unittest.TestCase):
 
     def test_translate_without_a_glossary_sends_none(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["glossary"])
 
     def test_translate_passes_what_each_line_is_on(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3157,7 +3170,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_without_them_sends_none(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["kinds"])
@@ -3165,7 +3178,7 @@ class TestApi(unittest.TestCase):
 
     def test_a_block_classified_by_nothing_is_a_real_answer(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             response = client().post(
                 "/api/translate",
@@ -3206,7 +3219,7 @@ class TestApi(unittest.TestCase):
         back = {"scene": "They are arguing.", "cast": [person("ハナ", "female")]}
         sent_story = {"scene": "Taro has arrived late.", "cast": [person("タロウ")]}
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated(["Morning"], story=back)
+            server.llamacpp, "translate", return_value=translated(["Morning"], story=back)
         ) as told:
             response = client().post(
                 "/api/translate",
@@ -3224,7 +3237,7 @@ class TestApi(unittest.TestCase):
     def test_a_fact_set_by_hand_is_carried_as_settled(self):
         settled = {"name": "ハナ", "gender": "female", "settled": ["gender"]}
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3260,7 +3273,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_without_a_story_sends_none(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["story"])
@@ -3268,7 +3281,7 @@ class TestApi(unittest.TestCase):
     def test_a_glossary_may_say_what_a_term_is(self):
         named = [{"source": "先輩", "target": "senpai", "note": "an older pupil"}]
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3296,7 +3309,7 @@ class TestApi(unittest.TestCase):
             [person("タロウ", "male")],
             [{"source": "タロウ", "target": "Taro"}],
         )
-        with mock.patch.object(server.ollama, "survey", return_value=found):
+        with mock.patch.object(server.llamacpp, "survey", return_value=found):
             response = client().post(
                 "/api/survey",
                 data={"pages": json.dumps([["タロウだ"], ["なんだと"]]), "model": "m"},
@@ -3333,7 +3346,7 @@ class TestApi(unittest.TestCase):
 
     def test_survey_keeps_a_page_with_nothing_on_it(self):
         with mock.patch.object(
-            server.ollama, "survey", return_value=surveyed(["one", "two"])
+            server.llamacpp, "survey", return_value=surveyed(["one", "two"])
         ) as told:
             client().post(
                 "/api/survey",
@@ -3344,7 +3357,7 @@ class TestApi(unittest.TestCase):
     def test_survey_passes_the_chapter_so_far_on(self):
         held = {"synopsis": "Taro is late.", "beats": ["He wakes."]}
         with mock.patch.object(
-            server.ollama, "survey", return_value=surveyed(["two"])
+            server.llamacpp, "survey", return_value=surveyed(["two"])
         ) as told:
             client().post(
                 "/api/survey",
@@ -3360,7 +3373,7 @@ class TestApi(unittest.TestCase):
 
     def test_survey_without_a_chapter_sends_none(self):
         with mock.patch.object(
-            server.ollama, "survey", return_value=surveyed(["one"])
+            server.llamacpp, "survey", return_value=surveyed(["one"])
         ) as told:
             client().post(
                 "/api/survey", data={"pages": json.dumps([["いち"]]), "model": "m"}
@@ -3368,17 +3381,17 @@ class TestApi(unittest.TestCase):
         self.assertIsNone(told.call_args.kwargs["chapter"])
         self.assertEqual(told.call_args.kwargs["first"], 0)
 
-    def test_survey_says_so_when_ollama_is_not_there(self):
+    def test_survey_says_so_when_llama_cpp_is_not_there(self):
         with mock.patch.object(
-            server.ollama,
+            server.llamacpp,
             "survey",
-            side_effect=server.ollama.Unreachable("no ollama"),
+            side_effect=server.llamacpp.Unreachable("no llama.cpp"),
         ):
             response = client().post(
                 "/api/survey", data={"pages": json.dumps([["いち"]]), "model": "m"}
             )
         self.assertEqual(response.status_code, 503)
-        self.assertIn("ollama", response.json["error"])
+        self.assertIn("llama.cpp", response.json["error"])
 
     def test_translate_carries_the_chapter_and_which_page_it_is(self):
         held = {
@@ -3389,7 +3402,7 @@ class TestApi(unittest.TestCase):
             "terms": [{"source": "タロウ", "target": "Taro"}],
         }
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated(["Morning"])
+            server.llamacpp, "translate", return_value=translated(["Morning"])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3408,7 +3421,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_without_a_chapter_sends_none(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["chapter"])
@@ -3437,7 +3450,7 @@ class TestApi(unittest.TestCase):
 
     def test_a_chapter_carries_what_was_settled_by_hand(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3456,7 +3469,7 @@ class TestApi(unittest.TestCase):
 
     def test_a_synopsis_that_runs_on_is_cut_on_the_way_in(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3468,7 +3481,7 @@ class TestApi(unittest.TestCase):
             )
         self.assertEqual(
             len(told.call_args.kwargs["chapter"]["synopsis"]),
-            server.ollama.SYNOPSIS_LIMIT,
+            server.llamacpp.SYNOPSIS_LIMIT,
         )
 
     def test_a_page_that_is_not_a_number_is_refused(self):
@@ -3485,8 +3498,8 @@ class TestApi(unittest.TestCase):
         self.assertEqual(
             response.json,
             {
-                "prompt": server.ollama.SYSTEM_DEFAULT,
-                "survey": server.ollama.SURVEY_DEFAULT,
+                "prompt": server.llamacpp.SYSTEM_DEFAULT,
+                "survey": server.llamacpp.SURVEY_DEFAULT,
             },
         )
         self.assertIn("{target}", response.json["prompt"])
@@ -3494,7 +3507,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_passes_a_prompt_of_your_own_on(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post(
                 "/api/translate",
@@ -3504,7 +3517,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_without_a_prompt_leaves_the_default_alone(self):
         with mock.patch.object(
-            server.ollama, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=translated([""])
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["system"])

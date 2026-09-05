@@ -15,7 +15,7 @@ import { useLanguage } from './hooks/useLanguage'
 import { useLetterMasks } from './hooks/useLetterMasks'
 import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
-import { useOllama } from './hooks/useOllama'
+import { useLlamaCpp } from './hooks/useLlamaCpp'
 import { usePrompt } from './hooks/usePrompt'
 import { useStory } from './hooks/useStory'
 import type { Analysis, BoardMode, Box, Fill, Lettering, Region, Stage } from './lib/api'
@@ -103,7 +103,7 @@ function App() {
     drop: dropCleaned,
     clear: clearCleaned,
   } = useObjectUrls()
-  const ollama = useOllama()
+  const llamaCpp = useLlamaCpp()
   const source = useLanguage()
   const {
     terms: chapterTerms,
@@ -519,7 +519,7 @@ function App() {
 
   const translatePage = useCallback(
     async (page: GalleryImage, found: Analysis): Promise<boolean> => {
-      if (!ollama.model || !found.texts) return false
+      if (!llamaCpp.model || !found.texts) return false
 
       const skip = new Set(found.excluded)
       const wanted = found.texts
@@ -541,7 +541,7 @@ function App() {
         const read = chapter ? bibleNow.current[chapter] : null
         const of = chapter ? placeOf(page) : null
         const surveyed = chapter && of !== null && fits(read, pagesIn(chapter))
-        return translate(sending, ollama.model, ollama.target, {
+        return translate(sending, llamaCpp.model, llamaCpp.target, {
           system: prompt,
           source: source.language?.name,
           glossary: chapter ? termsNow.current[chapter] : null,
@@ -567,8 +567,8 @@ function App() {
     },
     [
       during,
-      ollama.model,
-      ollama.target,
+      llamaCpp.model,
+      llamaCpp.target,
       prompt,
       source.language?.name,
       termsNow,
@@ -653,14 +653,14 @@ function App() {
         if (why) return why
       }
 
-      if (ollama.model && found.texts.some((text) => text.trim())) {
+      if (llamaCpp.model && found.texts.some((text) => text.trim())) {
         lastFailure.current = null
         await translatePage(page, found)
         if (lastFailure.current) return lastFailure.current
       }
       return null
     },
-    [readPage, hidePage, translatePage, held, ollama.model],
+    [readPage, hidePage, translatePage, held, llamaCpp.model],
   )
 
   const runAll = useCallback(() => {
@@ -680,7 +680,7 @@ function App() {
       pages: GalleryImage[],
       say: (note: string | null) => void,
     ): Promise<string | null> => {
-      if (!ollama.model) return null
+      if (!llamaCpp.model) return null
 
       const written = pages.map((page) => {
         const found = analysesNow.current[page.id]
@@ -696,7 +696,7 @@ function App() {
         say(`reading pages ${first + 1}–${last} of ${written.length}`)
         lastFailure.current = null
         const said = await during(pages[first].id, 'surveying', () =>
-          survey(window, ollama.model as string, ollama.target, {
+          survey(window, llamaCpp.model as string, llamaCpp.target, {
             source: source.language?.name,
             chapter: bibleNow.current[folder.id] ?? null,
             first,
@@ -715,8 +715,8 @@ function App() {
     },
     [
       during,
-      ollama.model,
-      ollama.target,
+      llamaCpp.model,
+      llamaCpp.target,
       source.language?.name,
       bibleNow,
       learnBible,
@@ -886,14 +886,14 @@ function App() {
           setPacking({ done: at + 1, total: pages.length })
         }
 
-        save(await pack(held), archiveName(folder, ollama.target, anyLettered))
+        save(await pack(held), archiveName(folder, llamaCpp.target, anyLettered))
       } catch (cause) {
         setError(said(cause))
       } finally {
         setPacking(null)
       }
     },
-    [lettering, ollama.target, packing],
+    [lettering, llamaCpp.target, packing],
   )
 
   const workedOn = useMemo(
@@ -925,7 +925,7 @@ function App() {
           fallback={builtInPrompt}
           onSave={setPrompt}
           apiBase={API_BASE}
-          models={ollama.models}
+          models={llamaCpp.models}
         />
       )}
 
@@ -970,7 +970,7 @@ function App() {
           onTranslateFolder={translateFolder}
           onStopBatch={stopBatch}
           onDismissBatch={dismissBatch}
-          canTranslate={Boolean(ollama.model)}
+          canTranslate={Boolean(llamaCpp.model)}
           lettered={lettered}
           onDownloadFolder={(folder) => void downloadFolder(folder)}
           workedOn={workedOn}
@@ -1012,11 +1012,11 @@ function App() {
             onFill: setFill,
           }}
           translating={{
-            models: ollama.models,
-            model: ollama.model,
-            onModel: ollama.setModel,
-            target: ollama.target,
-            onTarget: ollama.setTarget,
+            models: llamaCpp.models,
+            model: llamaCpp.model,
+            onModel: llamaCpp.setModel,
+            target: llamaCpp.target,
+            onTarget: llamaCpp.setTarget,
             onTranslate: runTranslate,
             lettering: pageLettering,
             onBox: setLetteringBox,
@@ -1025,7 +1025,7 @@ function App() {
             onApply: applyToImage,
             applying,
             note:
-              ollama.problem ??
+              llamaCpp.problem ??
               (!analysis?.texts
                 ? 'find the text first: there is nothing to translate yet'
                 : pageLettering.some(Boolean) && !cleanedPage

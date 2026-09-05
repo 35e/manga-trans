@@ -54,8 +54,8 @@ RUN if [ "$PREFETCH_MODEL" = "true" ]; then \
 
 COPY mangatrans /app/mangatrans
 
-# No Ollama host here on purpose: `ollama.answering()` tries each name, since
-# Docker and Podman disagree. MANGA_TRANS_OLLAMA still overrides it.
+# No llama.cpp host here on purpose: `llamacpp.answering()` tries each name,
+# since Docker and Podman disagree. MANGA_TRANS_LLAMA_CPP still overrides it.
 ENV MANGA_TRANS_HOST=0.0.0.0 \
     MANGA_TRANS_PORT=8000
 
