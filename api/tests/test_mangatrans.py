@@ -24,7 +24,6 @@ from mangatrans import (
     read,
     render,
     server,
-    split,
 )
 from mangatrans.detect import FREE, SPEECH, Block
 from mangatrans.geometry import Box
@@ -472,41 +471,6 @@ class TestCoverMask(unittest.TestCase):
         self.assertEqual(tuple(np.array(original)[0, 0]), DARK)
 
 
-class TestOverlay(unittest.TestCase):
-    box = Box(20, 20, 180, 120)
-
-    def rendered(self, text: str) -> np.ndarray:
-        out = render.overlay(page(), [render.Region(self.box, text)])
-        return patch(out, self.box)
-
-    def test_the_text_is_drawn_dark_on_the_white(self):
-        inside = self.rendered("HELLO THERE")
-        self.assertTrue((inside < 128).any(), "no lettering was drawn")
-        self.assertTrue((inside == 255).any(), "the box was not whited out")
-
-    def test_a_region_with_no_text_is_only_hidden(self):
-        self.assertTrue((self.rendered("   ") == 255).all())
-
-    def test_long_text_is_wrapped_onto_several_lines(self):
-        font = render.load_font(None, 20)
-        lines = render.wrap("one two three four five six seven", font, 60)
-        self.assertGreater(len(lines), 1)
-        self.assertTrue(all(line for line in lines))
-
-    def test_more_words_are_set_smaller(self):
-        draw = ImageDraw.Draw(page())
-        short = render.fit(draw, "HI", self.box, None)
-        long = render.fit(draw, "HI " * 40, self.box, None)
-        self.assertLess(long.font.size, short.font.size)
-
-    def test_text_that_cannot_fit_is_still_drawn(self):
-        draw = ImageDraw.Draw(page())
-        layout = render.fit(draw, "WAY TOO MANY WORDS " * 30, Box(0, 0, 24, 12), None)
-        self.assertFalse(layout.fits)
-        self.assertEqual(layout.font.size, render.FONT_MIN)
-        self.assertTrue((self.rendered("WAY TOO MANY WORDS " * 30) < 128).any())
-
-
 def ballooned(
     balloon: Box = Box(120, 60, 480, 300),
     column: Box = Box(285, 100, 315, 260),
@@ -693,180 +657,6 @@ def lettering(x: int, y: int, columns: int, rows: int, em: int = EM) -> list[Box
     ]
 
 
-def written(*groups: list[Box], size=(400, 400)) -> np.ndarray:
-    """A per-pixel text mask with every one of those glyphs set in it."""
-    mask = np.zeros((size[1], size[0]), bool)
-    for group in groups:
-        for glyph in group:
-            mask[glyph.y0 : glyph.y1, glyph.x0 : glyph.x1] = True
-    return mask
-
-
-def around(*groups: list[Box]) -> Box:
-    """The one box a detector would draw around all of them."""
-    every = [glyph for group in groups for glyph in group]
-    return Box(
-        min(g.x0 for g in every),
-        min(g.y0 for g in every),
-        max(g.x1 for g in every),
-        max(g.y1 for g in every),
-    )
-
-
-class TestSplit(unittest.TestCase):
-    """Cutting a block that holds two balloons back into one block each."""
-
-    def test_two_balloons_side_by_side_come_apart(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 2 * EM + 3 * EM, 30, 2, 5)
-        pieces = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(len(pieces), 2)
-
-    def test_two_balloons_one_above_the_other_come_apart(self):
-        one = lettering(20, 20, 2, 4)
-        other = lettering(30, 20 + 4 * EM + 3 * EM, 2, 4)
-        pieces = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(len(pieces), 2)
-
-    def test_three_run_together_come_apart_into_three(self):
-        groups = [lettering(20 + i * 5 * EM, 20, 2, 4) for i in range(3)]
-        pieces = split.pieces(written(*groups), around(*groups))
-        self.assertEqual(len(pieces), 3)
-
-    def test_the_columns_of_one_balloon_are_left_alone(self):
-        one = lettering(20, 20, 5, 6)
-        box = around(one)
-        self.assertEqual(split.pieces(written(one), box), [box])
-
-    def test_a_single_column_is_left_alone(self):
-        one = lettering(20, 20, 1, 10)
-        box = around(one)
-        self.assertEqual(split.pieces(written(one), box), [box])
-
-    def test_a_lone_line_needs_a_wider_gap_than_a_block_of_several(self):
-        """The rule that makes a gap this small safe to cut on at all."""
-        gap = EM
-
-        alone = lettering(20, 20, 1, 5) + lettering(20, 20 + 5 * EM + gap, 1, 5)
-        self.assertEqual(
-            split.pieces(written(alone), around(alone)),
-            [around(alone)],
-            "a single column was cut at the gap between two characters",
-        )
-
-        several = lettering(20, 20, 3, 5) + lettering(20, 20 + 5 * EM + gap, 3, 5)
-        self.assertEqual(
-            len(split.pieces(written(several), around(several))),
-            2,
-            "three columns falling blank at once is a wall and was not cut",
-        )
-
-    def test_lettering_too_close_to_cut_on_its_gap_still_comes_apart_when_staggered(
-        self,
-    ):
-        """Text set at different heights was never one block, however close."""
-        ink = round(EM * 0.85)
-        gap = round(EM * 0.55)
-        near = 20 + EM + ink + gap
-
-        one = lettering(20, 20, 2, 5)
-        alongside = lettering(near, 20, 2, 5)
-        self.assertEqual(
-            split.pieces(written(one, alongside), around(one, alongside)),
-            [around(one, alongside)],
-            "text starting at the same height was cut apart on the gap alone",
-        )
-
-        lower = lettering(near, 20 + round(EM * 1.5), 2, 5)
-        self.assertEqual(
-            len(split.pieces(written(one, lower), around(one, lower))),
-            2,
-            "text starting at a different height was left as one block",
-        )
-
-    def test_a_column_that_stops_early_is_not_a_second_block(self):
-        short = lettering(20, 20, 1, 5) + lettering(20 + EM, 20, 1, 2)
-        self.assertEqual(
-            split.pieces(written(short), around(short)), [around(short)]
-        )
-
-    def test_columns_centred_against_each_other_are_not_two_blocks(self):
-        long_one = lettering(20, 20, 1, 8)
-        middle = lettering(20 + EM, 20 + 3 * EM, 1, 2)
-        both = long_one + middle
-        self.assertEqual(split.pieces(written(both), around(both)), [around(both)])
-
-    def test_two_balloons_a_character_apart_come_apart(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 2 * EM + EM, 25, 2, 5)
-        pieces = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(len(pieces), 2)
-
-    def test_a_block_that_holds_one_balloon_is_handed_back_untouched(self):
-        one = lettering(20, 20, 3, 4)
-        box = Box(10, 10, 200, 200)
-        self.assertEqual(split.pieces(written(one), box), [box])
-
-    def test_each_piece_is_boxed_around_its_own_lettering(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 5 * EM, 30, 2, 5)
-        first, second = split.pieces(written(one, other), around(one, other))
-        self.assertEqual(first, around(one))
-        self.assertEqual(second, around(other))
-
-    def test_no_piece_reaches_outside_the_block_it_came_from(self):
-        one = lettering(20, 20, 2, 5)
-        other = lettering(20 + 5 * EM, 30, 2, 5)
-        box = around(one, other)
-        for piece in split.pieces(written(one, other), box):
-            self.assertEqual(piece, piece.clipped(box.x1, box.y1))
-            self.assertGreaterEqual(piece.x0, box.x0)
-            self.assertGreaterEqual(piece.y0, box.y0)
-
-    def test_a_block_with_nothing_written_in_it_is_left_alone(self):
-        box = Box(10, 10, 100, 100)
-        self.assertEqual(split.pieces(written(), box), [box])
-
-    def test_a_wider_gap_wins_over_a_narrower_one(self):
-        left = lettering(20, 20, 2, 3)
-        right = lettering(20 + 6 * EM, 20, 2, 3)
-        below = lettering(20, 20 + 3 * EM + 4 * EM, 2, 3)
-        pieces = split.pieces(written(left, right, below), around(left, right, below))
-        self.assertEqual(len(pieces), 3)
-
-    def test_the_gap_is_measured_in_characters_not_pixels(self):
-        for em in (EM, EM * 2):
-            one = lettering(20, 20, 2, 4, em)
-            other = lettering(20 + 5 * em, 20, 2, 4, em)
-            pieces = split.pieces(
-                written(one, other, size=(600, 600)), around(one, other)
-            )
-            self.assertEqual(len(pieces), 2, f"at {em}px to the character")
-
-
-class TestCharacter(unittest.TestCase):
-    """Reading the size of one character off the ink."""
-
-    def test_it_lands_near_the_size_the_lettering_was_set_at(self):
-        mask = written(lettering(20, 20, 4, 6))
-        found = split.character(mask[20:20 + 6 * EM, 20:20 + 4 * EM])
-        self.assertGreater(found, EM * 0.6)
-        self.assertLessEqual(found, EM)
-
-    def test_punctuation_does_not_drag_it_down(self):
-        column = lettering(20, 20, 1, 10)
-        small = [Box(g.x0, g.y0, g.x0 + 4, g.y0 + 4) for g in column[:5]]
-        mask = written(column[5:], small)
-        found = split.character(mask[20 : 20 + 10 * EM, 20 : 20 + EM])
-        self.assertGreater(found, EM * 0.6, "the marks were read as tiny")
-
-    def test_characters_set_solid_enough_to_touch_do_not_read_as_one_long_mark(self):
-        column = [Box(20, 20 + r * EM, 20 + EM, 20 + (r + 1) * EM) for r in range(8)]
-        mask = written(column)
-        found = split.character(mask[20 : 20 + 8 * EM, 20 : 20 + EM])
-        self.assertLessEqual(found, EM * 1.5)
-
-
 class TestRegionBlocks(unittest.TestCase):
     """The wiring in Regions.__call__: decode, pad, tell the classes apart, sort."""
 
@@ -972,53 +762,6 @@ class TestRegionBlocks(unittest.TestCase):
         self.assertLess(found[0].box.x0, found[1].box.x0)
 
 
-class TestStaggered(unittest.TestCase):
-    """Whether the two sides of a cut were set as one block or two."""
-
-    def sides(self, first: Box, second: Box) -> np.ndarray:
-        mask = np.zeros((200, 200), bool)
-        for box in (first, second):
-            mask[box.y0 : box.y1, box.x0 : box.x1] = True
-        return mask
-
-    def test_the_same_height_is_not_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(50, 10, 70, 100))
-        self.assertFalse(split.staggered(mask, 0, 40, 20))
-
-    def test_shifted_the_same_way_at_both_ends_is_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(50, 40, 70, 130))
-        self.assertTrue(split.staggered(mask, 0, 40, 20))
-
-    def test_one_lying_inside_the_other_is_not_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 150), Box(50, 50, 70, 110))
-        self.assertFalse(split.staggered(mask, 0, 40, 20))
-
-    def test_a_shift_smaller_than_a_character_is_not_a_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(50, 12, 70, 102))
-        self.assertFalse(split.staggered(mask, 0, 40, 20))
-
-    def test_it_reads_across_the_cut_whichever_way_that_runs(self):
-        mask = self.sides(Box(10, 10, 100, 30), Box(40, 50, 130, 70))
-        self.assertTrue(split.staggered(mask, 1, 40, 20))
-
-    def test_a_side_with_nothing_on_it_is_no_stagger(self):
-        mask = self.sides(Box(10, 10, 30, 100), Box(12, 10, 28, 100))
-        self.assertFalse(split.staggered(mask, 0, 150, 20))
-
-
-class TestBlanks(unittest.TestCase):
-    def test_every_run_between_two_marks_is_found(self):
-        profile = np.array([1, 0, 0, 1, 0, 1, 1], bool)
-        self.assertEqual(split.blanks(profile), [(1, 2), (4, 1)])
-
-    def test_blank_at_either_end_is_no_run(self):
-        profile = np.array([0, 0, 1, 1, 0, 0], bool)
-        self.assertEqual(split.blanks(profile), [])
-
-    def test_nothing_written_is_no_run(self):
-        self.assertEqual(split.blanks(np.zeros(10, bool)), [])
-
-
 class TestKeptPass(unittest.TestCase):
     """The last page's forward pass is kept, because it is asked for twice."""
 
@@ -1115,33 +858,6 @@ class TestKeptPass(unittest.TestCase):
         made.run(self.page(0))
         made.run(self.page(7))
         self.assertEqual(made.passes, 2)
-
-
-class TestWidestBlank(unittest.TestCase):
-    def test_it_finds_the_run_between_two_marks(self):
-        profile = np.array([1, 1, 0, 0, 0, 1, 1], bool)
-        self.assertEqual(split.widest_blank(profile), (2, 3))
-
-    def test_blank_at_either_end_is_only_slack_in_the_box(self):
-        profile = np.array([0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0], bool)
-        self.assertEqual(split.widest_blank(profile), (6, 1))
-
-    def test_nothing_written_is_no_run(self):
-        self.assertEqual(split.widest_blank(np.zeros(10, bool)), (0, 0))
-
-    def test_one_mark_on_its_own_is_no_run(self):
-        profile = np.array([0, 1, 0], bool)
-        self.assertEqual(split.widest_blank(profile), (0, 0))
-
-
-class TestInked(unittest.TestCase):
-    def test_it_boxes_everything_written(self):
-        mask = np.zeros((40, 50), bool)
-        mask[10:20, 5:25] = True
-        self.assertEqual(split.inked(mask), Box(5, 10, 25, 20))
-
-    def test_nothing_written_has_no_box(self):
-        self.assertIsNone(split.inked(np.zeros((10, 10), bool)))
 
 
 class TestSuppressed(unittest.TestCase):
@@ -1397,59 +1113,6 @@ def translations(*texts) -> str:
     return json.dumps({"translations": list(texts)})
 
 
-def with_terms(texts: list[str], terms: list[dict]) -> str:
-    """An answer that named some of what it translated."""
-    return json.dumps({"translations": texts, "terms": terms})
-
-
-def with_story(texts: list[str], scene: str = "", cast: list[dict] | None = None) -> str:
-    """An answer that said where the chapter had got to and who is in it."""
-    story = {"scene": scene, "cast": cast if cast is not None else []}
-    return json.dumps({"translations": texts, "story": story})
-
-
-def with_beats(
-    beats: list[str],
-    synopsis: str = "",
-    register: str = "",
-    cast: list[dict] | None = None,
-    terms: list[dict] | None = None,
-) -> str:
-    """A survey window's answer: a line per page, and what it made of the chapter."""
-    said: dict = {"beats": beats}
-    if synopsis:
-        said["synopsis"] = synopsis
-    if register:
-        said["register"] = register
-    if cast is not None:
-        said["cast"] = cast
-    if terms is not None:
-        said["terms"] = terms
-    return json.dumps(said)
-
-
-def person(name: str, gender: str = llamacpp.UNKNOWN, note: str = "") -> dict:
-    return {"name": name, "gender": gender, "note": note}
-
-
-def translated(
-    texts: list[str], terms: list[dict] | None = None, story: dict | None = None
-) -> llamacpp.Translation:
-    """What `llamacpp.translate` hands the server back."""
-    return llamacpp.Translation(texts, terms or [], story or {})
-
-
-def surveyed(
-    beats: list[str] | None = None,
-    synopsis: str = "",
-    register: str = "",
-    cast: list[dict] | None = None,
-    terms: list[dict] | None = None,
-) -> llamacpp.Chapter:
-    """What `llamacpp.survey` hands the server back."""
-    return llamacpp.Chapter(beats or [], synopsis, register, cast or [], terms or [])
-
-
 class TestLlamaCpp(unittest.TestCase):
     """The talking to llama.cpp. Nothing here goes near the network."""
 
@@ -1466,7 +1129,7 @@ class TestLlamaCpp(unittest.TestCase):
             return reply(translations("Good morning", "What is this?"))
 
         with mock.patch.object(llamacpp, "ask", ask):
-            got = llamacpp.translate(["おはよう", "なにこれ"], "gemma4:12b").texts
+            got = llamacpp.translate(["おはよう", "なにこれ"], "gemma4:12b")
         self.assertEqual(got, ["Good morning", "What is this?"])
         self.assertEqual(len(asked), 1, "the lines were not sent together")
         self.assertEqual(asked[0][0], "/v1/chat/completions")
@@ -1477,13 +1140,13 @@ class TestLlamaCpp(unittest.TestCase):
             llamacpp, "ask", return_value=reply("", translations("Good morning"))
         ):
             done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.texts, ["Good morning"])
+        self.assertEqual(done, ["Good morning"])
 
     def test_a_fenced_answer_is_still_read(self):
         fenced = f"```json\n{translations('Good morning')}\n```"
         with mock.patch.object(llamacpp, "ask", return_value=reply(fenced)):
             done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.texts, ["Good morning"])
+        self.assertEqual(done, ["Good morning"])
 
     def test_a_miscounted_page_is_asked_again_whole(self):
         answers = [
@@ -1491,7 +1154,7 @@ class TestLlamaCpp(unittest.TestCase):
             reply(translations("first", "second")),
         ]
         with mock.patch.object(llamacpp, "ask", side_effect=answers) as ask:
-            got = llamacpp.translate(["いち", "に"], "m").texts
+            got = llamacpp.translate(["いち", "に"], "m")
         self.assertEqual(got, ["first", "second"])
         self.assertEqual(ask.call_count, 2, "it did not simply ask again")
 
@@ -1517,7 +1180,7 @@ class TestLlamaCpp(unittest.TestCase):
             reply(translations("second")),
         ]
         with mock.patch.object(llamacpp, "ask", side_effect=answers) as ask:
-            got = llamacpp.translate(["いち", "に"], "m").texts
+            got = llamacpp.translate(["いち", "に"], "m")
         self.assertEqual(got, ["first", "second"])
         self.assertEqual(ask.call_count, 4, "it did not ask again line by line")
 
@@ -1533,12 +1196,12 @@ class TestLlamaCpp(unittest.TestCase):
             return reply(translations("Good morning", "Let's go"))
 
         with mock.patch.object(llamacpp, "ask", ask):
-            got = llamacpp.translate(["おはよう", "   ", "行こう"], "m").texts
+            got = llamacpp.translate(["おはよう", "   ", "行こう"], "m")
         self.assertEqual(got, ["Good morning", "", "Let's go"])
 
     def test_nothing_to_translate_asks_nothing(self):
         with mock.patch.object(llamacpp, "ask", side_effect=AssertionError("asked")):
-            self.assertEqual(llamacpp.translate(["", "  "], "m"), translated(["", ""]))
+            self.assertEqual(llamacpp.translate(["", "  "], "m"), ["", ""])
 
     def test_the_briefing_says_what_to_translate_into(self):
         self.assertIn("Dutch", llamacpp.briefing("Dutch"))
@@ -1659,111 +1322,6 @@ class TestSaidAboutEachLine(unittest.TestCase):
         self.assertIn("1. [free] ドン", asked[3][1]["content"])
 
 
-class TestGlossary(unittest.TestCase):
-    """Carrying a chapter's names from one page to the next."""
-
-    def asking(self, *answers):
-        """llama.cpp patched to give these answers, collecting the system messages."""
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][0]["content"])
-            return answers[min(len(asked) - 1, len(answers) - 1)]
-
-        return asked, mock.patch.object(llamacpp, "ask", ask)
-
-    def test_terms_come_back_beside_the_translations(self):
-        named = [{"source": "タロウ", "target": "Taro"}]
-        answer = reply(with_terms(["Taro is here"], named))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["タロウだ"], "m")
-        self.assertEqual(done.texts, ["Taro is here"])
-        self.assertEqual(done.terms, named)
-
-    def test_a_page_that_named_nothing_still_translates(self):
-        with mock.patch.object(
-            llamacpp, "ask", return_value=reply(translations("Good morning"))
-        ):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.texts, ["Good morning"])
-        self.assertEqual(done.terms, [])
-
-    def test_a_term_that_is_not_a_pair_is_dropped(self):
-        ragged = [{"source": "タロウ"}, {"target": "only"}, "nonsense", {}]
-        kept = [{"source": "先輩", "target": "senpai"}]
-        answer = reply(with_terms(["Morning"], ragged + kept))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.terms, kept)
-
-    def test_the_glossary_is_put_in_front_of_the_page(self):
-        asked, patched = self.asking(reply(translations("Taro is here")))
-        with patched:
-            llamacpp.translate(
-                ["タロウだ"],
-                "m",
-                glossary=[{"source": "タロウ", "target": "Taro"}],
-            )
-        self.assertIn("タロウ = Taro", asked[0])
-
-    def test_a_page_with_no_glossary_is_not_told_about_one(self):
-        asked, patched = self.asking(reply(translations("Good morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m")
-        self.assertNotIn(llamacpp.GLOSSARY_HEADING, asked[0])
-
-    def test_a_glossary_holds_when_it_falls_back_to_one_at_a_time(self):
-        asked, patched = self.asking(
-            reply(translations("only one")),
-            reply(translations("only one")),
-            reply(translations("a line")),
-        )
-        with patched:
-            llamacpp.translate(
-                ["いち", "に"], "m", glossary=[{"source": "タロウ", "target": "Taro"}]
-            )
-        self.assertEqual(len(asked), 4, "it did not ask again line by line")
-        for said in asked:
-            self.assertIn("タロウ = Taro", said)
-
-    def test_a_miscounted_page_keeps_the_terms_it_did_return(self):
-        named = [{"source": "タロウ", "target": "Taro"}]
-        answers = [
-            reply(with_terms(["only one"], named)),
-            reply(translations("only one")),
-            reply(translations("first")),
-            reply(translations("second")),
-        ]
-        with mock.patch.object(llamacpp, "ask", side_effect=answers):
-            done = llamacpp.translate(["いち", "に"], "m")
-        self.assertEqual(done.texts, ["first", "second"])
-        self.assertEqual(done.terms, named)
-
-    def test_a_page_asked_again_keeps_the_terms_of_the_first_answer(self):
-        named = [{"source": "タロウ", "target": "Taro"}]
-        answers = [
-            reply(with_terms(["only one"], named)),
-            reply(translations("first", "second")),
-        ]
-        with mock.patch.object(llamacpp, "ask", side_effect=answers):
-            done = llamacpp.translate(["いち", "に"], "m")
-        self.assertEqual(done.texts, ["first", "second"])
-        self.assertEqual(done.terms, named)
-
-    def test_only_so_many_terms_are_put_in_front_of_a_page(self):
-        many = [{"source": f"あ{at}", "target": f"A{at}"} for at in range(80)]
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m", glossary=many)
-        self.assertIn("あ0 = A0", asked[0])
-        self.assertNotIn(f"あ{llamacpp.GLOSSARY_LIMIT} =", asked[0])
-
-    def test_the_terms_note_is_said_whatever_the_prompt_is(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m", system="Pirate, please.")
-        self.assertIn(llamacpp.TERMS_NOTE, asked[0])
-
 
 class TestSaidTwice(unittest.TestCase):
     """The same words twice on one page. Asked about once, lettered twice."""
@@ -1782,7 +1340,7 @@ class TestSaidTwice(unittest.TestCase):
         with patched:
             done = llamacpp.translate(["……", "行こう", "……"], "m")
         self.assertEqual(asked[0].splitlines(), ["1. ……", "2. 行こう"])
-        self.assertEqual(done.texts, ["...", "Let's go", "..."])
+        self.assertEqual(done, ["...", "Let's go", "..."])
 
     def test_the_same_words_in_different_lettering_are_two_questions(self):
         asked, patched = self.sending(reply(translations("Wham!", "wham")))
@@ -1791,7 +1349,7 @@ class TestSaidTwice(unittest.TestCase):
                 ["ドン", "ドン"], "m", kinds=[FREE, SPEECH]
             )
         self.assertEqual(len(asked[0].splitlines()), 2)
-        self.assertEqual(done.texts, ["Wham!", "wham"])
+        self.assertEqual(done, ["Wham!", "wham"])
 
     def test_the_tightest_room_of_the_two_is_the_one_asked_for(self):
         asked, patched = self.sending(reply(translations("Morning")))
@@ -1816,572 +1374,6 @@ class TestSaidTwice(unittest.TestCase):
         self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(
             body["response_format"]["json_schema"]["schema"], llamacpp.SCHEMA
-        )
-
-
-class TestStory(unittest.TestCase):
-    """Carrying what is going on from one page of a chapter to the next."""
-
-    def asking(self, answer):
-        """llama.cpp patched to answer that, collecting the system messages."""
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][0]["content"])
-            return answer
-
-        return asked, mock.patch.object(llamacpp, "ask", ask)
-
-    def test_the_story_so_far_comes_back_beside_the_translations(self):
-        cast = [person("タロウ", llamacpp.MALE, "late for school")]
-        answer = reply(with_story(["Taro is here"], "Taro has arrived late.", cast))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["タロウだ"], "m")
-        self.assertEqual(done.story["scene"], "Taro has arrived late.")
-        self.assertEqual(done.story["cast"], cast)
-
-    def test_a_page_that_said_nothing_about_the_story_still_translates(self):
-        with mock.patch.object(
-            llamacpp, "ask", return_value=reply(translations("Good morning"))
-        ):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.texts, ["Good morning"])
-        self.assertEqual(done.story, {})
-
-    def test_who_a_page_has_not_shown_comes_back_unknown(self):
-        cast = [person("タロウ", llamacpp.UNKNOWN)]
-        answer = reply(with_story(["Morning"], "Someone arrives.", cast))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.story["cast"][0]["gender"], "unknown")
-
-    def test_a_gender_this_does_not_know_is_read_as_unknown(self):
-        cast = [{"name": "タロウ", "gender": "a man, probably"}]
-        answer = reply(with_story(["Morning"], "", cast))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.story["cast"][0]["gender"], llamacpp.UNKNOWN)
-
-    def test_a_placeholder_for_a_name_is_dropped(self):
-        cast = [person("unknown"), person("?"), person("ハナ", llamacpp.FEMALE)]
-        answer = reply(with_story(["Morning"], "", cast))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.story["cast"], [person("ハナ", llamacpp.FEMALE)])
-
-    def test_someone_who_is_not_even_a_name_is_dropped(self):
-        cast = [{"gender": "male"}, {"name": "  "}, person("ハナ", llamacpp.FEMALE)]
-        answer = reply(with_story(["Morning"], "", cast))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(done.story["cast"], [person("ハナ", llamacpp.FEMALE)])
-
-    def test_only_so_many_people_are_carried(self):
-        crowd = [person(f"人{at}") for at in range(40)]
-        answer = reply(with_story(["Morning"], "A crowd.", crowd))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(len(done.story["cast"]), llamacpp.CAST_LIMIT)
-
-    def test_the_story_so_far_is_put_in_front_of_the_page(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"],
-                "m",
-                story={
-                    "scene": "Taro has arrived late.",
-                    "cast": [person("タロウ", llamacpp.MALE, "the younger brother")],
-                },
-            )
-        self.assertIn(llamacpp.PREVIOUSLY_HEADING, asked[0])
-        self.assertIn("Taro has arrived late.", asked[0])
-        self.assertIn("タロウ — male, the younger brother", asked[0])
-
-    def test_what_was_set_by_hand_is_put_over_as_settled(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"],
-                "m",
-                story={
-                    "cast": [
-                        {"name": "ハナ", "gender": "female", "settled": ["gender"]}
-                    ]
-                },
-            )
-        self.assertIn("ハナ — female (settled)", asked[0])
-
-    def test_a_page_with_no_story_yet_is_not_told_about_one(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m")
-        self.assertNotIn(llamacpp.PREVIOUSLY_HEADING, asked[0])
-        self.assertIn(llamacpp.filled(llamacpp.STORY_NOTE, "English", "Japanese"), asked[0])
-
-    def test_the_cast_is_asked_for_in_the_language_of_the_page(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["안녕"], "m", "Dutch", source="Korean")
-        self.assertIn("in the Korean they are written in", asked[0])
-        self.assertNotIn("{source}", asked[0])
-
-    def test_a_scene_that_runs_on_is_cut_rather_than_dropped(self):
-        rambled = "It goes on. " * 200
-        answer = reply(with_story(["Morning"], rambled))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(len(done.story["scene"]), llamacpp.SCENE_LIMIT)
-
-    def test_a_page_does_not_shorten_a_description_the_survey_wrote(self):
-        told = person("ハナ", note="who " * 100)
-        answer = reply(with_story(["Morning"], "They are arguing.", [told]))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(len(done.story["cast"][0]["note"]), llamacpp.CAST_NOTE_LIMIT)
-
-    def test_the_story_holds_when_it_falls_back_to_one_at_a_time(self):
-        asked, patched = self.asking(reply(translations("only one")))
-        with patched:
-            llamacpp.translate(
-                ["いち", "に"], "m", story={"scene": "Taro has arrived late."}
-            )
-        self.assertEqual(len(asked), 4, "it did not ask again line by line")
-        for said in asked:
-            self.assertIn("Taro has arrived late.", said)
-
-    def test_a_miscounted_page_keeps_the_story_it_did_return(self):
-        answers = [
-            reply(with_story(["only one"], "They are arguing.")),
-            reply(translations("first", "second")),
-        ]
-        with mock.patch.object(llamacpp, "ask", side_effect=answers):
-            done = llamacpp.translate(["いち", "に"], "m")
-        self.assertEqual(done.story["scene"], "They are arguing.")
-
-
-class TestAskingAboutTheUnknown(unittest.TestCase):
-    """Who is still unknown, asked under the page rather than in the briefing."""
-
-    def paging(self, answer):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][1]["content"])
-            return answer
-
-        return asked, mock.patch.object(llamacpp, "ask", ask)
-
-    def test_the_page_ends_by_asking_about_whoever_is_unknown(self):
-        asked, patched = self.paging(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"],
-                "m",
-                story={"cast": [person("先輩"), person("ハナ", llamacpp.FEMALE)]},
-            )
-        self.assertIn("Still unknown: 先輩", asked[0])
-        self.assertNotIn("ハナ", asked[0], "it asked about someone already known")
-        self.assertTrue(asked[0].startswith("1. おはよう"), asked[0])
-
-    def test_a_chapter_with_nobody_unknown_is_asked_nothing(self):
-        asked, patched = self.paging(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"], "m", story={"cast": [person("ハナ", llamacpp.FEMALE)]}
-            )
-        self.assertEqual(asked[0], "1. おはよう")
-
-    def test_a_fact_set_by_hand_is_never_asked_about(self):
-        asked, patched = self.paging(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"],
-                "m",
-                story={
-                    "cast": [
-                        {"name": "先輩", "gender": "unknown", "settled": ["gender"]}
-                    ]
-                },
-            )
-        self.assertEqual(asked[0], "1. おはよう")
-
-
-class TestTermNotes(unittest.TestCase):
-    """A few words on who someone is, carried with the name."""
-
-    def test_a_term_carries_what_it_is_where_the_model_said(self):
-        named = [{"source": "先輩", "target": "senpai", "note": "an older pupil"}]
-        answer = reply(with_terms(["Senpai!"], named))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["先輩！"], "m")
-        self.assertEqual(done.terms, named)
-
-    def test_a_term_without_one_stays_a_pair(self):
-        named = [{"source": "タロウ", "target": "Taro"}]
-        answer = reply(with_terms(["Taro"], named))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["タロウ"], "m")
-        self.assertEqual(done.terms, named)
-
-    def test_a_note_that_runs_on_is_cut(self):
-        named = [{"source": "先輩", "target": "senpai", "note": "who " * 100}]
-        answer = reply(with_terms(["Senpai!"], named))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            done = llamacpp.translate(["先輩！"], "m")
-        self.assertEqual(len(done.terms[0]["note"]), llamacpp.NOTE_LIMIT)
-
-    def test_a_note_is_put_in_front_of_the_page_with_its_term(self):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][0]["content"])
-            return reply(translations("Senpai!"))
-
-        glossary = [{"source": "先輩", "target": "senpai", "note": "an older pupil"}]
-        with mock.patch.object(llamacpp, "ask", ask):
-            llamacpp.translate(["先輩！"], "m", glossary=glossary)
-        self.assertIn("先輩 = senpai  (an older pupil)", asked[0])
-
-
-class TestSurvey(unittest.TestCase):
-    """Reading a whole chapter before any of it is translated."""
-
-    def asking(self, *answers):
-        """llama.cpp patched to give these answers, collecting the system messages."""
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][0]["content"])
-            return answers[min(len(asked) - 1, len(answers) - 1)]
-
-        return asked, mock.patch.object(llamacpp, "ask", ask)
-
-    def paging(self, *answers):
-        """The same, collecting the pages sent rather than the briefing."""
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][1]["content"])
-            return answers[min(len(asked) - 1, len(answers) - 1)]
-
-        return asked, mock.patch.object(llamacpp, "ask", ask)
-
-    def test_one_beat_comes_back_for_each_page(self):
-        answer = reply(with_beats(["Taro arrives.", "They argue."]))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["タロウだ"], ["なんだと"]], "m")
-        self.assertEqual(found.beats, ["Taro arrives.", "They argue."])
-
-    def test_a_page_with_nothing_on_it_still_gets_a_beat(self):
-        answer = reply(with_beats(["Taro arrives.", "Nobody speaks."]))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["タロウだ"], []], "m")
-        self.assertEqual(len(found.beats), 2)
-
-    def test_the_page_is_named_even_where_it_says_nothing(self):
-        asked, patched = self.paging(reply(with_beats(["one", "two"])))
-        with patched:
-            llamacpp.survey([["タロウだ"], []], "m")
-        self.assertIn("Page 2:", asked[0])
-
-    def test_what_the_chapter_is_comes_back_beside_the_beats(self):
-        cast = [person("タロウ", llamacpp.MALE, "late for school")]
-        terms = [{"source": "タロウ", "target": "Taro"}]
-        answer = reply(
-            with_beats(["He arrives."], "Taro is late.", "Light and modern.", cast, terms)
-        )
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["タロウだ"]], "m")
-        self.assertEqual(found.synopsis, "Taro is late.")
-        self.assertEqual(found.register, "Light and modern.")
-        self.assertEqual(found.cast, cast)
-        self.assertEqual(found.terms, terms)
-
-    def test_a_window_that_said_nothing_about_the_chapter_still_answers(self):
-        with mock.patch.object(llamacpp, "ask", return_value=reply(with_beats(["one"]))):
-            found = llamacpp.survey([["タロウだ"]], "m")
-        self.assertEqual(found.beats, ["one"])
-        self.assertEqual(found.cast, [])
-        self.assertEqual(found.synopsis, "")
-
-    def test_a_window_that_lost_count_is_asked_again(self):
-        answers = [
-            reply(with_beats(["only one"])),
-            reply(with_beats(["first", "second"])),
-        ]
-        with mock.patch.object(llamacpp, "ask", side_effect=answers) as asked:
-            found = llamacpp.survey([["いち"], ["に"]], "m")
-        self.assertEqual(found.beats, ["first", "second"])
-        self.assertEqual(asked.call_count, 2)
-
-    def test_a_window_that_lost_count_twice_hands_back_no_beats(self):
-        with mock.patch.object(llamacpp, "ask", return_value=reply(with_beats(["one"]))):
-            found = llamacpp.survey([["いち"], ["に"]], "m")
-        self.assertEqual(found.beats, [])
-
-    def test_a_miscounted_window_keeps_what_it_said_about_the_chapter(self):
-        answer = reply(with_beats(["one"], "Taro is late.", cast=[person("タロウ")]))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["いち"], ["に"]], "m")
-        self.assertEqual(found.synopsis, "Taro is late.")
-        self.assertEqual(found.cast, [person("タロウ")])
-
-    def test_a_window_that_lost_count_is_told_the_number_it_got_wrong(self):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][-1]["content"])
-            return reply(with_beats(["only one"]))
-
-        with mock.patch.object(llamacpp, "ask", ask):
-            llamacpp.survey([["いち"], ["に"]], "m")
-        self.assertIn("1 beats for 2 pages", asked[1])
-
-    def test_what_the_earlier_pages_came_to_is_put_in_front_of_the_next(self):
-        asked, patched = self.asking(reply(with_beats(["three"])))
-        with patched:
-            llamacpp.survey(
-                [["さん"]],
-                "m",
-                chapter={
-                    "synopsis": "Taro is late.",
-                    "register": "Light and modern.",
-                    "cast": [person("タロウ", llamacpp.MALE)],
-                    "terms": [{"source": "タロウ", "target": "Taro"}],
-                },
-            )
-        self.assertIn("Taro is late.", asked[0])
-        self.assertIn("Light and modern.", asked[0])
-        self.assertIn("タロウ — male", asked[0])
-        self.assertIn("タロウ = Taro", asked[0])
-
-    def test_the_beats_already_written_are_not_sent_back(self):
-        asked, patched = self.asking(reply(with_beats(["three"])))
-        with patched:
-            llamacpp.survey([["さん"]], "m", chapter={"beats": ["he wakes", "he runs"]})
-        self.assertNotIn("he wakes", asked[0])
-
-    def test_the_pages_are_numbered_from_where_the_window_starts(self):
-        asked, patched = self.paging(reply(with_beats(["nine"])))
-        with patched:
-            llamacpp.survey([["きゅう"]], "m", first=8)
-        self.assertIn("Page 9:", asked[0])
-
-    def test_the_cast_is_asked_for_in_the_language_of_the_pages(self):
-        asked, patched = self.asking(reply(with_beats(["one"])))
-        with patched:
-            llamacpp.survey([["タロウだ"]], "m", source="Korean")
-        self.assertIn("in the Korean they are written in", asked[0])
-
-    def test_a_synopsis_that_runs_on_is_cut_rather_than_dropped(self):
-        answer = reply(with_beats(["one"], "so " * 2000))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["いち"]], "m")
-        self.assertEqual(len(found.synopsis), llamacpp.SYNOPSIS_LIMIT)
-
-    def test_a_register_that_runs_on_is_cut(self):
-        answer = reply(with_beats(["one"], register="formal " * 200))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["いち"]], "m")
-        self.assertEqual(len(found.register), llamacpp.REGISTER_LIMIT)
-
-    def test_a_beat_that_runs_on_is_cut(self):
-        answer = reply(with_beats(["and then " * 100]))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["いち"]], "m")
-        self.assertEqual(len(found.beats[0]), llamacpp.BEAT_LIMIT)
-
-    def test_only_so_many_people_are_carried(self):
-        crowd = [person(f"人{at}") for at in range(40)]
-        answer = reply(with_beats(["one"], cast=crowd))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["いち"]], "m")
-        self.assertEqual(len(found.cast), llamacpp.CAST_LIMIT)
-
-    def test_a_description_of_someone_is_carried_further_than_a_terms_note(self):
-        told = person("ハナ", note="who " * 100)
-        answer = reply(with_beats(["one"], cast=[told]))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["いち"]], "m")
-        self.assertEqual(len(found.cast[0]["note"]), llamacpp.CAST_NOTE_LIMIT)
-        self.assertGreater(llamacpp.CAST_NOTE_LIMIT, llamacpp.NOTE_LIMIT)
-
-    def test_the_cast_is_asked_to_say_who_someone_is(self):
-        asked, patched = self.asking(reply(with_beats(["one"])))
-        with patched:
-            llamacpp.survey([["いち"]], "m")
-        self.assertIn("`note` saying who they are", asked[0])
-
-    def test_a_placeholder_for_a_name_is_dropped_here_too(self):
-        answer = reply(with_beats(["one"], cast=[person("unknown"), person("ハナ")]))
-        with mock.patch.object(llamacpp, "ask", return_value=answer):
-            found = llamacpp.survey([["いち"]], "m")
-        self.assertEqual(found.cast, [person("ハナ")])
-
-    def test_a_chapter_with_no_pages_asks_nothing(self):
-        with mock.patch.object(llamacpp, "ask") as asked:
-            found = llamacpp.survey([], "m")
-        asked.assert_not_called()
-        self.assertEqual(found.beats, [])
-
-    def test_the_survey_uses_its_own_structured_output_schema(self):
-        sent = []
-
-        def ask(path, body=None, **kwargs):
-            sent.append((path, body))
-            return reply(with_beats(["one"]))
-
-        with mock.patch.object(llamacpp, "ask", ask):
-            llamacpp.survey([["いち"]], "m")
-        path, body = sent[0]
-        self.assertEqual(path, "/v1/chat/completions")
-        self.assertEqual(
-            body["response_format"]["json_schema"]["schema"], llamacpp.SURVEY_SCHEMA
-        )
-
-
-class TestChapter(unittest.TestCase):
-    """A page translated against what the whole chapter turned out to be."""
-
-    def asking(self, answer):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][0]["content"])
-            return answer
-
-        return asked, mock.patch.object(llamacpp, "ask", ask)
-
-    def test_the_chapter_is_put_in_front_of_the_page(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"],
-                "m",
-                chapter={"synopsis": "Taro is late.", "register": "Light."},
-            )
-        self.assertIn("Taro is late.", asked[0])
-        self.assertIn("Light.", asked[0])
-
-    def test_a_page_with_no_chapter_is_not_told_about_one(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m")
-        self.assertNotIn(llamacpp.SYNOPSIS_HEADING, asked[0])
-
-    def test_the_note_about_giving_things_away_is_said_only_with_a_chapter(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m")
-        self.assertNotIn("must not be made to hint", asked[0])
-
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m", chapter={"synopsis": "Taro is late."})
-        self.assertIn("must not be made to hint", asked[0])
-
-    def test_the_note_is_said_whatever_the_prompt_is(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"], "m", system="Translate.", chapter={"synopsis": "Late."}
-            )
-        self.assertIn("must not be made to hint", asked[0])
-
-    def test_the_note_names_the_language_it_is_about(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["안녕"], "m", source="Korean", chapter={"synopsis": "Late."}
-            )
-        self.assertIn("Where the Korean is vague on purpose", asked[0])
-
-    def test_the_page_being_translated_is_marked_among_the_beats(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"], "m", chapter={"beats": ["one", "two", "three"]}, page=1
-            )
-        self.assertIn("→ 2. two", asked[0])
-        self.assertIn("  1. one", asked[0])
-
-    def test_only_the_beats_around_the_page_are_sent(self):
-        beats = [f"beat{at}" for at in range(40)]
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m", chapter={"beats": beats}, page=20)
-        self.assertIn("beat20", asked[0])
-        self.assertNotIn("beat13", asked[0])
-        self.assertNotIn("beat23", asked[0])
-
-    def test_the_window_is_cut_at_the_ends_of_the_chapter(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"],
-                "m",
-                chapter={"beats": [f"beat{at}" for at in range(5)]},
-                page=0,
-            )
-        self.assertIn("→ 1. beat0", asked[0])
-        self.assertNotIn("beat3", asked[0])
-
-    def test_a_chapter_of_nothing_is_not_put_in_front_of_the_page(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(["おはよう"], "m", chapter={"beats": ["", ""]})
-        self.assertNotIn(llamacpp.BEATS_HEADING, asked[0])
-
-    def test_the_chapter_holds_when_it_falls_back_to_one_at_a_time(self):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][0]["content"])
-            return reply(translations("only one"))
-
-        with mock.patch.object(llamacpp, "ask", ask):
-            llamacpp.translate(
-                ["いち", "に"], "m", chapter={"synopsis": "Taro is late."}
-            )
-        self.assertIn("Taro is late.", asked[-1])
-
-    def test_the_page_is_told_where_in_the_chapter_it_is(self):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][1]["content"])
-            return reply(translations("Morning"))
-
-        with mock.patch.object(llamacpp, "ask", ask):
-            llamacpp.translate(
-                ["おはよう"], "m", chapter={"beats": ["one", "two", "three"]}, page=1
-            )
-        self.assertIn("This is page 2 of 3", asked[0])
-        self.assertTrue(asked[0].startswith("1. おはよう"), asked[0])
-
-    def test_a_page_with_no_chapter_is_not_told_where_it_is(self):
-        asked = []
-
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"][1]["content"])
-            return reply(translations("Morning"))
-
-        with mock.patch.object(llamacpp, "ask", ask):
-            llamacpp.translate(["おはよう"], "m")
-        self.assertEqual(asked[0], "1. おはよう")
-
-    def test_the_chapter_comes_before_the_story_so_far(self):
-        asked, patched = self.asking(reply(translations("Morning")))
-        with patched:
-            llamacpp.translate(
-                ["おはよう"],
-                "m",
-                chapter={"synopsis": "Taro is late."},
-                story={"scene": "He is running."},
-            )
-        self.assertLess(
-            asked[0].index("Taro is late."), asked[0].index("He is running.")
         )
 
 
@@ -3016,45 +2008,6 @@ class TestApi(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("JSON", response.json["error"])
 
-    def test_render_sets_the_text_in_the_box(self):
-        response = client().post(
-            "/api/render",
-            data=payload(
-                page(), regions=[{"box": [20, 20, 180, 120], "text": "HELLO THERE"}]
-            ),
-        )
-        self.assertEqual(response.status_code, 200)
-        inside = patch(opened(response), Box(20, 20, 180, 120))
-        self.assertTrue((inside < 128).any())
-        self.assertTrue((inside == 255).any())
-
-    def test_render_gives_the_new_text_a_clear_ground_unasked(self):
-        response = client().post(
-            "/api/render",
-            data=payload(toned(), regions=[{"box": INK.as_list(), "text": "HI"}]),
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue((patch(opened(response), INK) == 255).any())
-
-    def test_render_can_fill_from_the_art_when_asked(self):
-        response = client().post(
-            "/api/render",
-            data=payload(
-                toned(), regions=[{"box": INK.as_list(), "text": "HI"}], fill="art"
-            ),
-        )
-        self.assertEqual(response.status_code, 200)
-        inside = patch(opened(response), INK)
-        self.assertFalse((inside == 255).any(), "the box was whited out")
-        self.assertTrue((inside < 128).any(), "no lettering was drawn")
-
-    def test_render_rejects_a_region_without_a_box(self):
-        response = client().post(
-            "/api/render", data=payload(page(), regions=[{"text": "HELLO"}])
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("box", response.json["error"])
-
     def test_models_are_listed(self):
         with mock.patch.object(
             server.llamacpp, "models", return_value=["gemma4:12b"]
@@ -3097,21 +2050,19 @@ class TestApi(unittest.TestCase):
 
     def test_translate_answers_with_one_text_per_text(self):
         with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated(["Good morning"])
+            server.llamacpp, "translate", return_value=["Good morning"]
         ) as translating:
             response = client().post(
                 "/api/translate",
                 data={"texts": json.dumps(["おはよう"]), "model": "gemma4:12b"},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json, {"texts": ["Good morning"], "terms": [], "story": {}}
-        )
+        self.assertEqual(response.json, {"texts": ["Good morning"]})
         self.assertEqual(translating.call_args.args[1], "gemma4:12b")
 
     def test_translate_takes_the_language_to_translate_into(self):
         with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=[""]
         ) as into:
             client().post(
                 "/api/translate",
@@ -3119,42 +2070,9 @@ class TestApi(unittest.TestCase):
             )
         self.assertEqual(into.call_args.args[2], "Dutch")
 
-    def test_translate_hands_back_the_terms_the_page_named(self):
-        named = [{"source": "タロウ", "target": "Taro"}]
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated(["Taro is here"], named)
-        ):
-            response = client().post(
-                "/api/translate",
-                data={"texts": json.dumps(["タロウだ"]), "model": "m"},
-            )
-        self.assertEqual(response.json["terms"], named)
-
-    def test_translate_passes_a_glossary_on(self):
-        named = [{"source": "タロウ", "target": "Taro"}]
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={
-                    "texts": "[]",
-                    "model": "m",
-                    "glossary": json.dumps(named),
-                },
-            )
-        self.assertEqual(told.call_args.kwargs["glossary"], named)
-
-    def test_translate_without_a_glossary_sends_none(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post("/api/translate", data={"texts": "[]", "model": "m"})
-        self.assertIsNone(told.call_args.kwargs["glossary"])
-
     def test_translate_passes_what_each_line_is_on(self):
         with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=[""]
         ) as told:
             client().post(
                 "/api/translate",
@@ -3170,7 +2088,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_without_them_sends_none(self):
         with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=[""]
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["kinds"])
@@ -3178,7 +2096,7 @@ class TestApi(unittest.TestCase):
 
     def test_a_block_classified_by_nothing_is_a_real_answer(self):
         with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=[""]
         ) as told:
             response = client().post(
                 "/api/translate",
@@ -3215,299 +2133,15 @@ class TestApi(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("kinds", response.json["error"])
 
-    def test_translate_carries_the_story_both_ways(self):
-        back = {"scene": "They are arguing.", "cast": [person("ハナ", "female")]}
-        sent_story = {"scene": "Taro has arrived late.", "cast": [person("タロウ")]}
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated(["Morning"], story=back)
-        ) as told:
-            response = client().post(
-                "/api/translate",
-                data={
-                    "texts": json.dumps(["おはよう"]),
-                    "model": "m",
-                    "previously": json.dumps(sent_story),
-                },
-            )
-        given = told.call_args.kwargs["story"]
-        self.assertEqual(given["scene"], "Taro has arrived late.")
-        self.assertEqual(given["cast"][0]["name"], "タロウ")
-        self.assertEqual(response.json["story"], back)
-
-    def test_a_fact_set_by_hand_is_carried_as_settled(self):
-        settled = {"name": "ハナ", "gender": "female", "settled": ["gender"]}
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={
-                    "texts": "[]",
-                    "model": "m",
-                    "previously": json.dumps({"cast": [settled]}),
-                },
-            )
-        given = told.call_args.kwargs["story"]
-        self.assertEqual(given["cast"][0]["settled"], ["gender"])
-
-    def test_a_story_that_is_not_a_story_is_refused(self):
-        for bad in ('"just a sentence"', json.dumps({"cast": "everyone"})):
-            response = client().post(
-                "/api/translate",
-                data={"texts": "[]", "model": "m", "previously": bad},
-            )
-            self.assertEqual(response.status_code, 400, bad)
-            self.assertIn("previously", response.json["error"])
-
-    def test_a_gender_the_api_does_not_know_is_refused(self):
-        response = client().post(
-            "/api/translate",
-            data={
-                "texts": "[]",
-                "model": "m",
-                "previously": json.dumps({"cast": [{"name": "ハナ", "gender": "?"}]}),
-            },
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("gender", response.json["error"])
-
-    def test_translate_without_a_story_sends_none(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post("/api/translate", data={"texts": "[]", "model": "m"})
-        self.assertIsNone(told.call_args.kwargs["story"])
-
-    def test_a_glossary_may_say_what_a_term_is(self):
-        named = [{"source": "先輩", "target": "senpai", "note": "an older pupil"}]
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={"texts": "[]", "model": "m", "glossary": json.dumps(named)},
-            )
-        self.assertEqual(told.call_args.kwargs["glossary"], named)
-
-    def test_a_glossary_that_is_not_pairs_is_refused(self):
-        response = client().post(
-            "/api/translate",
-            data={
-                "texts": "[]",
-                "model": "m",
-                "glossary": json.dumps([{"source": "タロウ"}]),
-            },
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("glossary", response.json["error"])
-
-    def test_survey_answers_with_what_the_chapter_is(self):
-        found = surveyed(
-            ["He arrives.", "They argue."],
-            "Taro is late.",
-            "Light and modern.",
-            [person("タロウ", "male")],
-            [{"source": "タロウ", "target": "Taro"}],
-        )
-        with mock.patch.object(server.llamacpp, "survey", return_value=found):
-            response = client().post(
-                "/api/survey",
-                data={"pages": json.dumps([["タロウだ"], ["なんだと"]]), "model": "m"},
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json["chapter"],
-            {
-                "beats": ["He arrives.", "They argue."],
-                "synopsis": "Taro is late.",
-                "register": "Light and modern.",
-                "cast": [person("タロウ", "male")],
-                "terms": [{"source": "タロウ", "target": "Taro"}],
-            },
-        )
-
-    def test_survey_needs_pages(self):
-        response = client().post("/api/survey", data={"model": "m"})
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("pages", response.json["error"])
-
-    def test_survey_needs_a_model(self):
-        response = client().post("/api/survey", data={"pages": "[]"})
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("model", response.json["error"])
-
-    def test_survey_refuses_pages_that_are_not_lists_of_lines(self):
-        response = client().post(
-            "/api/survey",
-            data={"pages": json.dumps(["おはよう"]), "model": "m"},
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("pages", response.json["error"])
-
-    def test_survey_keeps_a_page_with_nothing_on_it(self):
-        with mock.patch.object(
-            server.llamacpp, "survey", return_value=surveyed(["one", "two"])
-        ) as told:
-            client().post(
-                "/api/survey",
-                data={"pages": json.dumps([["タロウだ"], []]), "model": "m"},
-            )
-        self.assertEqual(told.call_args.args[0], [["タロウだ"], []])
-
-    def test_survey_passes_the_chapter_so_far_on(self):
-        held = {"synopsis": "Taro is late.", "beats": ["He wakes."]}
-        with mock.patch.object(
-            server.llamacpp, "survey", return_value=surveyed(["two"])
-        ) as told:
-            client().post(
-                "/api/survey",
-                data={
-                    "pages": json.dumps([["に"]]),
-                    "model": "m",
-                    "chapter": json.dumps(held),
-                    "first": "1",
-                },
-            )
-        self.assertEqual(told.call_args.kwargs["chapter"]["synopsis"], "Taro is late.")
-        self.assertEqual(told.call_args.kwargs["first"], 1)
-
-    def test_survey_without_a_chapter_sends_none(self):
-        with mock.patch.object(
-            server.llamacpp, "survey", return_value=surveyed(["one"])
-        ) as told:
-            client().post(
-                "/api/survey", data={"pages": json.dumps([["いち"]]), "model": "m"}
-            )
-        self.assertIsNone(told.call_args.kwargs["chapter"])
-        self.assertEqual(told.call_args.kwargs["first"], 0)
-
-    def test_survey_says_so_when_llama_cpp_is_not_there(self):
-        with mock.patch.object(
-            server.llamacpp,
-            "survey",
-            side_effect=server.llamacpp.Unreachable("no llama.cpp"),
-        ):
-            response = client().post(
-                "/api/survey", data={"pages": json.dumps([["いち"]]), "model": "m"}
-            )
-        self.assertEqual(response.status_code, 503)
-        self.assertIn("llama.cpp", response.json["error"])
-
-    def test_translate_carries_the_chapter_and_which_page_it_is(self):
-        held = {
-            "synopsis": "Taro is late.",
-            "register": "Light.",
-            "beats": ["He wakes.", "He runs."],
-            "cast": [person("タロウ", "male")],
-            "terms": [{"source": "タロウ", "target": "Taro"}],
-        }
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated(["Morning"])
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={
-                    "texts": json.dumps(["おはよう"]),
-                    "model": "m",
-                    "chapter": json.dumps(held),
-                    "page": "1",
-                },
-            )
-        given = told.call_args.kwargs["chapter"]
-        self.assertEqual(given["synopsis"], "Taro is late.")
-        self.assertEqual(given["beats"], ["He wakes.", "He runs."])
-        self.assertEqual(given["cast"][0]["name"], "タロウ")
-        self.assertEqual(told.call_args.kwargs["page"], 1)
-
-    def test_translate_without_a_chapter_sends_none(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post("/api/translate", data={"texts": "[]", "model": "m"})
-        self.assertIsNone(told.call_args.kwargs["chapter"])
-        self.assertEqual(told.call_args.kwargs["page"], 0)
-
-    def test_a_chapter_that_is_not_a_chapter_is_refused(self):
-        for bad in ('"just a sentence"', json.dumps({"beats": "all of them"})):
-            response = client().post(
-                "/api/translate",
-                data={"texts": "[]", "model": "m", "chapter": bad},
-            )
-            self.assertEqual(response.status_code, 400, bad)
-            self.assertIn("chapter", response.json["error"])
-
-    def test_a_chapter_cast_is_read_the_way_a_story_cast_is(self):
-        response = client().post(
-            "/api/translate",
-            data={
-                "texts": "[]",
-                "model": "m",
-                "chapter": json.dumps({"cast": [{"name": "ハナ", "gender": "?"}]}),
-            },
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("gender", response.json["error"])
-
-    def test_a_chapter_carries_what_was_settled_by_hand(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={
-                    "texts": "[]",
-                    "model": "m",
-                    "chapter": json.dumps(
-                        {"cast": [{"name": "先輩", "gender": "female",
-                                   "settled": ["gender"]}]}
-                    ),
-                },
-            )
-        self.assertEqual(
-            told.call_args.kwargs["chapter"]["cast"][0]["settled"], ["gender"]
-        )
-
-    def test_a_synopsis_that_runs_on_is_cut_on_the_way_in(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={
-                    "texts": "[]",
-                    "model": "m",
-                    "chapter": json.dumps({"synopsis": "so " * 2000}),
-                },
-            )
-        self.assertEqual(
-            len(told.call_args.kwargs["chapter"]["synopsis"]),
-            server.llamacpp.SYNOPSIS_LIMIT,
-        )
-
-    def test_a_page_that_is_not_a_number_is_refused(self):
-        response = client().post(
-            "/api/translate",
-            data={"texts": "[]", "model": "m", "page": "seven"},
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("page", response.json["error"])
-
     def test_the_default_prompt_is_handed_out(self):
         response = client().get("/api/prompt")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json,
-            {
-                "prompt": server.llamacpp.SYSTEM_DEFAULT,
-                "survey": server.llamacpp.SURVEY_DEFAULT,
-            },
-        )
+        self.assertEqual(response.json, {"prompt": server.llamacpp.SYSTEM_DEFAULT})
         self.assertIn("{target}", response.json["prompt"])
-        self.assertIn("{target}", response.json["survey"])
 
     def test_translate_passes_a_prompt_of_your_own_on(self):
         with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=[""]
         ) as told:
             client().post(
                 "/api/translate",
@@ -3517,7 +2151,7 @@ class TestApi(unittest.TestCase):
 
     def test_translate_without_a_prompt_leaves_the_default_alone(self):
         with mock.patch.object(
-            server.llamacpp, "translate", return_value=translated([""])
+            server.llamacpp, "translate", return_value=[""]
         ) as told:
             client().post("/api/translate", data={"texts": "[]", "model": "m"})
         self.assertIsNone(told.call_args.kwargs["system"])

@@ -73,14 +73,6 @@ export function ZoomOutIcon(props: Props) {
   )
 }
 
-export function CheckIcon(props: Props) {
-  return (
-    <Line {...props} width={3.5}>
-      <path d="m5 13 5 5L20 7" />
-    </Line>
-  )
-}
-
 export function RestoreIcon(props: Props) {
   return (
     <Line {...props} width={1.9}>

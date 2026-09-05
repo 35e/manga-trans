@@ -4,12 +4,12 @@ import { RegionsPanel } from './components/RegionsPanel'
 import { Settings } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
 import { TranslationsPanel } from './components/TranslationsPanel'
+import { ChapterReview } from './components/ChapterReview'
 import { GearIcon } from './components/icons'
 import { IconButton } from './components/ui'
+import type { Phase } from './hooks/useBatch'
 import { useBatch } from './hooks/useBatch'
-import { useChapter } from './hooks/useChapter'
 import { useFileDrop } from './hooks/useFileDrop'
-import { useGlossary } from './hooks/useGlossary'
 import { useImageLibrary } from './hooks/useImageLibrary'
 import { useLanguage } from './hooks/useLanguage'
 import { useLetterMasks } from './hooks/useLetterMasks'
@@ -17,8 +17,7 @@ import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
 import { useLlamaCpp } from './hooks/useLlamaCpp'
 import { usePrompt } from './hooks/usePrompt'
-import { useStory } from './hooks/useStory'
-import type { Analysis, BoardMode, Box, Fill, Lettering, Region, Stage } from './lib/api'
+import type { Analysis, Box, Fill, Lettering, Region, Stage, Tool } from './lib/api'
 import {
   API_BASE,
   UNSURE,
@@ -28,10 +27,8 @@ import {
   letterMask,
   read,
   said,
-  survey,
   translate,
 } from './lib/api'
-import { SURVEY_PAGES, asStory, fits } from './lib/bible'
 import { archiveName, finished } from './lib/chapter'
 import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, ready } from './lib/fit'
@@ -40,7 +37,7 @@ import { stem } from './lib/images'
 import type { Lines } from './lib/lettering'
 import * as lines from './lib/lettering'
 import { mark } from './lib/mask'
-import { halves, insertionFor, movedIndex } from './lib/order'
+import { halves, insertAt, insertionFor, moveAt, movedIndex } from './lib/order'
 import * as blocks from './lib/regions'
 import type { Packed } from './lib/zip'
 import { pack } from './lib/zip'
@@ -105,30 +102,6 @@ function App() {
   } = useObjectUrls()
   const llamaCpp = useLlamaCpp()
   const source = useLanguage()
-  const {
-    terms: chapterTerms,
-    now: termsNow,
-    learn: learnTerms,
-    correct: correctTerm,
-    forget: forgetTerms,
-    clear: clearTerms,
-  } = useGlossary()
-  const {
-    stories: chapterStories,
-    now: storyNow,
-    learn: learnStory,
-    correct: correctStory,
-    forget: forgetStory,
-    clear: clearStories,
-  } = useStory()
-  const {
-    bibles: chapterBibles,
-    now: bibleNow,
-    learn: learnBible,
-    correct: correctBible,
-    forget: forgetBible,
-    clear: clearBibles,
-  } = useChapter()
   const { prompt, setPrompt, builtIn: builtInPrompt } = usePrompt()
 
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -140,14 +113,15 @@ function App() {
   const [working, setWorking] = useState<{ id: string; stage: Stage } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
-  const [mode, setMode] = useState<BoardMode>('inspect')
+  const [tool, setTool] = useState<Tool>('boxes')
   const [applying, setApplying] = useState(false)
   const [packing, setPacking] = useState<{ done: number; total: number } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [reviewing, setReviewing] = useState<string | null>(null)
   const [showCleaned, setShowCleaned] = useState(false)
 
   const [spread, setSpread] = useState(4)
-  const [fill, setFill] = useState<Fill>('art')
+  const [fill, setFill] = useState<Fill>('white')
 
   const analysis = active ? (analyses[active.id] ?? null) : null
   const pageLettering = active ? (lettering[active.id] ?? []) : []
@@ -174,6 +148,8 @@ function App() {
   analysesNow.current = analyses
   const cleanedNow = useRef(cleanedPages)
   cleanedNow.current = cleanedPages
+  const letteringNow = useRef(lettering)
+  letteringNow.current = lettering
 
   const activeNow = useRef(activeId)
   activeNow.current = activeId
@@ -183,38 +159,17 @@ function App() {
   imagesNow.current = images
   const held = useCallback((id: string) => imagesNow.current.some((it) => it.id === id), [])
 
-  const pagesOf = useCallback(
-    (folder: string) => imagesNow.current.filter((it) => it.folder === folder),
-    [],
-  )
-  const placeOf = useCallback(
-    (page: GalleryImage): number | null => {
-      if (!page.folder) return null
-      const at = pagesOf(page.folder).findIndex((it) => it.id === page.id)
-      return at === -1 ? null : at
-    },
-    [pagesOf],
-  )
-  const pagesIn = useCallback(
-    (folder: string) => pagesOf(folder).length,
-    [pagesOf],
-  )
 
   useEffect(() => {
     if (!activeId) return
-    const found = analysesNow.current[activeId]
-    setMode(
-      !found?.texts ? 'inspect' : !cleanedNow.current[activeId] ? 'mask' : 'translate',
-    )
+    const set = letteringNow.current[activeId]
+    setTool(set?.some(Boolean) ? 'text' : 'boxes')
   }, [activeId])
 
   useEffect(() => setShowCleaned(false), [activeId])
   useEffect(() => {
     if (cleanedPage) setShowCleaned(true)
   }, [cleanedPage])
-  useEffect(() => {
-    if (mode === 'translate' && cleanedPage) setShowCleaned(true)
-  }, [mode, cleanedPage])
 
   const forget = useCallback(
     (id: string) => {
@@ -387,7 +342,7 @@ function App() {
       }))
       setLettering((current) =>
         current[active.id]
-          ? { ...current, [active.id]: lines.inserted(current[active.id], at) }
+          ? { ...current, [active.id]: insertAt(current[active.id], at, null) }
           : current,
       )
       setSelected(at)
@@ -435,7 +390,7 @@ function App() {
         current[id] ? { ...current, [id]: blocks.moved(current[id], from, to) } : current,
       )
       setLettering((current) =>
-        current[id] ? { ...current, [id]: lines.moved(current[id], from, to) } : current,
+        current[id] ? { ...current, [id]: moveAt(current[id], from, to) } : current,
       )
       setSelected((now) => (now === null ? now : movedIndex(now, from, to)))
     },
@@ -527,7 +482,6 @@ function App() {
         .filter(({ text, index }) => text.trim() && !skip.has(index))
       if (wanted.length === 0) return false
 
-      const chapter = page.folder
       const got = await during(page.id, 'translating', async () => {
         await ready()
         const sending = wanted.map(({ text, index }) => {
@@ -538,46 +492,29 @@ function App() {
             budget: region ? lines.budgetFor(region, text) : undefined,
           }
         })
-        const read = chapter ? bibleNow.current[chapter] : null
-        const of = chapter ? placeOf(page) : null
-        const surveyed = chapter && of !== null && fits(read, pagesIn(chapter))
         return translate(sending, llamaCpp.model, llamaCpp.target, {
           system: prompt,
           source: source.language?.name,
-          glossary: chapter ? termsNow.current[chapter] : null,
-          previously: chapter ? storyNow.current[chapter] : null,
-          chapter: surveyed ? read : null,
-          page: surveyed ? of : null,
         })
       })
       if (!got) return false
 
-      if (chapter) {
-        learnTerms(chapter, got.terms)
-        learnStory(chapter, got.story)
-      }
-
       const set: Lines = found.detection.regions.map(() => null)
       wanted.forEach((line, at) => {
-        const text = (got.texts[at] ?? '').trim()
+        const text = (got[at] ?? '').trim()
         if (text) set[line.index] = lines.laidOut(found, line.index, text)
       })
       setLettering((current) => ({ ...current, [page.id]: set }))
+      if (onBoard(page.id)) setTool('text')
       return true
     },
     [
       during,
+      onBoard,
       llamaCpp.model,
       llamaCpp.target,
       prompt,
       source.language?.name,
-      termsNow,
-      learnTerms,
-      storyNow,
-      learnStory,
-      bibleNow,
-      placeOf,
-      pagesIn,
     ],
   )
 
@@ -587,7 +524,7 @@ function App() {
 
   const runClean = useCallback(
     async (marks: Blob) => {
-      if (active && (await cleanPage(active, marks))) setMode('translate')
+      if (active) await cleanPage(active, marks)
     },
     [active, cleanPage],
   )
@@ -608,10 +545,9 @@ function App() {
         return { found: null, why: lastFailure.current ?? 'the text could not be found' }
       }
 
-      if (onBoard(page.id)) setMode('mask')
       return { found, why: null }
     },
-    [detectAndRead, onBoard, held],
+    [detectAndRead, held],
   )
 
   const hidePage = useCallback(
@@ -625,7 +561,6 @@ function App() {
       }
 
       if (!onBoard(page.id)) traced.drop(page.id)
-      else setMode('translate')
       return null
     },
     [marksFor, cleanPage, traced, onBoard],
@@ -634,6 +569,29 @@ function App() {
   const examine = useCallback(
     async (page: GalleryImage) => (await readPage(page)).why,
     [readPage],
+  )
+
+  const translateOne = useCallback(
+    async (page: GalleryImage): Promise<string | null> => {
+      if (!held(page.id)) return null
+      const found = analysesNow.current[page.id]
+      if (!found?.texts || !found.texts.some((text) => text.trim())) return null
+
+      lastFailure.current = null
+      await translatePage(page, found)
+      return lastFailure.current
+    },
+    [held, translatePage],
+  )
+
+  const cleanOne = useCallback(
+    async (page: GalleryImage): Promise<string | null> => {
+      if (!held(page.id)) return null
+      const found = analysesNow.current[page.id]
+      if (!found || cleanedNow.current[page.id]) return null
+      return hidePage(page, found)
+    },
+    [held, hidePage],
   )
 
   const render = useCallback(
@@ -648,15 +606,15 @@ function App() {
       }
       if (!found?.texts) return lastFailure.current ?? 'the text could not be found'
 
-      if (!cleanedNow.current[page.id]) {
-        const why = await hidePage(page, found)
-        if (why) return why
-      }
-
       if (llamaCpp.model && found.texts.some((text) => text.trim())) {
         lastFailure.current = null
         await translatePage(page, found)
         if (lastFailure.current) return lastFailure.current
+      }
+
+      if (!cleanedNow.current[page.id]) {
+        const why = await hidePage(page, found)
+        if (why) return why
       }
       return null
     },
@@ -674,96 +632,48 @@ function App() {
     dismiss: dismissBatch,
   } = useBatch()
 
-  const surveyChapter = useCallback(
-    async (
-      folder: GalleryFolder,
-      pages: GalleryImage[],
-      say: (note: string | null) => void,
-    ): Promise<string | null> => {
-      if (!llamaCpp.model) return null
-
-      const written = pages.map((page) => {
-        const found = analysesNow.current[page.id]
-        if (!found?.texts) return []
-        const skip = new Set(found.excluded)
-        return found.texts.filter((text, at) => text.trim() && !skip.has(at))
-      })
-      if (!written.some((page) => page.length > 0)) return null
-
-      for (let first = 0; first < written.length; first += SURVEY_PAGES) {
-        const window = written.slice(first, first + SURVEY_PAGES)
-        const last = Math.min(first + window.length, written.length)
-        say(`reading pages ${first + 1}–${last} of ${written.length}`)
-        lastFailure.current = null
-        const said = await during(pages[first].id, 'surveying', () =>
-          survey(window, llamaCpp.model as string, llamaCpp.target, {
-            source: source.language?.name,
-            chapter: bibleNow.current[folder.id] ?? null,
-            first,
-          }),
-        )
-        if (!said) return lastFailure.current ?? 'the chapter could not be read'
-        learnBible(folder.id, said, first)
-      }
-
-      const read = bibleNow.current[folder.id]
-      if (read) {
-        learnTerms(folder.id, read.terms)
-        learnStory(folder.id, asStory(read))
-      }
-      return null
-    },
-    [
-      during,
-      llamaCpp.model,
-      llamaCpp.target,
-      source.language?.name,
-      bibleNow,
-      learnBible,
-      learnTerms,
-      learnStory,
-    ],
-  )
-
-  const readFolder = useCallback(
-    (folder: GalleryFolder) => {
-      const pages = images.filter((image) => image.folder === folder.id)
-      void startBatch(folder, pages, 'Reading', examine, (say) =>
-        surveyChapter(folder, pages, say),
-      )
-    },
-    [startBatch, images, examine, surveyChapter],
-  )
+  const wasRunning = useRef(false)
+  useEffect(() => {
+    const running = batch !== null && !batch.finished
+    if (wasRunning.current && batch?.finished && !batch.stopping) {
+      setReviewing(batch.folder)
+    }
+    wasRunning.current = running
+  }, [batch])
 
   const translateFolder = useCallback(
     (folder: GalleryFolder) => {
-      void startBatch(
-        folder,
-        images.filter((image) => image.folder === folder.id),
-        'Cleaning & translating',
-        render,
-      )
+      const pages = images.filter((image) => image.folder === folder.id)
+
+      const phases: Phase[] = [{ name: 'Reading', each: examine, blocking: true }]
+      if (llamaCpp.model) phases.push({ name: 'Translating', each: translateOne })
+      phases.push({ name: 'Cleaning', each: cleanOne })
+
+      void startBatch(folder, pages, phases)
     },
-    [startBatch, images, render],
+    [
+      startBatch,
+      images,
+      examine,
+      translateOne,
+      cleanOne,
+      llamaCpp.model,
+    ],
   )
 
   const removeFolder = useCallback(
     (id: string) => {
       if (batch?.folder === id) stopBatch()
+      if (reviewing === id) setReviewing(null)
       for (const image of images) if (image.folder === id) forget(image.id)
-      forgetTerms(id)
-      forgetStory(id)
-      forgetBible(id)
       dropFolder(id)
     },
     [
       batch?.folder,
       stopBatch,
+      reviewing,
       images,
       forget,
-      forgetTerms,
-      forgetStory,
-      forgetBible,
       dropFolder,
     ],
   )
@@ -774,21 +684,16 @@ function App() {
     clearMasks()
     clearCleaned()
     traced.clear()
-    clearTerms()
-    clearStories()
-    clearBibles()
     setLettering({})
     setAnalyses({})
     setActiveId(null)
+    setReviewing(null)
   }, [
     stopBatch,
     clear,
     clearMasks,
     clearCleaned,
     traced,
-    clearTerms,
-    clearStories,
-    clearBibles,
   ])
 
   const changeLettering = useCallback(
@@ -896,6 +801,13 @@ function App() {
     [lettering, llamaCpp.target, packing],
   )
 
+  const reviewFolder = folders.find((held) => held.id === reviewing) ?? null
+  const reviewFailed = useMemo(
+    () =>
+      Object.fromEntries((batch?.failed ?? []).map((gone) => [gone.id, gone.why])),
+    [batch?.failed],
+  )
+
   const workedOn = useMemo(
     () =>
       Object.keys(cleanedPages).concat(
@@ -936,24 +848,6 @@ function App() {
           open={openFolder}
           onOpenFolder={setOpenFolder}
           onNewFolder={newFolder}
-          terms={openFolder ? (chapterTerms[openFolder] ?? []) : []}
-          story={openFolder ? (chapterStories[openFolder] ?? null) : null}
-          bible={openFolder ? (chapterBibles[openFolder] ?? null) : null}
-          onCorrect={(name, fact, value) =>
-            openFolder && correctStory(openFolder, name, fact, value)
-          }
-          onCorrectChapter={(field, value) =>
-            openFolder && correctBible(openFolder, field, value)
-          }
-          onCorrectTerm={(source, target) =>
-            openFolder && correctTerm(openFolder, source, target)
-          }
-          onForgetTerms={() => {
-            if (!openFolder) return
-            forgetTerms(openFolder)
-            forgetStory(openFolder)
-            forgetBible(openFolder)
-          }}
           activeId={active?.id ?? null}
           onOpen={setActiveId}
           onRemove={removeImage}
@@ -966,10 +860,10 @@ function App() {
           onClearAll={clearAll}
           batch={batch}
           batchStage={working && working.id === batch?.page?.id ? working.stage : null}
-          onReadFolder={readFolder}
           onTranslateFolder={translateFolder}
           onStopBatch={stopBatch}
           onDismissBatch={dismissBatch}
+          onReviewBatch={() => batch && setReviewing(batch.folder)}
           canTranslate={Boolean(llamaCpp.model)}
           lettered={lettered}
           onDownloadFolder={(folder) => void downloadFolder(folder)}
@@ -977,66 +871,84 @@ function App() {
           packing={packing}
         />
 
-        <Board
-          image={active}
-          analysis={analysis}
-          mask={forPage(active)}
-          cleaned={cleanedPage}
-          stage={stage}
-          error={error}
-          selected={selected}
-          onSelect={setSelected}
-          mode={mode}
-          onMode={setMode}
-          runningFolder={batch !== null && !batch.finished}
-          showCleaned={showCleaned}
-          onShowCleaned={setShowCleaned}
-          onRunAll={runAll}
-          onDetect={runDetect}
-          inspecting={{
-            languages: source.offered,
-            language: source.code,
-            onLanguage: source.setCode,
-            onAddRegion: addRegion,
-            onRegionBox: setRegionBox,
-            onRegionSettled: rereadRegion,
-            onToggleExcluded: toggleExcluded,
-          }}
-          masking={{
-            onClean: runClean,
-            letters: traced.at(active?.id, spread),
-            onTrace: traceLetters,
-            spread,
-            onSpread: setSpread,
-            fill,
-            onFill: setFill,
-          }}
-          translating={{
-            models: llamaCpp.models,
-            model: llamaCpp.model,
-            onModel: llamaCpp.setModel,
-            target: llamaCpp.target,
-            onTarget: llamaCpp.setTarget,
-            onTranslate: runTranslate,
-            lettering: pageLettering,
-            onBox: setLetteringBox,
-            onTurn: setLetteringAngle,
-            onSize: nudgeSize,
-            onApply: applyToImage,
-            applying,
-            note:
-              llamaCpp.problem ??
-              (!analysis?.texts
-                ? 'find the text first: there is nothing to translate yet'
-                : pageLettering.some(Boolean) && !cleanedPage
-                  ? 'this page has not been cleaned yet'
-                  : null),
-          }}
-        />
+        {reviewFolder ? (
+          <ChapterReview
+            folder={reviewFolder}
+            pages={images.filter((image) => image.folder === reviewFolder.id)}
+            analyses={analyses}
+            lettering={lettering}
+            failed={reviewFailed}
+            onEdit={(id) => {
+              setActiveId(id)
+              setReviewing(null)
+            }}
+            onClose={() => setReviewing(null)}
+            onDownload={() => void downloadFolder(reviewFolder)}
+            packing={packing}
+          />
+        ) : (
+          <Board
+            image={active}
+            analysis={analysis}
+            mask={forPage(active)}
+            cleaned={cleanedPage}
+            stage={stage}
+            error={error}
+            selected={selected}
+            onSelect={setSelected}
+            tool={tool}
+            onTool={setTool}
+            runningFolder={batch !== null && !batch.finished}
+            showCleaned={showCleaned}
+            onShowCleaned={setShowCleaned}
+            onRunAll={runAll}
+            onDetect={runDetect}
+            inspecting={{
+              languages: source.offered,
+              language: source.code,
+              onLanguage: source.setCode,
+              onAddRegion: addRegion,
+              onRegionBox: setRegionBox,
+              onRegionSettled: rereadRegion,
+              onToggleExcluded: toggleExcluded,
+            }}
+            masking={{
+              onClean: runClean,
+              letters: traced.at(active?.id, spread),
+              onTrace: traceLetters,
+              spread,
+              onSpread: setSpread,
+              fill,
+              onFill: setFill,
+            }}
+            translating={{
+              models: llamaCpp.models,
+              model: llamaCpp.model,
+              onModel: llamaCpp.setModel,
+              target: llamaCpp.target,
+              onTarget: llamaCpp.setTarget,
+              onTranslate: runTranslate,
+              lettering: pageLettering,
+              onBox: setLetteringBox,
+              onTurn: setLetteringAngle,
+              onSize: nudgeSize,
+              onApply: applyToImage,
+              applying,
+              note:
+                llamaCpp.problem ??
+                (!analysis?.texts
+                  ? 'find the text first: there is nothing to translate yet'
+                  : pageLettering.some(Boolean) && !cleanedPage
+                    ? 'this page has not been cleaned yet'
+                    : null),
+            }}
+          />
+        )}
 
-        {active &&
+        {!reviewFolder &&
+          active &&
           analysis &&
-          (mode === 'translate' ? (
+          (tool === 'text' ? (
             <TranslationsPanel
               originals={analysis.texts ?? analysis.detection.regions.map(() => null)}
               lettering={pageLettering}
