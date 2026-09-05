@@ -766,7 +766,7 @@ class TestKeptPass(unittest.TestCase):
     """The last page's forward pass is kept, because it is asked for twice."""
 
     def detector(self):
-        """:class:`Letters`, counting how often its net is actually run."""
+        """:class:`Letters`, counting how often its session is actually run."""
         made = detect.Letters.__new__(detect.Letters)
         made._lock = threading.Lock()
         made._last = None
@@ -774,15 +774,12 @@ class TestKeptPass(unittest.TestCase):
 
         seg = np.zeros((1, 1, detect.INPUT_SIZE, detect.INPUT_SIZE), np.float32)
 
-        class Net:
-            def setInput(self, blob):
-                pass
-
-            def forward(self, names):
+        class Session:
+            def run(self, wanted, feed):
                 made.passes += 1
                 return [seg]
 
-        made.net = Net()
+        made.session = Session()
         return made
 
     def finder(self):
@@ -1587,50 +1584,6 @@ class TestPpocr(unittest.TestCase):
         self.assertEqual(tuple(self.shown[0][0, 0]), (220, 210, 200))
 
 
-class TestQuieted(unittest.TestCase):
-    """Standing a reader up without onnxruntime's hunt for a GPU in the log."""
-
-    HUNT = (
-        b'2026-01-01 00:00:00 [W:onnxruntime:Default, device_discovery.cc:285 '
-        b'GetGpuDevices] Failed to detect devices under "/sys/class/drm/card0"\n'
-    )
-
-    def said(self, write) -> str:
-        """Whatever is left on stderr after `write` has run inside quieted()."""
-        kept = io.StringIO()
-        with mock.patch.object(sys, "stderr", kept):
-            with read.quieted():
-                write()
-        return kept.getvalue()
-
-    def test_the_gpu_hunt_is_dropped(self):
-        self.assertEqual(self.said(lambda: os.write(2, self.HUNT)), "")
-
-    def test_everything_else_is_let_through(self):
-        trouble = b"[ERROR] Download failed: https://example.invalid/rec.onnx\n"
-        said = self.said(lambda: os.write(2, self.HUNT + trouble))
-        self.assertNotIn("GetGpuDevices", said)
-        self.assertIn("Download failed", said)
-
-    def test_what_was_caught_is_let_out_even_when_the_load_fails(self):
-        def write():
-            os.write(2, b"halfway through\n")
-            raise RuntimeError("no weights")
-
-        kept = io.StringIO()
-        with mock.patch.object(sys, "stderr", kept):
-            with self.assertRaises(RuntimeError):
-                with read.quieted():
-                    write()
-        self.assertIn("halfway through", kept.getvalue())
-
-    def test_stderr_is_put_back_afterwards(self):
-        before = os.fstat(2)
-        with read.quieted():
-            caught = os.fstat(2)
-        after = os.fstat(2)
-        self.assertNotEqual(caught.st_ino, before.st_ino, "stderr was not caught")
-        self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
 
 
 class TestUnfetched(unittest.TestCase):
@@ -1942,19 +1895,24 @@ class TestApi(unittest.TestCase):
         self.assertFalse((patch(out, INK) < 128).any(), "the ink is still there")
         self.assertEqual(tuple(np.array(out)[0, 0]), TONE)
 
-    def test_clean_fills_from_the_art_around_the_mark_unasked(self):
-        response = client().post("/api/clean", data=payload(toned(), mask=stencil(INK)))
+    def test_clean_paints_flat_white_unasked_without_loading_lama(self):
+        with mock.patch.object(
+            server.inpaint, "Lama", side_effect=AssertionError("LaMa was loaded")
+        ):
+            response = client().post(
+                "/api/clean", data=payload(toned(), mask=stencil(INK))
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((patch(opened(response), INK) == 255).all())
+
+    def test_clean_fills_from_the_art_around_the_mark_when_asked(self):
+        response = client().post(
+            "/api/clean", data=payload(toned(), mask=stencil(INK), fill="art")
+        )
         self.assertEqual(response.status_code, 200)
         filled = patch(opened(response), INK).astype(int)
         self.assertFalse((filled == 255).any(), "the mark was painted white")
         self.assertTrue((abs(filled - TONE[0]) <= NEAR).all())
-
-    def test_clean_paints_flat_white_when_it_is_asked_to(self):
-        response = client().post(
-            "/api/clean", data=payload(toned(), mask=stencil(INK), fill="white")
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue((patch(opened(response), INK) == 255).all())
 
     def test_clean_rejects_a_fill_it_has_never_heard_of(self):
         response = client().post(

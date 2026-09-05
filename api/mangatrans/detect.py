@@ -210,13 +210,10 @@ class Regions:
     def __init__(self, weights: str | Path | None = None) -> None:
         import onnxruntime as ort
 
-        from .read import quieted
-
         path = ensure_regions(str(weights) if weights else None)
-        with quieted():
-            self.session = ort.InferenceSession(
-                str(path), providers=["CPUExecutionProvider"]
-            )
+        self.session = ort.InferenceSession(
+            str(path), providers=["CPUExecutionProvider"]
+        )
         self.answers = [tensor.name for tensor in self.session.get_outputs()]
         self._lock = threading.Lock()
         self._last: tuple[tuple[tuple[int, ...], bytes], tuple] | None = None
@@ -286,22 +283,22 @@ class Regions:
 class Letters:
     """comic-text-detector's segmentation head: where the ink is, pixel by pixel.
 
-    One page at a time: an OpenCV net is not reentrant. The last page's pass is
-    kept — it is seconds where everything downstream of it is a millisecond.
+    One page at a time, and the last page's pass is kept — it is seconds where
+    everything downstream of it is a millisecond.
     """
 
     def __init__(self, weights: str | Path | None = None) -> None:
+        import onnxruntime as ort
+
         path = ensure_model(str(weights) if weights else None)
-        self.net = cv2.dnn.readNetFromONNX(str(path))
+        self.session = ort.InferenceSession(
+            str(path), providers=["CPUExecutionProvider"]
+        )
         self._lock = threading.Lock()
         self._last: tuple[tuple[tuple[int, ...], bytes], tuple] | None = None
 
     def run(self, image):
-        """One pass: the per-pixel text map and the padding put on to get it.
-
-        Some OpenCV builds return the outputs in a different order than they were
-        asked for, so they are told apart by shape rather than by position.
-        """
+        """One pass: the per-pixel text map and the padding put on to get it."""
         page = np.ascontiguousarray(image)
         key = (
             page.shape,
@@ -316,15 +313,8 @@ class Letters:
             blob = cv2.dnn.blobFromImage(
                 canvas, scalefactor=1 / 255.0, size=(INPUT_SIZE, INPUT_SIZE)
             )
-            self.net.setInput(blob)
-            outputs = self.net.forward(("blk", "seg", "det"))
-
-            seg = next(
-                output
-                for output in outputs
-                if output.ndim == 4 and output.shape[1] == 1
-            )
-            answer = (seg[0, 0], pad_w, pad_h)
+            seg = self.session.run(["seg"], {"images": blob})[0][0, 0]
+            answer = (seg, pad_w, pad_h)
             self._last = (key, answer)
             return answer
 

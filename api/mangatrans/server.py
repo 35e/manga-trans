@@ -198,7 +198,7 @@ def mask_in(image: Image.Image) -> Image.Image | None:
     return alpha if shaped else sent_mask.convert("L")
 
 
-def fill_in(default: str = render.ART) -> str:
+def fill_in(default: str = render.WHITE_OUT) -> str:
     """What goes where the lettering was: the art around it, or flat white."""
     chosen = request.form.get("fill", default).strip().lower()
     if chosen not in render.FILLS:
@@ -356,6 +356,8 @@ def create_app() -> Flask:
             raise BadRequest("nothing to hide: send 'boxes', a 'mask', or both")
 
         marks = render.marked(image.size, boxes, mask)
-        return png(render.hidden(image, marks, fill_in(), painter()))
+        fill = fill_in()
+        chosen = painter() if fill == render.ART else None
+        return png(render.hidden(image, marks, fill, chosen))
 
     return app

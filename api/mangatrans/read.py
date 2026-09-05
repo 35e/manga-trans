@@ -6,10 +6,7 @@ first Japanese page read. PP-OCR's onnxruntime is deferred the same way.
 
 from __future__ import annotations
 
-import contextlib
 import os
-import sys
-import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, Sequence
@@ -39,8 +36,6 @@ SMALLEST = 4
 SPECK = 3
 
 LOOSE = 0.06
-
-GPU_HUNT = ("device_discovery.cc", "GetGpuDevices")
 
 
 def model_name(explicit: str | None = None) -> str:
@@ -196,36 +191,6 @@ class Unfetched(RuntimeError):
     """A reader's weights are not here and could not be had."""
 
 
-@contextlib.contextmanager
-def quieted():
-    """stderr with onnxruntime's hunt for a GPU taken out of it.
-
-    Written from C++ straight to the descriptor, so there is no logger to turn
-    down. **Not a blanket silencer, and it must not become one**: everything
-    that is not the hunt is written back out, since a reader that cannot find
-    its weights says so the same way. Held only for one reader's load.
-    """
-    caught = tempfile.TemporaryFile()
-    sys.stderr.flush()
-    kept = os.dup(2)
-    try:
-        os.dup2(caught.fileno(), 2)
-        try:
-            yield
-        finally:
-            sys.stderr.flush()
-            os.dup2(kept, 2)
-    finally:
-        os.close(kept)
-        caught.seek(0)
-        said = caught.read().decode("utf-8", "replace")
-        caught.close()
-        for line in said.splitlines(keepends=True):
-            if not all(mark in line for mark in GPU_HUNT):
-                sys.stderr.write(line)
-        sys.stderr.flush()
-
-
 class Ppocr:
     """PP-OCR, for the languages manga-ocr was not trained on. One per language."""
 
@@ -236,28 +201,27 @@ class Ppocr:
     @staticmethod
     def load(language: Language):
         """The engine itself. Imported here, so onnxruntime loads on first use."""
-        with quieted():
-            from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
+        from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
 
-            version = PPOCR_OLDER.get(language.recogniser, PPOCR_VERSION)
-            try:
-                return RapidOCR(
-                    params={
-                        "Global.model_root_dir": str(ppocr_models()),
-                        "Global.log_level": "warning",
-                        "Rec.lang_type": LangRec(language.recogniser),
-                        "Rec.ocr_version": OCRVersion(version),
-                        "Rec.model_type": ModelType.MOBILE,
-                        "Rec.engine_type": EngineType.ONNXRUNTIME,
-                    }
-                )
-            except Exception as exc:
-                raise Unfetched(
-                    f"the {language.name} reader could not be stood up: {exc}. "
-                    f"Its weights ({language.recogniser}, {version}) are looked "
-                    f"for in {ppocr_models()} and fetched on first use if they "
-                    "are not there."
-                ) from exc
+        version = PPOCR_OLDER.get(language.recogniser, PPOCR_VERSION)
+        try:
+            return RapidOCR(
+                params={
+                    "Global.model_root_dir": str(ppocr_models()),
+                    "Global.log_level": "warning",
+                    "Rec.lang_type": LangRec(language.recogniser),
+                    "Rec.ocr_version": OCRVersion(version),
+                    "Rec.model_type": ModelType.MOBILE,
+                    "Rec.engine_type": EngineType.ONNXRUNTIME,
+                }
+            )
+        except Exception as exc:
+            raise Unfetched(
+                f"the {language.name} reader could not be stood up: {exc}. "
+                f"Its weights ({language.recogniser}, {version}) are looked "
+                f"for in {ppocr_models()} and fetched on first use if they "
+                "are not there."
+            ) from exc
 
     def line(self, image: Image.Image) -> str:
         """What one line says."""

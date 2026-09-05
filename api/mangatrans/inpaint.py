@@ -82,12 +82,9 @@ class Lama:
     def __init__(self, weights: str | None = None) -> None:
         import onnxruntime as ort
 
-        from .read import quieted
-
-        with quieted():
-            self.session = ort.InferenceSession(
-                model_path(weights), providers=["CPUExecutionProvider"]
-            )
+        self.session = ort.InferenceSession(
+            model_path(weights), providers=["CPUExecutionProvider"]
+        )
         self._lock = threading.Lock()
 
     def patch(self, crop: np.ndarray, hole: np.ndarray) -> np.ndarray:
