@@ -8,6 +8,7 @@ export const SIZE_MIN = 6
 export const SIZE_MAX = 200
 
 const HYPHEN = '-'
+const WHOLE_WORD_SCALE = 0.7
 
 const STROKE_RATIO = 0.12
 
@@ -33,16 +34,28 @@ export function ready(): Promise<unknown> {
   return document.fonts.load(fontFor(16)).catch(() => undefined)
 }
 
+function wordsIn(text: string): string[] {
+  return text
+    .replace(/([^\p{L}\p{N}\s])\1{3,}/gu, '$1$1$1')
+    .replace(/([^\p{L}\p{N}\s])\1{2}/gu, ' $& ')
+    .split(/\s+/)
+    .filter(Boolean)
+}
+
 function pieces(
   context: CanvasRenderingContext2D,
   word: string,
   width: number,
 ): string[] {
+  if ((word.match(/\p{L}/gu)?.length ?? 0) <= 5) return [word]
+
   const parts: string[] = []
   let part = ''
+  let remaining = word.length
   for (const letter of word) {
+    remaining -= letter.length
     const candidate = part + letter
-    if (part && context.measureText(candidate + HYPHEN).width > width) {
+    if (part && context.measureText(candidate + (remaining ? HYPHEN : '')).width > width) {
       parts.push(part + HYPHEN)
       part = letter
     } else {
@@ -62,7 +75,7 @@ function wrap(
 
   for (const paragraph of text.split('\n')) {
     let line = ''
-    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+    for (const word of wordsIn(paragraph)) {
       if (context.measureText(word).width > width) {
         if (line) {
           lines.push(line)
@@ -88,17 +101,18 @@ function wrap(
   return lines.filter((line, index) => line !== '' || index === 0)
 }
 
+// Width is the full lettering box; leave space for the outline on both sides.
 export function linesFor(text: string, width: number, size: number): string[] {
   const context = measurer()
   const words = text.trim()
   if (!context || !words) return words ? [words] : []
   context.font = fontFor(size)
-  return wrap(context, words, width)
+  return wrap(context, words, Math.max(0, width - strokeFor(size) * 2))
 }
 
 function widestWord(context: CanvasRenderingContext2D, text: string): number {
   let widest = 0
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  for (const word of wordsIn(text)) {
     widest = Math.max(widest, context.measureText(word).width)
   }
   return widest
@@ -110,10 +124,21 @@ function lands(
   width: number,
   height: number,
   size: number,
-  whole: boolean,
+  maxParts: number,
 ): boolean {
   context.font = fontFor(size)
-  if (whole && widestWord(context, text) > width) return false
+  const outline = strokeFor(size) * 2
+  width -= outline
+  height -= outline
+  if (width <= 0 || height <= 0) return false
+  if (maxParts !== Infinity) {
+    for (const word of wordsIn(text)) {
+      if (
+        context.measureText(word).width > width &&
+        (maxParts === 1 || pieces(context, word, width).length > maxParts)
+      ) return false
+    }
+  }
 
   const lines = wrap(context, text, width)
   return (
@@ -158,7 +183,7 @@ function largestThatLands(
   text: string,
   width: number,
   height: number,
-  whole: boolean,
+  maxParts: number,
   most: number,
 ): number | null {
   let best: number | null = null
@@ -167,7 +192,7 @@ function largestThatLands(
 
   while (low <= high) {
     const size = Math.floor((low + high) / 2)
-    if (lands(context, text, width, height, size, whole)) {
+    if (lands(context, text, width, height, size, maxParts)) {
       best = size
       low = size + 1
     } else {
@@ -188,9 +213,15 @@ export function fitSize(
   if (!context || !words || width <= 0 || height <= 0) return SIZE_MIN
 
   const ceiling = Math.max(SIZE_MIN, Math.min(SIZE_MAX, Math.round(most)))
-  return (
-    largestThatLands(context, words, width, height, true, ceiling) ??
-    largestThatLands(context, words, width, height, false, ceiling) ??
-    SIZE_MIN
-  )
+  const paired = largestThatLands(context, words, width, height, 2, ceiling)
+  if (paired === null) {
+    return largestThatLands(context, words, width, height, Infinity, ceiling) ?? SIZE_MIN
+  }
+
+  context.font = fontFor(paired)
+  if (widestWord(context, words) <= width - strokeFor(paired) * 2) return paired
+
+  // Prefer intact words when they cost at most 30% of the readable paired size.
+  const whole = largestThatLands(context, words, width, height, 1, paired)
+  return whole !== null && whole >= paired * WHOLE_WORD_SCALE ? whole : paired
 }
