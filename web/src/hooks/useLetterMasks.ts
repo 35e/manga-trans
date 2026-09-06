@@ -33,19 +33,25 @@ export function useLetterMasks(): LetterMasks {
   }
 
   const keep = useCallback((id: string, spread: number, bitmap: ImageBitmap) => {
-    hold({ ...now.current, [keyFor(id, spread)]: bitmap })
+    const next = { ...now.current }
+    for (const key of Object.keys(next)) {
+      if (!key.startsWith(`${id}@`)) continue
+      if (next[key] !== bitmap) next[key].close()
+      delete next[key]
+    }
+    next[keyFor(id, spread)] = bitmap
+    hold(next)
   }, [])
 
   const drop = useCallback((id: string) => {
-    const mine = `${id}@`
-    for (const [key, bitmap] of Object.entries(now.current)) {
-      if (key.startsWith(mine)) bitmap.close()
+    const keys = Object.keys(now.current).filter((key) => key.startsWith(`${id}@`))
+    if (keys.length === 0) return
+    const next = { ...now.current }
+    for (const key of keys) {
+      next[key].close()
+      delete next[key]
     }
-    hold(
-      Object.fromEntries(
-        Object.entries(now.current).filter(([key]) => !key.startsWith(mine)),
-      ),
-    )
+    hold(next)
   }, [])
 
   const clear = useCallback(() => {

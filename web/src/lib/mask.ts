@@ -1,4 +1,5 @@
 import type { Box } from './api'
+import { validateImageDimensions } from './images'
 
 export type Point = { x: number; y: number }
 export type Brush = { radius: number; erase: boolean }
@@ -17,10 +18,12 @@ export class Mask {
   private readonly canvas: HTMLCanvasElement
   private readonly ctx: CanvasRenderingContext2D
   private marked = false
+  private disposed = false
   private saved: Promise<Blob> | null = null
   private readonly onChange?: () => void
 
   constructor(width: number, height: number, onChange?: () => void) {
+    validateImageDimensions(width, height)
     this.onChange = onChange
     this.width = width
     this.height = height
@@ -47,6 +50,7 @@ export class Mask {
   }
 
   private into(erase: boolean) {
+    if (this.disposed) throw new DOMException('Mask was released', 'AbortError')
     this.ctx.globalCompositeOperation = erase ? 'destination-out' : 'source-over'
     if (!erase) this.marked = true
   }
@@ -92,6 +96,7 @@ export class Mask {
   }
 
   clear() {
+    if (this.disposed) throw new DOMException('Mask was released', 'AbortError')
     if (!this.marked) return
     this.ctx.globalCompositeOperation = 'source-over'
     this.ctx.clearRect(0, 0, this.width, this.height)
@@ -104,6 +109,7 @@ export class Mask {
     if (!ctx) return
     ctx.globalCompositeOperation = 'source-over'
     ctx.clearRect(0, 0, this.width, this.height)
+    if (this.disposed) return
     ctx.drawImage(this.canvas, 0, 0)
     ctx.globalCompositeOperation = 'source-in'
     ctx.fillStyle = TINT
@@ -112,6 +118,7 @@ export class Mask {
   }
 
   snapshot(): Promise<Blob> {
+    if (this.disposed) return Promise.reject(new DOMException('Mask was released', 'AbortError'))
     if (!this.saved) {
       const saving = new Promise<Blob>((resolve, reject) => {
         this.canvas.toBlob(
@@ -127,26 +134,39 @@ export class Mask {
     return this.saved
   }
 
+  dispose() {
+    this.disposed = true
+    this.canvas.width = this.canvas.height = 0
+    this.saved = null
+  }
+
   static async restore(blob: Blob, onChange?: () => void): Promise<Mask> {
     const image = await createImageBitmap(blob)
+    let mask: Mask | undefined
     try {
-      const mask = new Mask(image.width, image.height, onChange)
+      mask = new Mask(image.width, image.height, onChange)
       mask.ctx.drawImage(image, 0, 0)
-      const pixels = mask.ctx.getImageData(0, 0, image.width, image.height).data
-      for (let at = 3; at < pixels.length; at += 4) {
-        if (pixels[at] !== 0) {
-          mask.marked = true
-          break
+      for (let y = 0; y < image.height && !mask.marked; y += 32) {
+        const pixels = mask.ctx.getImageData(0, y, image.width, Math.min(32, image.height - y)).data
+        for (let at = 3; at < pixels.length; at += 4) {
+          if (pixels[at] !== 0) {
+            mask.marked = true
+            break
+          }
         }
       }
       mask.saved = Promise.resolve(blob)
       return mask
+    } catch (error) {
+      mask?.dispose()
+      throw error
     } finally {
       image.close()
     }
   }
 
   toBlob(): Promise<Blob> {
+    if (this.disposed) return Promise.reject(new DOMException('Mask was released', 'AbortError'))
     const out = document.createElement('canvas')
     out.width = this.width
     out.height = this.height
@@ -159,8 +179,11 @@ export class Mask {
 
     return new Promise((resolve, reject) => {
       out.toBlob(
-        (blob) =>
-          blob ? resolve(blob) : reject(new Error('the mask could not be saved')),
+        (blob) => {
+          out.width = out.height = 0
+          if (blob) resolve(blob)
+          else reject(new Error('the mask could not be saved'))
+        },
         'image/png',
       )
     })

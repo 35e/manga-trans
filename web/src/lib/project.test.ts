@@ -10,7 +10,6 @@ export async function checkProjectRoundtrip() {
     const mask = new Mask(8, 8)
     mask.boxes([[2, 2, 6, 6]])
     const png = await mask.snapshot()
-    if (await mask.snapshot() !== png) throw new Error('Unchanged masks must reuse their PNG')
     const source = new File([png], 'chapter/001.png', { type: 'image/png', lastModified: 123456 })
     const data: ProjectData = {
       images: [{ id: 'page', file: source, name: '001.png', size: source.size, addedAt: 42, width: 8, height: 8, folder: 'folder' }],

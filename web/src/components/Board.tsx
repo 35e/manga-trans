@@ -59,7 +59,7 @@ type Props = {
   analysis: Analysis | null
   mask: Mask | null
   cleaned: string | null
-  stage: Stage | null
+  stage: Stage | 'loading' | null
   error: string | null
   selected: number | null
   onSelect: (index: number | null) => void
@@ -75,7 +75,8 @@ type Props = {
   translating: Translating
 }
 
-const LABELS: Record<Stage, string> = {
+const LABELS: Record<Stage | 'loading', string> = {
+  loading: 'Loading editable masks…',
   detecting: 'Finding text…',
   reading: 'Reading text…',
   tracing: 'Marking text…',
@@ -397,7 +398,7 @@ function Action({
 }: {
   onClick: () => void
   disabled: boolean
-  stage: Stage | null
+  stage: Props['stage']
   title?: string
   children: React.ReactNode
 }) {

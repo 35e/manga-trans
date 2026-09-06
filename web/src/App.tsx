@@ -105,14 +105,14 @@ function App() {
   const projectChanged = useRef<() => void>(() => {})
   const markProjectChanged = useCallback(() => projectChanged.current(), [])
   const {
-    forPage, drop: dropMask, clear: clearMasks,
+    get: pageMask, load: loadMask, release: releaseMask, drop: dropMask, clear: clearMasks,
     snapshot: snapshotMasks, restore: restoreMasks,
   } = useMasks(markProjectChanged)
   const {
-    forPage: touchupsFor, drop: dropTouchups, clear: clearTouchups,
+    get: touchupMask, load: loadTouchups, release: releaseTouchups, drop: dropTouchups, clear: clearTouchups,
     snapshot: snapshotTouchups, restore: restoreTouchups,
   } = useMasks(markProjectChanged)
-  const traced = useLetterMasks()
+  const { at: letterMaskAt, keep: keepLetterMask, drop: dropLetterMask, clear: clearLetterMasks } = useLetterMasks()
   const {
     urls: cleanedPages,
     blobs: cleanedBlobs,
@@ -144,11 +144,13 @@ function App() {
   }, [])
 
   const { begin, cancel: abortPage } = usePageOperation()
+  const operating = useRef<PageOperation | null>(null)
   const [working, setWorking] = useState<{
     id: string; stage: Stage; operation: PageOperation
   } | null>(null)
   const cancel = useCallback((id?: string) => {
     abortPage(id)
+    if (!id || operating.current?.pageId === id) operating.current = null
     setWorking((now) => !id || now?.id === id ? null : now)
   }, [abortPage])
   const [error, setError] = useState<string | null>(null)
@@ -235,6 +237,37 @@ function App() {
   imagesNow.current = images
   const held = useCallback((id: string) => imagesNow.current.some((it) => it.id === id), [])
 
+  const releaseIdle = useCallback(async (id: string) => {
+    if (onBoard(id) || operating.current?.pageId === id) return
+    dropLetterMask(id)
+    await Promise.all([releaseMask(id), releaseTouchups(id)])
+  }, [onBoard, dropLetterMask, releaseMask, releaseTouchups])
+
+  const activeMask = pageMask(active)
+  const activeTouchups = touchupMask(active)
+  const [, refreshMasks] = useState(0)
+  const maskPage = useRef<string | null>(null)
+  const maskQueue = useRef(Promise.resolve())
+  useEffect(() => {
+    let current = true
+    // Serialize navigation so rapid page changes cannot queue full-size decodes.
+    maskQueue.current = maskQueue.current.then(async () => {
+      if (!current) return
+      const previous = maskPage.current
+      if (previous && previous !== active?.id) await releaseIdle(previous)
+      if (!current) return
+      maskPage.current = active?.id ?? null
+      if (!active) return
+      const [mask, touchups] = await Promise.all([loadMask(active), loadTouchups(active)])
+      if (!current) {
+        await releaseIdle(active.id)
+      } else if (mask !== activeMask || touchups !== activeTouchups) {
+        refreshMasks((version) => version + 1)
+      }
+    }).catch((cause) => { if (current) setError(said(cause)) })
+    return () => { current = false }
+  }, [active, activeMask, activeTouchups, loadMask, loadTouchups, releaseIdle])
+
 
   useEffect(() => {
     if (!activeId) return
@@ -253,11 +286,11 @@ function App() {
       dropTouchups(id)
       dropMask(id)
       dropCleaned(id)
-      traced.drop(id)
+      dropLetterMask(id)
       setLettering((current) => without(current, id))
       setAnalyses((current) => without(current, id))
     },
-    [cancel, dropTouchups, dropMask, dropCleaned, traced, setLettering, setAnalyses],
+    [cancel, dropTouchups, dropMask, dropCleaned, dropLetterMask, setLettering, setAnalyses],
   )
 
   const removeImage = useCallback(
@@ -278,27 +311,39 @@ function App() {
     ): Promise<T | null> => {
       if (!held(page.id) || !restored.current) return null
       const operation = begin(page.id, signal)
+      operating.current = operation
       lastFailure.current = null
       setError(null)
+      let result: T | null = null
       try {
         operation.check()
-        const result = await step(operation)
+        result = await step(operation)
         operation.check()
-        return result
       } catch (cause) {
         if (operation.signal.aborted) {
           if (signal) throw cause
-          return null
+        } else {
+          lastFailure.current = said(cause)
+          setError(lastFailure.current)
         }
-        lastFailure.current = said(cause)
-        setError(lastFailure.current)
-        return null
+        result = null
       } finally {
         operation.finish()
+        if (operating.current === operation) operating.current = null
+        try {
+          await releaseIdle(page.id)
+        } catch (cause) {
+          if (!operating.current) {
+            lastFailure.current = said(cause)
+            setError(lastFailure.current)
+          }
+          result = null
+        }
         setWorking((now) => now?.operation === operation ? null : now)
       }
+      return result
     },
-    [begin, held],
+    [begin, held, releaseIdle],
   )
 
   const during = useCallback(
@@ -375,7 +420,7 @@ function App() {
   const tracePage = useCallback(
     async (page: GalleryImage, operation: PageOperation): Promise<ImageBitmap> => {
       operation.check()
-      const held = traced.at(page.id, spread)
+      const held = letterMaskAt(page.id, spread)
       if (held) return held
 
       return during(operation, 'tracing', async () => {
@@ -384,11 +429,11 @@ function App() {
           bitmap.close()
           operation.check()
         }
-        traced.keep(page.id, spread, bitmap)
+        keepLetterMask(page.id, spread, bitmap)
         return bitmap
       })
     },
-    [during, traced, spread],
+    [during, letterMaskAt, keepLetterMask, spread],
   )
 
   const traceLetters = useCallback(
@@ -398,13 +443,14 @@ function App() {
 
   const markLetters = useCallback(
     async (page: GalleryImage, boxes: Box[], operation: PageOperation) => {
-      const mask = forPage(page)
+      const mask = await loadMask(page)
+      operation.check()
       if (!mask || mask.empty) return
       const letters = await tracePage(page, operation)
       operation.check()
       if (!mask.empty) mark(mask, boxes, letters)
     },
-    [forPage, tracePage],
+    [loadMask, tracePage],
   )
 
   const toggleExcluded = useCallback(
@@ -422,9 +468,13 @@ function App() {
       }))
 
       if (putBack) await workOn(active, (operation) => markLetters(active, [box], operation))
-      else forPage(active)?.boxes([box], true)
+      else await workOn(active, async (operation) => {
+        const mask = await loadMask(active)
+        operation.check()
+        mask?.boxes([box], true)
+      })
     },
-    [active, analyses, cancel, forPage, markLetters, workOn, setAnalyses],
+    [active, analyses, cancel, loadMask, markLetters, workOn, setAnalyses],
   )
 
   const addRegion = useCallback(
@@ -480,12 +530,14 @@ function App() {
       if (!held || !region || region.box.join() === was.join()) return
 
       await workOn(active, async (operation) => {
-        forPage(active)?.boxes([was], true)
+        const mask = await loadMask(active)
+        operation.check()
+        mask?.boxes([was], true)
         if (!held.excluded.includes(index)) await markLetters(active, [region.box], operation)
         if (held.texts) await reread(active, [region.box], [region.id], operation)
       })
     },
-    [active, analyses, forPage, markLetters, reread, workOn],
+    [active, analyses, loadMask, markLetters, reread, workOn],
   )
 
   const moveRegion = useCallback(
@@ -558,7 +610,8 @@ function App() {
 
   const marksFor = useCallback(
     async (page: GalleryImage, found: Analysis, operation: PageOperation): Promise<Blob | null> => {
-      const mask = forPage(page)
+      const mask = await loadMask(page)
+      operation.check()
       if (!mask) return null
 
       if (mask.empty) {
@@ -570,7 +623,7 @@ function App() {
       }
       return mask.toBlob()
     },
-    [forPage, tracePage],
+    [loadMask, tracePage],
   )
 
   const cleanPage = useCallback(
@@ -641,23 +694,24 @@ function App() {
   )
 
   const runDetect = useCallback(async () => {
-    if (!active) return
+    if (!active || !pageMask(active)) return
     if (
-      (analysesNow.current[active.id] || cleanedNow.current[active.id] || !forPage(active)?.empty) &&
+      (analysesNow.current[active.id] || cleanedNow.current[active.id] || pageMask(active)?.empty === false) &&
       !window.confirm('Find text again? This discards this page’s regions, translations, masks, and cleanup.')
     ) return
     forget(active.id)
     await workOn(active, (operation) => detectAndRead(active, operation))
-  }, [active, forget, forPage, workOn, detectAndRead])
+  }, [active, forget, pageMask, workOn, detectAndRead])
 
   const runClean = useCallback(
     async () => {
       if (!active) return
       const page = active
       const base = cleanedNow.current[page.id]
-      const mask = base ? touchupsFor(page) : forPage(page)
-      if (!mask || mask.empty) return
       await workOn(page, async (operation) => {
+        const mask = await (base ? loadTouchups(page) : loadMask(page))
+        operation.check()
+        if (!mask || mask.empty) return
         const cleaned = await during(operation, 'cleaning', async () => {
           const file = base
             ? new File([await (await fetch(base, { signal: operation.signal })).blob()], page.name, { type: 'image/png' })
@@ -668,7 +722,7 @@ function App() {
         setCleaned(page.id, cleaned)
       })
     },
-    [active, during, fill, workOn, touchupsFor, forPage, setCleaned],
+    [active, during, fill, workOn, loadTouchups, loadMask, setCleaned],
   )
 
   const runTranslate = useCallback(async () => {
@@ -684,9 +738,8 @@ function App() {
       const marks = await marksFor(page, found, operation)
       operation.check()
       if (marks) await cleanPage(page, marks, operation)
-      if (!onBoard(page.id)) traced.drop(page.id)
     },
-    [marksFor, cleanPage, traced, onBoard],
+    [marksFor, cleanPage],
   )
 
 
@@ -799,7 +852,7 @@ function App() {
     clearMasks()
     clearTouchups()
     clearCleaned()
-    traced.clear()
+    clearLetterMasks()
     setLettering({})
     setAnalyses({})
     setActiveId(null)
@@ -815,7 +868,7 @@ function App() {
     clearMasks,
     clearCleaned,
     clearTouchups,
-    traced,
+    clearLetterMasks,
   ])
 
   const changeLettering = useCallback(
@@ -894,32 +947,36 @@ function App() {
       setError(null)
       setExportFailure(null)
       try {
-        const held: Packed[] = []
+        let completed = 0
         const failed: string[] = []
         let anyLettered = false
 
-        for (const [at, page] of pages.entries()) {
-          try {
-            const made = await finished(
-              page,
-              lettering[page.id],
-              cleanedNow.current[page.id] ?? null,
-            )
-            anyLettered ||= made.reached === 'lettered'
-            held.push(made)
-          } catch (cause) {
-            failed.push(`${page.name}: ${said(cause)}`)
+        async function* rendered(): AsyncGenerator<Packed> {
+          for (const [at, page] of pages.entries()) {
+            try {
+              const made = await finished(
+                page,
+                lettering[page.id],
+                cleanedNow.current[page.id] ?? null,
+              )
+              anyLettered ||= made.reached === 'lettered'
+              completed += 1
+              yield made
+            } catch (cause) {
+              failed.push(`${page.name}: ${said(cause)}`)
+            }
+            setPacking({ done: at + 1, total: pages.length })
           }
-          setPacking({ done: at + 1, total: pages.length })
         }
+        const archive = await pack(rendered())
 
         if (failed.length > 0) {
           const message = `Could not export ${failed.length} page(s):\n${failed.join('\n')}`
           setExportFailure({ folder, message })
           if (
-            held.length === 0 ||
+            completed === 0 ||
             !window.confirm(
-              `${message}\n\nDownload only the ${held.length} successful page(s)? ` +
+              `${message}\n\nDownload only the ${completed} successful page(s)? ` +
               'Failed pages will be omitted, not replaced with originals. ' +
               'Cancel to fix the pages or retry the export.',
             )
@@ -928,7 +985,7 @@ function App() {
 
         const name = archiveName(folder, llamaCpp.target, anyLettered)
         save(
-          await pack(held),
+          archive,
           failed.length > 0 ? name.replace(/\.(zip|cbz)$/i, '-partial.$1') : name,
         )
       } catch (cause) {
@@ -1071,9 +1128,9 @@ function App() {
           <Board
             image={active}
             analysis={analysis}
-            mask={cleanedPage ? touchupsFor(active) : forPage(active)}
+            mask={cleanedPage ? activeTouchups : activeMask}
             cleaned={cleanedPage}
-            stage={stage}
+            stage={stage ?? (active && (!activeMask || !activeTouchups) && !error ? 'loading' : null)}
             error={error}
             selected={selected}
             onSelect={setSelected}
@@ -1099,10 +1156,10 @@ function App() {
             }}
             masking={{
               onClean: runClean,
-              letters: traced.at(active?.id, spread),
+              letters: letterMaskAt(active?.id, spread),
               onTrace: traceLetters,
               spread,
-              onSpread: (next) => { cancel(); setSpread(next) },
+              onSpread: (next) => { cancel(); if (active) dropLetterMask(active.id); setSpread(next) },
               fill,
               onFill: (next) => { cancel(); setFill(next) },
             }}

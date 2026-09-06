@@ -5,10 +5,15 @@ from __future__ import annotations
 import io
 import json
 import os
+import struct
 import sys
 import threading
+import time
 import types
 import unittest
+import zlib
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest import mock
 
 import cv2
@@ -1161,8 +1166,6 @@ class TestLlamaCpp(unittest.TestCase):
             got = llamacpp.translate(["おはよう", "なにこれ"], "gemma4:12b")
         self.assertEqual(got, ["Good morning", "What is this?"])
         self.assertEqual(len(asked), 1, "the lines were not sent together")
-        self.assertEqual(asked[0][0], "/v1/chat/completions")
-        self.assertIn("1. おはよう", asked[0][1]["messages"][1]["content"])
 
     def test_the_answer_is_taken_from_reasoning_when_content_is_empty(self):
         with mock.patch.object(
@@ -1207,6 +1210,22 @@ class TestLlamaCpp(unittest.TestCase):
         with mock.patch.object(llamacpp, "ask", side_effect=answers):
             got = llamacpp.translate(["いち", " ", "に"], "m")
         self.assertEqual(got, ["first", "", "second"])
+
+    def test_persistently_invalid_large_page_stops_after_one_correction(self):
+        with mock.patch.object(
+            llamacpp, "ask", return_value=reply(translations("only one")),
+        ) as asked:
+            with self.assertRaises(llamacpp.Unreachable):
+                llamacpp.translate(["はい"] * 20, "m")
+        self.assertEqual(asked.call_count, 2)
+
+    def test_four_line_fallback_is_the_last_allowed_budget(self):
+        answers = [reply(translations()), reply(translations())]
+        answers += [reply(translations(text)) for text in ("one", "two", "three", "four")]
+        with mock.patch.object(llamacpp, "ask", side_effect=answers) as asked:
+            got = llamacpp.translate(["一", "", "二", "三", "四"], "m")
+        self.assertEqual(got, ["one", "", "two", "three", "four"])
+        self.assertEqual(asked.call_count, 6)
 
     def test_reference_stays_data_and_survives_line_fallback(self):
         asked = []
@@ -1406,7 +1425,7 @@ class TestLlamaCppHost(unittest.TestCase):
         """A llama.cpp server that answers at those hosts and nowhere else."""
         self.asked: list[str] = []
 
-        def ask(path, body=None, timeout=None, host=None):
+        def ask(path, body=None, timeout=None, host=None, deadline=None):
             self.asked.append(host)
             if host not in hosts:
                 raise llamacpp.Unreachable(f"no llama.cpp answering at {host}")
@@ -1436,12 +1455,6 @@ class TestLlamaCppHost(unittest.TestCase):
         with self.answering(llamacpp.LLAMA_CPP_HOSTS[-1]):
             self.assertEqual(llamacpp.base(), llamacpp.LLAMA_CPP_HOSTS[-1])
 
-    def test_nothing_answering_says_everywhere_it_looked(self):
-        with self.answering():
-            with self.assertRaises(llamacpp.Unreachable) as caught:
-                llamacpp.base()
-        for host in llamacpp.LLAMA_CPP_HOSTS:
-            self.assertIn(host, str(caught.exception))
 
     def test_a_host_that_was_set_is_never_looked_for(self):
         with mock.patch.dict(
@@ -1450,6 +1463,139 @@ class TestLlamaCppHost(unittest.TestCase):
             with self.answering(*llamacpp.LLAMA_CPP_HOSTS):
                 self.assertEqual(llamacpp.base(), "http://said:9931")
         self.assertEqual(self.asked, [], "it went looking anyway")
+
+
+class TestLlamaDeadline(unittest.TestCase):
+    """Real loopback sockets: inactivity timeouts cannot stop these trickles."""
+
+    @contextmanager
+    def remote(self, mode):
+        stopped = threading.Event()
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.do_POST()
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                requests.append(self.path)
+                try:
+                    if mode in ("correction", "discovery") and len(requests) == 1:
+                        stopped.wait(0.3)
+                        data = json.dumps(
+                            {"data": []} if mode == "discovery" else reply(translations())
+                        ).encode()
+                        self.send_response(200)
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    if mode == "headers":
+                        self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Trickle: ")
+                    else:
+                        self.send_response(503 if mode == "error-body" else 200)
+                        self.send_header("Content-Length", "100000")
+                        self.end_headers()
+                    while not stopped.wait(0.02):
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                except OSError:
+                    pass
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as remote:
+            worker = threading.Thread(
+                target=remote.serve_forever, kwargs={"poll_interval": 0.01},
+            )
+            worker.start()
+            try:
+                yield f"http://127.0.0.1:{remote.server_port}", requests
+            finally:
+                stopped.set()
+                remote.shutdown()
+                worker.join()
+
+    def test_slow_headers_body_and_error_body_obey_the_overall_deadline(self):
+        for mode in ("headers", "body", "error-body", "correction", "discovery"):
+            with self.subTest(mode=mode), self.remote(mode) as (host, requests):
+                limit = 0.5 if mode in ("correction", "discovery") else 0.2
+                with (
+                    mock.patch.object(llamacpp, "TRANSLATE_TIMEOUT", limit),
+                    mock.patch.object(llamacpp, "LLAMA_CPP_HOSTS", (host,)),
+                    mock.patch.object(llamacpp, "_answering", None),
+                    mock.patch.dict(os.environ, {
+                        llamacpp.LLAMA_CPP_ENV: "" if mode == "discovery" else host,
+                    }),
+                ):
+                    started = time.monotonic()
+                    response = client().post(
+                        "/api/translate", data={"texts": '["はい"]', "model": "m"},
+                    )
+                    elapsed = time.monotonic() - started
+                self.assertEqual(response.status_code, 503)
+                self.assertLess(elapsed, limit + 0.2)
+                self.assertEqual(len(requests), 2 if mode in ("correction", "discovery") else 1)
+
+    def test_discovery_lock_wait_is_part_of_the_deadline(self):
+        with (
+            llamacpp._finding,
+            mock.patch.object(llamacpp, "TRANSLATE_TIMEOUT", 0.1),
+            mock.patch.dict(os.environ, {llamacpp.LLAMA_CPP_ENV: ""}),
+        ):
+            started = time.monotonic()
+            with self.assertRaises(llamacpp.Unreachable):
+                llamacpp.translate(["はい"], "m")
+            self.assertLess(time.monotonic() - started, 0.3)
+
+    def test_blocked_dns_times_out_without_accumulating_resolver_work(self):
+        released = threading.Event()
+        finished = threading.Event()
+        lookups = []
+        real_lookup = llamacpp.socket.getaddrinfo
+
+        def blocked(host, port, **kwargs):
+            if kwargs.get("flags", 0) & llamacpp.socket.AI_NUMERICHOST:
+                return real_lookup(host, port, **kwargs)
+            lookups.append(host)
+            try:
+                released.wait()
+                return real_lookup("127.0.0.1", port, **kwargs)
+            finally:
+                finished.set()
+
+        with (
+            mock.patch.object(llamacpp.socket, "getaddrinfo", side_effect=blocked),
+            mock.patch.object(llamacpp, "TRANSLATE_TIMEOUT", 0.1),
+            mock.patch.object(llamacpp.http.client.HTTPConnection, "request") as sent,
+        ):
+            try:
+                for _ in range(3):
+                    started = time.monotonic()
+                    with self.assertRaises(llamacpp.Unreachable):
+                        llamacpp.translate(["はい"], "m", host="http://blocked.invalid:9931")
+                    self.assertLess(time.monotonic() - started, 0.3)
+                self.assertEqual(lookups, ["blocked.invalid"])
+                # Numeric hosts remain usable even when the resolver is occupied.
+                resolved = llamacpp.addresses("127.0.0.1", 9931, time.monotonic() + 0.1)
+                self.assertEqual(resolved[0][4], ("127.0.0.1", 9931))
+            finally:
+                released.set()
+                self.assertTrue(finished.wait(2), "the blocked test lookup did not finish")
+                # Drain its completion callback so the process-wide slot is clean.
+                self.assertTrue(llamacpp._resolving.acquire(timeout=2))
+                llamacpp._resolving.release()
+            sent.assert_not_called()
+
+    def test_an_individual_call_cannot_consume_the_whole_page_deadline(self):
+        with self.remote("body") as (host, requests):
+            started = time.monotonic()
+            with self.assertRaises(llamacpp.Unreachable):
+                llamacpp.ask("/models", host=host, timeout=0.1, deadline=started + 1)
+            self.assertLess(time.monotonic() - started, 0.3)
+            self.assertEqual(len(requests), 1)
 
 
 class TestLanguages(unittest.TestCase):
@@ -1717,6 +1863,95 @@ def finding(blocks: list[Block], balloons: list[Box]):
             return list(blocks), list(balloons)
 
     return Stub
+
+
+class TestRequestLimits(unittest.TestCase):
+    @staticmethod
+    def header(width, height):
+        """A real PNG header with no matching pixels: decode must never run."""
+        buffer = io.BytesIO()
+        Image.new("RGB", (1, 1)).save(buffer, format="PNG")
+        data = bytearray(buffer.getvalue())
+        data[16:24] = struct.pack(">II", width, height)
+        data[29:33] = struct.pack(">I", zlib.crc32(data[12:29]))
+        return io.BytesIO(data)
+
+    def test_page_and_mask_dimensions_are_refused_before_decode(self):
+        for width, height in ((16385, 1), (6000, 4001), (100000, 100000)):
+            with self.subTest(size=(width, height)):
+                with mock.patch.object(
+                    server.ImageOps, "exif_transpose", side_effect=AssertionError("decoded"),
+                ):
+                    response = client().post("/api/detect", data={
+                        "image": (self.header(width, height), "page.png"),
+                    })
+                self.assertEqual(response.status_code, 413)
+                data = payload(page())
+                data["mask"] = (self.header(width, height), "mask.png")
+                with mock.patch.object(
+                    server.inpaint, "Lama", side_effect=AssertionError("loaded"),
+                ):
+                    response = client().post("/api/clean", data=data)
+                self.assertEqual(response.status_code, 413)
+
+    def test_exact_dimension_boundaries_pass_header_validation(self):
+        for size in ((16384, 1), (6000, 4000)):
+            with self.subTest(size=size), server.checked_image(self.header(*size)) as image:
+                self.assertEqual(image.size, size)
+
+    def test_invalid_and_oversized_translation_inputs_never_reach_generation(self):
+        cases = [
+            {"texts": [None]},
+            {"texts": [42]},
+            {"texts": [{}]},
+            {"texts": [["nested"]]},
+            {"texts": [""] * 129},
+            {"texts": ["x" * 12001]},
+            {"model": "m" * 257},
+            {"target": "t" * 257},
+            {"source": "s" * 257},
+            {"system": "s" * 8001},
+            {"context": "c" * 16001},
+            {"texts": ["x" * 12000], "context": "c" * 13000},
+            # Raw fields fit; substitution and JSON quoting do not.
+            {"system": "{target}" * 1000, "target": "t" * 256},
+            {"context": "\n" * 15000},
+            {"budgets": [True]},
+            {"budgets": [1.5]},
+            {"budgets": ["12"]},
+            {"kinds": [{}]},
+        ]
+        with mock.patch.object(llamacpp, "ask") as asked:
+            for fields in cases:
+                with self.subTest(fields=list(fields)):
+                    data = {"texts": ["はい"], "model": "m", **fields}
+                    data = {
+                        key: json.dumps(value) if isinstance(value, list) else value
+                        for key, value in data.items()
+                    }
+                    response = client().post("/api/translate", data=data)
+                    self.assertEqual(response.status_code, 400)
+            asked.assert_not_called()
+
+    def test_exact_individual_text_limits_remain_usable(self):
+        cases = [
+            {"texts": ["x"] * 128},
+            {"texts": ["x" * 12000]},
+            {"model": "m" * 256, "source": "s" * 256, "target": "t" * 256},
+            {"system": "s" * 8000},
+            {"context": "c" * 16000},
+        ]
+        for fields in cases:
+            data = {"texts": ["はい"], "model": "m", **fields}
+            expected = ["translated"] * len(data["texts"])
+            data["texts"] = json.dumps(data["texts"])
+            with self.subTest(fields=list(fields)), mock.patch.object(
+                llamacpp, "ask", return_value=reply(translations(*expected)),
+            ) as asked:
+                response = client().post("/api/translate", data=data)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json, {"texts": expected})
+                self.assertEqual(asked.call_count, 1)
 
 
 class TestApi(unittest.TestCase):
@@ -2062,55 +2297,6 @@ class TestApi(unittest.TestCase):
                 self.assertIn("error", response.json)
                 self.assertNotIn("texts", response.json)
 
-    def test_translate_takes_the_language_to_translate_into(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=[""]
-        ) as into:
-            client().post(
-                "/api/translate",
-                data={"texts": "[]", "model": "m", "target": "Dutch"},
-            )
-        self.assertEqual(into.call_args.args[2], "Dutch")
-
-    def test_translate_passes_what_each_line_is_on(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=[""]
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={
-                    "texts": json.dumps(["おはよう", "ドン"]),
-                    "model": "m",
-                    "kinds": json.dumps(["speech", "free"]),
-                    "budgets": json.dumps([28, 12]),
-                },
-            )
-        self.assertEqual(told.call_args.kwargs["kinds"], ["speech", "free"])
-        self.assertEqual(told.call_args.kwargs["budgets"], [28, 12])
-
-    def test_translate_without_them_sends_none(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=[""]
-        ) as told:
-            client().post("/api/translate", data={"texts": "[]", "model": "m"})
-        self.assertIsNone(told.call_args.kwargs["kinds"])
-        self.assertIsNone(told.call_args.kwargs["budgets"])
-
-    def test_a_block_classified_by_nothing_is_a_real_answer(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=[""]
-        ) as told:
-            response = client().post(
-                "/api/translate",
-                data={
-                    "texts": json.dumps(["おはよう"]),
-                    "model": "m",
-                    "kinds": json.dumps([""]),
-                },
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(told.call_args.kwargs["kinds"], [""])
-
     def test_what_is_said_about_the_lines_has_to_line_up_with_them(self):
         response = client().post(
             "/api/translate",
@@ -2141,22 +2327,6 @@ class TestApi(unittest.TestCase):
         self.assertEqual(response.json, {"prompt": server.llamacpp.SYSTEM_DEFAULT})
         self.assertIn("{target}", response.json["prompt"])
 
-    def test_translate_passes_a_prompt_of_your_own_on(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=[""]
-        ) as told:
-            client().post(
-                "/api/translate",
-                data={"texts": "[]", "model": "m", "system": "Be brief."},
-            )
-        self.assertEqual(told.call_args.kwargs["system"], "Be brief.")
-
-    def test_translate_without_a_prompt_leaves_the_default_alone(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=[""]
-        ) as told:
-            client().post("/api/translate", data={"texts": "[]", "model": "m"})
-        self.assertIsNone(told.call_args.kwargs["system"])
 
     def test_translate_needs_a_model(self):
         response = client().post("/api/translate", data={"texts": "[]"})

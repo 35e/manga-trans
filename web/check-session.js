@@ -6,6 +6,28 @@ globalThis.checkSession = async page => {
   try {
     await check.addInitScript(() => {
       const state = window.sessionCheck = { calls: [], pending: [], hold: null, failTranslation: null, failSave: false }
+      state.canvases = []
+      state.decoding = state.maxDecoding = 0
+      const create = document.createElement.bind(document)
+      document.createElement = (...args) => {
+        const element = create(...args)
+        if (args[0] === 'canvas') state.canvases.push(new WeakRef(element))
+        return element
+      }
+      const Image = window.Image
+      window.Image = class extends Image {
+        constructor(...args) {
+          super(...args)
+          state.maxDecoding = Math.max(state.maxDecoding, ++state.decoding)
+          let done = false
+          const settled = () => {
+            if (!done) state.decoding--
+            done = true
+          }
+          this.addEventListener('load', settled, { once: true })
+          this.addEventListener('error', settled, { once: true })
+        }
+      }
       const fetch = window.fetch.bind(window)
       window.fetch = async (input, init) => {
         const path = new URL(String(input), location.href).pathname
@@ -213,7 +235,38 @@ globalThis.checkSession = async page => {
       const data = await (await import('/src/lib/project.ts')).loadProject()
       return Object.keys(data.cleaned).length === 0
     })) throw new Error('Stopped cleanup committed its late response')
-    return { restored: 'editable project and masks', resumed: resumed.map(call => call.path), reprocessed: 'all stages', staleTranslation: 'discarded', quota: 'retry recovered newest edit', loadFailure: 'retry restored saved work', stop: 'request aborted, late result discarded', deletion: 'persisted without late resources' }
+
+    await check.evaluate(() => {
+      window.sessionCheck.hold = null
+      window.sessionCheck.maxDecoding = 0
+      const transfer = new DataTransfer()
+      for (let index = 1; index <= 10; index++) {
+        transfer.items.add(new File([window.sessionCheck.png], `c${index}.png`, { type: 'image/png' }))
+      }
+      const input = document.querySelector('input[type=file]')
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await check.waitForFunction(async () => {
+      const data = await (await import('/src/lib/project.ts')).loadProject()
+      return data?.images.length === 11
+    })
+    const decoders = await check.evaluate(() => window.sessionCheck.maxDecoding)
+    if (decoders > 2 || decoders === 0) throw new Error(`Image import used ${decoders} simultaneous decoders`)
+    await check.getByRole('button', { name: 'Resume folder', exact: true }).click()
+    await check.getByRole('button', { name: 'Stop', exact: true }).waitFor({ state: 'hidden' })
+    await check.getByText('Project saved', { exact: true }).waitFor()
+    await check.getByRole('button', { name: 'Close the review' }).click()
+    let canvases = 0
+    for (let index = 1; index <= 10; index++) {
+      await check.getByRole('button', { name: new RegExp(`Open page .*c${index}[.]png$`) }).click()
+      await check.getByText('Loading editable masks…', { exact: true }).waitFor({ state: 'hidden' })
+      canvases = await check.evaluate(() => window.sessionCheck.canvases
+        .map(reference => reference.deref())
+        .filter(canvas => canvas?.width === 128 && canvas.height === 192).length)
+      if (canvases > 2) throw new Error(`Inactive pages retained ${canvases} full-size canvases`)
+    }
+    return { restored: 'editable project and masks', resumed: resumed.map(call => call.path), reprocessed: 'all stages', staleTranslation: 'discarded', quota: 'retry recovered newest edit', loadFailure: 'retry restored saved work', stop: 'request aborted, late result discarded', deletion: 'persisted without late resources', memory: { pages: 11, canvases, decoders } }
   } catch (cause) {
     const calls = await check.evaluate(() => window.sessionCheck?.calls)
     throw new Error(`${cause.message}\n${await check.locator('body').innerText()}\nCalls: ${JSON.stringify(calls)}`)

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { Brush, Mask, Point } from '../lib/mask'
 
 type Props = {
@@ -13,11 +13,30 @@ export function MaskCanvas({ page, mask, brush, panning, onStroke }: Props) {
   const overlay = useRef<HTMLCanvasElement>(null)
   const cursor = useRef<HTMLDivElement>(null)
   const drawing = useRef<Point | null>(null)
+  const pointer = useRef<number | null>(null)
+  const frame = useRef<number | null>(null)
 
-  const repaint = () => {
-    if (overlay.current) mask.showOn(overlay.current)
-  }
+  const repaint = useCallback(() => {
+    if (frame.current !== null) return
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null
+      if (overlay.current) mask.showOn(overlay.current)
+    })
+  }, [mask])
   useEffect(repaint)
+  useLayoutEffect(() => {
+    const canvas = overlay.current
+    const dot = cursor.current
+    return () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current)
+      frame.current = null
+      drawing.current = null
+      const id = pointer.current
+      pointer.current = null
+      if (id !== null && canvas?.hasPointerCapture(id)) canvas.releasePointerCapture(id)
+      if (dot) dot.style.opacity = '0'
+    }
+  }, [mask, page.width, page.height])
 
   const at = (event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -50,8 +69,9 @@ export function MaskCanvas({ page, mask, brush, panning, onStroke }: Props) {
           panning ? '' : 'cursor-none'
         }`}
         onPointerDown={(event) => {
-          if (panning || event.button !== 0) return
+          if (panning || event.button !== 0 || pointer.current !== null) return
           event.currentTarget.setPointerCapture(event.pointerId)
+          pointer.current = event.pointerId
           const point = at(event)
           drawing.current = point
           mask.dot(point, brush)
@@ -59,23 +79,42 @@ export function MaskCanvas({ page, mask, brush, panning, onStroke }: Props) {
         }}
         onPointerMove={(event) => {
           moveDot(event)
-          if (!drawing.current) return
-          const point = at(event)
-          mask.stroke(drawing.current, point, brush)
-          drawing.current = point
+          if (!drawing.current || pointer.current !== event.pointerId) return
+          const rect = event.currentTarget.getBoundingClientRect()
+          const samples = event.nativeEvent.getCoalescedEvents?.() ?? []
+          for (const sample of samples.length ? samples : [event.nativeEvent]) {
+            const point = {
+              x: ((sample.clientX - rect.left) / rect.width) * page.width,
+              y: ((sample.clientY - rect.top) / rect.height) * page.height,
+            }
+            mask.stroke(drawing.current!, point, brush)
+            drawing.current = point
+          }
           repaint()
         }}
         onPointerUp={(event) => {
-          if (!drawing.current) return
+          if (!drawing.current || pointer.current !== event.pointerId) return
+          mask.stroke(drawing.current, at(event), brush)
           drawing.current = null
+          pointer.current = null
+          repaint()
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId)
           }
           onStroke()
         }}
-        onPointerCancel={() => {
+        onPointerCancel={(event) => {
+          if (!drawing.current || pointer.current !== event.pointerId) return
+          drawing.current = null
+          pointer.current = null
+          repaint()
+          onStroke()
+        }}
+        onLostPointerCapture={() => {
           if (!drawing.current) return
           drawing.current = null
+          pointer.current = null
+          repaint()
           onStroke()
         }}
         onPointerLeave={() => {

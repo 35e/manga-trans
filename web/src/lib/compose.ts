@@ -1,5 +1,6 @@
 import type { Lettering } from './api'
 import { LINE_HEIGHT, fontFor, linesFor, ready, strokeFor } from './fit'
+import { validateImageDimensions } from './images'
 
 export async function compose(
   source: string,
@@ -7,6 +8,7 @@ export async function compose(
   height: number,
   lettering: (Lettering | null)[],
 ): Promise<Blob> {
+  validateImageDimensions(width, height)
   await ready()
 
   const page = await loadImage(source)
@@ -14,29 +16,34 @@ export async function compose(
   canvas.width = width
   canvas.height = height
 
-  const context = canvas.getContext('2d')
-  if (!context) throw new Error('this browser has no 2D canvas')
+  try {
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('this browser has no 2D canvas')
 
-  context.drawImage(page, 0, 0, width, height)
-  context.fillStyle = '#000'
-  context.strokeStyle = '#fff'
-  context.textAlign = 'center'
-  context.textBaseline = 'middle'
-  context.lineJoin = 'round'
-  context.miterLimit = 2
+    context.drawImage(page, 0, 0, width, height)
+    context.fillStyle = '#000'
+    context.strokeStyle = '#fff'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.lineJoin = 'round'
+    context.miterLimit = 2
 
-  for (const line of lettering) {
-    if (line === null || !line.text.trim()) continue
-    set(context, line)
+    for (const line of lettering) {
+      if (line === null || !line.text.trim()) continue
+      set(context, line)
+    }
+
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => blob ? resolve(blob) : reject(new Error('the page could not be saved')),
+        'image/png',
+      )
+    })
+  } finally {
+    canvas.width = canvas.height = 0
+    page.onload = page.onerror = null
+    page.src = ''
   }
-
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) =>
-        blob ? resolve(blob) : reject(new Error('the page could not be saved')),
-      'image/png',
-    )
-  })
 }
 
 function set(context: CanvasRenderingContext2D, line: Lettering) {

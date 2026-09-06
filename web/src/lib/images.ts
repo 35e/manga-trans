@@ -30,27 +30,45 @@ export function isImage(file: File) {
   return file.type.startsWith('image/')
 }
 
+// Keep these aligned with the API's decoded-image limits.
+export function validateImageDimensions(width: number, height: number): void {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 ||
+    width > 16384 || height > 16384 || width * height > 24_000_000) {
+    throw new Error('images must be at most 24 megapixels and 16384 pixels on either side')
+  }
+}
+
 export function loadImage(file: File, folder?: string): Promise<GalleryImage | null> {
+  if (file.size > 32 * 1024 * 1024) return Promise.reject(new Error('images must be at most 32 MiB'))
   const url = URL.createObjectURL(file)
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const probe = new Image()
-
-    probe.onload = () =>
-      resolve({
-        id: crypto.randomUUID(),
-        file,
-        url,
-        name: file.name.slice(file.name.lastIndexOf('/') + 1),
-        size: file.size,
-        addedAt: Date.now(),
-        width: probe.naturalWidth,
-        height: probe.naturalHeight,
-        folder,
-      })
-
+    const release = () => {
+      probe.onload = null
+      probe.onerror = null
+      probe.src = ''
+    }
+    probe.onload = () => {
+      const width = probe.naturalWidth
+      const height = probe.naturalHeight
+      try {
+        validateImageDimensions(width, height)
+        resolve({
+          id: crypto.randomUUID(), file, url,
+          name: file.name.slice(file.name.lastIndexOf('/') + 1),
+          size: file.size, addedAt: Date.now(), width, height, folder,
+        })
+      } catch (cause) {
+        URL.revokeObjectURL(url)
+        reject(cause)
+      } finally {
+        release()
+      }
+    }
     probe.onerror = () => {
       URL.revokeObjectURL(url)
+      release()
       resolve(null)
     }
 

@@ -16,9 +16,12 @@ export function useImageLibrary() {
   const generation = useRef(0)
   const pending = useRef(0)
   const mounted = useRef(true)
+  const queue = useRef(Promise.resolve())
+  const importing = useRef<AbortController | null>(null)
 
   const cancelImports = useCallback(() => {
     generation.current += 1
+    importing.current?.abort()
     pending.current = 0
     if (mounted.current) setBusy(false)
   }, [])
@@ -47,6 +50,7 @@ export function useImageLibrary() {
     return () => {
       mounted.current = false
       generation.current += 1
+      importing.current?.abort()
       pending.current = 0
       for (const image of latest.current) URL.revokeObjectURL(image.url)
     }
@@ -86,12 +90,20 @@ export function useImageLibrary() {
       const current = () => mounted.current && turn === generation.current
       pending.current += 1
       setBusy(true)
+      const previous = queue.current
+      let finish!: () => void
+      queue.current = new Promise<void>((resolve) => { finish = resolve })
+      const controller = new AbortController()
       try {
+        await previous
+        if (!current()) return
+        importing.current = controller
 
         const taken: { file: File; folder?: string }[] = []
         const opened: GalleryFolder[] = []
         const named = new Map<string, string>()
         const unopenable: string[] = []
+        const limits: string[] = []
         const hollow: string[] = []
 
         const folderFor = (archive: string): GalleryFolder => {
@@ -114,7 +126,7 @@ export function useImageLibrary() {
             continue
           }
           try {
-            const inside = await expand(file)
+            const inside = await expand(file, controller.signal)
             if (!current()) return
             if (inside.length === 0) {
               hollow.push(file.name)
@@ -122,8 +134,9 @@ export function useImageLibrary() {
             }
             const folder = folderFor(file.name)
             for (const page of inside) taken.push({ file: page, folder: folder.id })
-          } catch {
-            unopenable.push(file.name)
+          } catch (error) {
+            if (!current()) return
+            unopenable.push(error instanceof Error ? error.message : `${file.name} could not be opened`)
           }
         }
         if (!current()) return
@@ -131,9 +144,26 @@ export function useImageLibrary() {
         const rejected = taken.filter(({ file }) => !isImage(file))
         const candidates = taken.filter(({ file }) => isImage(file))
 
-        const loaded = (
-          await Promise.all(candidates.map(({ file, folder }) => loadImage(file, folder)))
-        ).filter((image) => image !== null)
+        const decoded: (GalleryImage | null)[] = new Array(candidates.length).fill(null)
+        let next = 0
+        const worker = async () => {
+          while (current() && next < candidates.length) {
+            const at = next++
+            const { file, folder } = candidates[at]
+            try {
+              const image = await loadImage(file, folder)
+              if (!current()) {
+                if (image) URL.revokeObjectURL(image.url)
+                return
+              }
+              decoded[at] = image
+            } catch (error) {
+              if (error instanceof Error) limits.push(`${file.name}: ${error.message}`)
+            }
+          }
+        }
+        await Promise.all([worker(), worker()])
+        const loaded = decoded.filter((image) => image !== null)
         if (!current()) {
           for (const image of loaded) URL.revokeObjectURL(image.url)
           return
@@ -179,8 +209,8 @@ export function useImageLibrary() {
 
         const broken = candidates.length - loaded.length
         const problems = [
-          unopenable.length > 0 &&
-          `${plural(unopenable.length, 'archive')} could not be opened`,
+          ...unopenable,
+          ...limits,
           hollow.length > 0 &&
           `${plural(hollow.length, 'archive')} held no images`,
           rejected.length > 0 && `${plural(rejected.length, 'file')} skipped`,
@@ -191,6 +221,8 @@ export function useImageLibrary() {
         if (problems.length > 0) say(problems.join(' · '))
         else setNotice(null)
       } finally {
+        finish()
+        if (importing.current === controller) importing.current = null
         if (current()) {
           pending.current -= 1
           setBusy(pending.current > 0)

@@ -6,12 +6,16 @@ come back countable.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import socket
+import ssl
 import threading
-import urllib.error
-import urllib.request
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 LLAMA_CPP_ENV = "MANGA_TRANS_LLAMA_CPP"
 
@@ -23,7 +27,15 @@ LLAMA_CPP_HOSTS = (
 
 TARGET_DEFAULT = "English"
 SOURCE_DEFAULT = "Japanese"
-TIMEOUT = 600
+TIMEOUT = 60
+TRANSLATE_TIMEOUT = 180
+MAX_LINES = 128
+MAX_SOURCE_CHARS = 12_000
+MAX_SYSTEM_CHARS = 8_000
+MAX_CONTEXT_CHARS = 16_000
+MAX_INPUT_CHARS = 24_000
+MAX_IDENTIFIER_CHARS = 256
+MAX_FALLBACK_CALLS = 4
 LISTING_TIMEOUT = 15
 FINDING_TIMEOUT = 5
 
@@ -103,58 +115,168 @@ class Unreachable(RuntimeError):
     """llama.cpp is unavailable or did not return a usable answer."""
 
 
+def remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise Unreachable("llama.cpp request deadline exceeded")
+    return left
+
+
 _answering: str | None = None
 _finding = threading.Lock()
+_resolver = ThreadPoolExecutor(max_workers=1, thread_name_prefix="llama-dns")
+_resolving = threading.BoundedSemaphore(1)
 
 
-def base(explicit: str | None = None) -> str:
+def addresses(host: str, port: int, deadline: float):
+    """Deadline-bounded DNS with at most one lookup, including abandoned work."""
+    remaining(deadline)
+    try:
+        return socket.getaddrinfo(
+            host, port, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST,
+        )
+    except socket.gaierror:
+        pass
+    if not _resolving.acquire(timeout=remaining(deadline)):
+        raise Unreachable("llama.cpp DNS deadline exceeded")
+    try:
+        remaining(deadline)
+        lookup = _resolver.submit(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM)
+    except Exception:
+        _resolving.release()
+        raise
+    # ponytail: libc DNS is not cancellable. One stuck lookup occupies this sole
+    # slot until it finishes; later callers time out without queuing more work.
+    lookup.add_done_callback(lambda _: _resolving.release())
+    try:
+        return lookup.result(timeout=remaining(deadline))
+    except (TimeoutError, Unreachable) as exc:
+        lookup.cancel()
+        raise Unreachable("llama.cpp DNS deadline exceeded") from exc
+
+
+def base(explicit: str | None = None, deadline: float | None = None) -> str:
     """Where llama.cpp is: the one asked for, set, or found."""
     said = explicit or os.environ.get(LLAMA_CPP_ENV)
-    return said.rstrip("/") if said else answering()
+    return said.rstrip("/") if said else answering(deadline)
 
 
-def answering() -> str:
+def answering(deadline: float | None = None) -> str:
     """The first usual llama.cpp address that answers, cached after a hit."""
     global _answering
-    with _finding:
+    if deadline is None:
+        deadline = time.monotonic() + TRANSLATE_TIMEOUT
+    if not _finding.acquire(timeout=remaining(deadline)):
+        raise Unreachable("llama.cpp discovery deadline exceeded")
+    try:
+        remaining(deadline)
         if _answering:
             return _answering
         for host in LLAMA_CPP_HOSTS:
             try:
-                ask("/models", timeout=FINDING_TIMEOUT, host=host)
+                ask("/models", timeout=FINDING_TIMEOUT, host=host, deadline=deadline)
             except Unreachable:
+                remaining(deadline)
                 continue
             _answering = host
             return host
+    finally:
+        _finding.release()
     raise Unreachable(
         f"no llama.cpp server answering at any of {', '.join(LLAMA_CPP_HOSTS)} — "
         f"start llama-server, or set {LLAMA_CPP_ENV}"
     )
 
 
-def ask(path: str, body: dict | None = None, timeout: int = TIMEOUT, host=None) -> dict:
-    """One call to llama.cpp, GET when there is nothing to send."""
-    where = base(host)
-    request = urllib.request.Request(
-        f"{where}{path}",
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json"},
+def ask(
+    path: str, body: dict | None = None, timeout: float = TIMEOUT, host=None,
+    deadline: float | None = None,
+) -> dict:
+    """One call, with a wall-clock bound even when headers or bytes trickle in."""
+    end = time.monotonic() + timeout
+    if deadline is not None:
+        end = min(end, deadline)
+    where = base(host, end)
+    url = urlsplit(f"{where}{path}")
+    if url.scheme not in ("http", "https") or not url.hostname:
+        raise Unreachable(f"invalid llama.cpp address: {where}")
+    connection = http.client.HTTPConnection(
+        url.hostname, url.port or (443 if url.scheme == "https" else 80),
+        timeout=remaining(end),
     )
+    active: socket.socket | None = None
+
+    def close_transport():
+        # Keep the socket itself: HTTPConnection clears .sock on Connection: close
+        # while HTTPResponse still owns a file reading that same live socket.
+        if active is not None:
+            try:
+                active.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            active.close()
+
+    watchdog = threading.Timer(remaining(end), close_transport)
+    watchdog.daemon = True
+    watchdog.start()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as answer:
-            return json.load(answer)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:200]
-        raise Unreachable(
-            f"llama.cpp at {where} answered {exc.code}: {detail}"
-        ) from exc
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+        resolved = addresses(connection.host, connection.port, end)
+        remaining(end)
+        last_error = None
+        for family, kind, protocol, _, address in resolved:
+            active = socket.socket(family, kind, protocol)
+            try:
+                active.settimeout(remaining(end))
+                active.connect(address)
+                break
+            except OSError as exc:
+                last_error = exc
+                active.close()
+                remaining(end)
+        else:
+            raise last_error or OSError("no addresses found")
+        remaining(end)
+        if url.scheme == "https":
+            active = ssl.create_default_context().wrap_socket(
+                active, server_hostname=url.hostname, do_handshake_on_connect=False,
+            )
+            active.settimeout(remaining(end))
+            active.do_handshake()
+        connection.sock = active
+        remaining(end)
+        connection.request(
+            "POST" if body is not None else "GET",
+            url.path + (f"?{url.query}" if url.query else ""),
+            body=json.dumps(body).encode() if body is not None else None,
+            headers={"Content-Type": "application/json"},
+        )
+        with connection.getresponse() as answer:
+            if answer.status >= 400:
+                detail = answer.read(200).decode("utf-8", "replace")
+                remaining(end)
+                raise Unreachable(
+                    f"llama.cpp at {where} answered {answer.status}: {detail}"
+                )
+            result = json.load(answer)
+            remaining(end)
+            return result
+    except (http.client.HTTPException, OSError, ValueError) as exc:
+        remaining(end)
         raise Unreachable(f"no llama.cpp server answering at {where}: {exc}") from exc
+    finally:
+        watchdog.cancel()
+        watchdog.join()
+        connection.close()
+        close_transport()
 
 
-def completed(body: dict, host=None) -> dict:
+def completed(body: dict, host=None, deadline: float | None = None) -> dict:
     """The assistant message from one OpenAI-compatible chat completion."""
-    completion = ask("/v1/chat/completions", body, host=host)
+    if deadline is not None:
+        remaining(deadline)
+    if message_size(body) > MAX_INPUT_CHARS:
+        raise Unreachable("llama.cpp retry exceeds the translation input limit")
+    completion = ask("/v1/chat/completions", body, host=host, deadline=deadline)
     try:
         message = completion["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -166,7 +288,8 @@ def completed(body: dict, host=None) -> dict:
 
 def models(host=None) -> list[str]:
     """Every model llama.cpp currently offers, by identifier."""
-    listing = ask("/models", timeout=LISTING_TIMEOUT, host=host)
+    deadline = time.monotonic() + LISTING_TIMEOUT
+    listing = ask("/models", timeout=LISTING_TIMEOUT, host=host, deadline=deadline)
     return sorted(
         model["id"]
         for model in listing.get("data", [])
@@ -311,6 +434,49 @@ def request_for(
     }
 
 
+def message_size(body: dict) -> int:
+    return len(body["model"]) + sum(len(message["content"]) for message in body["messages"])
+
+
+def validate(
+    texts, model, target, system, source, kinds, budgets, context,
+) -> None:
+    """Bound semantic input before building prompts or discovering a server."""
+    if not isinstance(texts, list) or any(not isinstance(text, str) for text in texts):
+        raise ValueError("'texts' must be a list of strings")
+    if len(texts) > MAX_LINES:
+        raise ValueError(f"'texts' must contain at most {MAX_LINES} lines")
+    if sum(map(len, texts)) > MAX_SOURCE_CHARS:
+        raise ValueError(f"'texts' must contain at most {MAX_SOURCE_CHARS} characters")
+    for name, value, limit in (
+        ("model", model, MAX_IDENTIFIER_CHARS),
+        ("target", target, MAX_IDENTIFIER_CHARS),
+        ("source", source, MAX_IDENTIFIER_CHARS),
+        ("system", system if system is not None else "", MAX_SYSTEM_CHARS),
+        ("context", context, MAX_CONTEXT_CHARS),
+    ):
+        if not isinstance(value, str) or len(value) > limit:
+            raise ValueError(f"'{name}' must be a string of at most {limit} characters")
+    if not model.strip():
+        raise ValueError("'model' must not be blank")
+    if kinds is not None and (
+        not isinstance(kinds, list) or len(kinds) != len(texts)
+        or any(not isinstance(kind, str) or kind not in ("", "speech", "free") for kind in kinds)
+    ):
+        raise ValueError("'kinds' must contain one empty, speech or free label per text")
+    if budgets is not None and (
+        not isinstance(budgets, list) or len(budgets) != len(texts)
+        or any(type(budget) is not int or budget < 0 for budget in budgets)
+    ):
+        raise ValueError("'budgets' must contain one nonnegative whole number per text")
+    total = sum(map(len, texts)) + sum(map(len, (
+        model, target, source, system or SYSTEM_DEFAULT, context,
+    )))
+    total += sum(map(len, kinds or [])) + sum(len(str(budget)) for budget in budgets or [])
+    if total > MAX_INPUT_CHARS:
+        raise ValueError(f"translation input must be at most {MAX_INPUT_CHARS} characters")
+
+
 def counted(reply: dict | None, wanted: int) -> list[str] | None:
     """The translations, if every requested line has a nonblank string.
 
@@ -336,7 +502,7 @@ def corrected(body: dict, said: dict, complaint: str) -> dict:
     }
 
 
-def one(body: dict, number: int, host=None) -> str:
+def one(body: dict, number: int, host=None, deadline: float | None = None) -> str:
     """One occurrence, retaining the original page and chapter reference."""
     body = {
         **body,
@@ -351,7 +517,7 @@ def one(body: dict, number: int, host=None) -> str:
             },
         ],
     }
-    got = counted(answered(completed(body, host)), 1)
+    got = counted(answered(completed(body, host, deadline)), 1)
     if got is None:
         raise Unreachable(
             f"llama.cpp returned an invalid translation for page line {number}"
@@ -377,6 +543,12 @@ def translate(
     `context` is chapter reference data, never additional translation targets.
     It and the full page remain available during retries and line fallback.
     """
+    deadline = time.monotonic() + TRANSLATE_TIMEOUT
+    validate(texts, model, target, system, source, kinds, budgets, context)
+    model = model.strip()
+    target = target.strip() or TARGET_DEFAULT
+    source = source.strip() or SOURCE_DEFAULT
+    system = (system.strip() or None) if system is not None else None
     wanted = [
         (
             at,
@@ -395,7 +567,9 @@ def translate(
 
     lines = [line for _, line in wanted]
     body = request_for(lines, model, target, system, source, context)
-    said = completed(body, host)
+    if message_size(body) > MAX_INPUT_CHARS:
+        raise ValueError(f"rendered translation input must be at most {MAX_INPUT_CHARS} characters")
+    said = completed(body, host, deadline)
     reply = answered(said)
     got = counted(reply, len(lines))
 
@@ -403,11 +577,18 @@ def translate(
         asked_again = corrected(
             body, said, INVALID.format(wanted=len(lines))
         )
-        again = answered(completed(asked_again, host))
+        again = answered(completed(asked_again, host, deadline))
         got = counted(again, len(lines))
 
     if got is None:
-        got = [one(body, number, host) for number in range(1, len(lines) + 1)]
+        if len(lines) > MAX_FALLBACK_CALLS:
+            raise Unreachable(
+                f"llama.cpp returned an invalid page after correction; "
+                f"line fallback is limited to {MAX_FALLBACK_CALLS} calls"
+            )
+        got = [
+            one(body, number, host, deadline) for number in range(1, len(lines) + 1)
+        ]
 
     for (at, _), translated in zip(wanted, got):
         done[at] = translated.strip()

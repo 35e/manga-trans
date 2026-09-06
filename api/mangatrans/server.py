@@ -14,7 +14,9 @@ from typing import Callable, TypeVar
 import numpy as np
 from flask import Flask, jsonify, request, send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
-from werkzeug.exceptions import BadRequest, HTTPException, ServiceUnavailable
+from werkzeug.exceptions import (
+    BadRequest, HTTPException, RequestEntityTooLarge, ServiceUnavailable,
+)
 
 from . import bubble, inpaint, languages, llamacpp, render
 from .detect import GROW, GROW_MAX, KINDS, Letters, Regions
@@ -22,6 +24,8 @@ from .geometry import Box
 from .read import Reader
 
 MAX_UPLOAD = 32 * 1024 * 1024
+MAX_PIXELS = 24_000_000
+MAX_SIDE = 16_384
 ORIGIN = os.environ.get("MANGA_TRANS_ORIGIN", "*")
 
 T = TypeVar("T")
@@ -58,14 +62,29 @@ def optionally(make: Callable[[], T]) -> Callable[[], T | None]:
     return lazily(make_or_none)
 
 
+def checked_image(stream) -> Image.Image:
+    """Reject oversized headers before Pillow decodes any pixels."""
+    try:
+        image = Image.open(stream)
+    except Image.DecompressionBombError as exc:
+        raise RequestEntityTooLarge("the image exceeds the decoded image limit") from exc
+    if max(image.size) > MAX_SIDE or image.width * image.height > MAX_PIXELS:
+        image.close()
+        raise RequestEntityTooLarge(
+            f"images must be at most {MAX_SIDE} pixels per side and {MAX_PIXELS} pixels"
+        )
+    return image
+
+
 def page() -> Image.Image:
     """The uploaded image, upright and in RGB."""
     upload = request.files.get("image")
     if upload is None:
         raise BadRequest("no image was uploaded (multipart form field 'image')")
     try:
-        return ImageOps.exif_transpose(Image.open(upload.stream)).convert("RGB")
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        with checked_image(upload.stream) as image:
+            return ImageOps.exif_transpose(image).convert("RGB")
+    except (UnidentifiedImageError, OSError) as exc:
         raise BadRequest(f"the upload is not a usable image: {exc}") from exc
 
 
@@ -133,10 +152,9 @@ def budgets_in(texts: list[str]) -> list[int] | None:
         return None
     budgets = []
     for budget in values:
-        try:
-            budgets.append(max(0, int(budget)))
-        except (TypeError, ValueError) as exc:
-            raise BadRequest("every budget must be a whole number") from exc
+        if type(budget) is not int:
+            raise BadRequest("every budget must be a whole number")
+        budgets.append(max(0, budget))
     return budgets
 
 
@@ -183,19 +201,18 @@ def mask_in(image: Image.Image) -> Image.Image | None:
     if upload is None:
         return None
     try:
-        sent_mask = Image.open(upload.stream)
-        if sent_mask.size != image.size:
-            raise BadRequest(
-                f"the mask is {sent_mask.width}×{sent_mask.height} "
-                f"but the page is {image.width}×{image.height}"
-            )
-        sent_mask.load()
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        with checked_image(upload.stream) as sent_mask:
+            if sent_mask.size != image.size:
+                raise BadRequest(
+                    f"the mask is {sent_mask.width}×{sent_mask.height} "
+                    f"but the page is {image.width}×{image.height}"
+                )
+            sent_mask.load()
+            alpha = sent_mask.getchannel("A") if "A" in sent_mask.getbands() else None
+            shaped = alpha is not None and alpha.getextrema()[0] < 255
+            return alpha if shaped else sent_mask.convert("L")
+    except (UnidentifiedImageError, OSError) as exc:
         raise BadRequest(f"the mask is not a usable image: {exc}") from exc
-
-    alpha = sent_mask.getchannel("A") if "A" in sent_mask.getbands() else None
-    shaped = alpha is not None and alpha.getextrema()[0] < 255
-    return alpha if shaped else sent_mask.convert("L")
 
 
 def fill_in(default: str = render.WHITE_OUT) -> str:
@@ -268,17 +285,15 @@ def create_app() -> Flask:
     @app.post("/api/translate")
     def translate():
         """Translate one page, optionally using bounded chapter reference text."""
-        texts = [str(text) for text in sent("texts")]
-        model = request.form.get("model", "").strip()
-        if not model:
+        texts = sent("texts")
+        model = request.form.get("model", "")
+        if not model.strip():
             raise BadRequest("nothing to translate with (form field 'model')")
-        target = request.form.get("target", "").strip() or llamacpp.TARGET_DEFAULT
-        source = request.form.get("source", "").strip() or llamacpp.SOURCE_DEFAULT
-        system = request.form.get("system", "").strip() or None
+        target = request.form.get("target", "") or llamacpp.TARGET_DEFAULT
+        source = request.form.get("source", "") or llamacpp.SOURCE_DEFAULT
+        system = request.form.get("system", "") or None
         kinds, budgets = kinds_in(texts), budgets_in(texts)
         context = request.form.get("context", "")
-        if len(context) > 16000:
-            raise BadRequest("'context' must be at most 16000 characters")
         try:
             done = llamacpp.translate(
                 texts,
@@ -291,6 +306,8 @@ def create_app() -> Flask:
                 context=context,
             )
             return jsonify(texts=done)
+        except ValueError as exc:
+            raise BadRequest(str(exc)) from exc
         except llamacpp.Unreachable as exc:
             raise ServiceUnavailable(str(exc)) from exc
 
