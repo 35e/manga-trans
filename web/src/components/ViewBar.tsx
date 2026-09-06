@@ -30,7 +30,7 @@ export function ViewBar({ view, cleaned, name, showCleaned, onShowCleaned }: Pro
                 {
                   value: 'cleaned',
                   label: 'Cleaned',
-                  title: 'The page with the lettering hidden',
+                  title: 'The latest cleanup, with translations when editing text',
                 },
               ]}
             />

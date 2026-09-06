@@ -78,7 +78,7 @@ export function useBlockKeys({
         return
       }
 
-      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      if (tool !== 'boxes' || (event.key !== 'Delete' && event.key !== 'Backspace')) return
       event.preventDefault()
       onToggleExcluded(selected)
     }

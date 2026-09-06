@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { useBlockKeys, useZoomKeys } from '../hooks/useBoardKeys'
 import { useBoardView } from '../hooks/useBoardView'
 import type { Analysis, Box, Fill, Language, Stage, Tool } from '../lib/api'
@@ -29,7 +29,7 @@ export type Inspecting = {
 }
 
 export type Masking = {
-  onClean: (marks: Blob) => void
+  onClean: () => void
   letters: ImageBitmap | null
   onTrace: () => Promise<ImageBitmap | null>
   spread: number
@@ -76,10 +76,10 @@ type Props = {
 }
 
 const LABELS: Record<Stage, string> = {
-  detecting: 'Detecting…',
-  reading: 'Reading…',
-  tracing: 'Tracing…',
-  cleaning: 'Cleaning…',
+  detecting: 'Finding text…',
+  reading: 'Reading text…',
+  tracing: 'Marking text…',
+  cleaning: 'Cleaning page…',
   translating: 'Translating…',
 }
 
@@ -114,11 +114,15 @@ export function Board({
 
   const busy = stage !== null || runningFolder
   const waiting = runningFolder ? 'wait for the folder being run to finish' : undefined
-  const brushing = tool === 'mask' && !showCleaned
+  const brushing = tool === 'mask'
   const marked = Boolean(mask && !mask.empty)
 
   const read = analysis?.texts != null
   const lettered = translating.lettering.some(Boolean)
+  const changeTool = (next: Tool) => {
+    setAdding(false)
+    onTool(next)
+  }
 
   useZoomKeys(view, image !== null)
   useBlockKeys({
@@ -130,42 +134,16 @@ export function Board({
     onTurn: translating.onTurn,
   })
 
-  const analysisNow = useRef(analysis)
-  analysisNow.current = analysis
-  const lettersNow = useRef(masking.letters)
-  lettersNow.current = masking.letters
-  const traceNow = useRef(masking.onTrace)
-  traceNow.current = masking.onTrace
-
   const markBlocks = async () => {
-    const found = analysisNow.current
-    if (!mask || !found) return
-    const letters = lettersNow.current ?? (await traceNow.current())
+    if (!mask || !analysis) return
+    const letters = masking.letters ?? (await masking.onTrace())
     if (!letters) return
-    mark(mask, toClean(found), letters)
+    mark(mask, toClean(analysis), letters)
     edited()
   }
 
-  useEffect(() => {
-    if (!brushing || !mask || !mask.empty || !analysisNow.current) return
-    let dropped = false
 
-    void (async () => {
-      const letters = lettersNow.current ?? (await traceNow.current())
-      if (dropped || !mask.empty) return
-      const found = analysisNow.current
-      if (found) {
-        mark(mask, toClean(found), letters)
-        edited()
-      }
-    })()
-
-    return () => {
-      dropped = true
-    }
-  }, [brushing, mask, analysis?.detection])
-
-  const canMark = Boolean(mask && analysis && toClean(analysis).length > 0)
+  const canMark = Boolean(!cleaned && mask && analysis && toClean(analysis).length > 0)
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
@@ -182,44 +160,88 @@ export function Board({
         {image && (
           <>
             <Segmented<Tool>
-              label="Tool"
+              label="Page workspace"
               value={tool}
-              onChange={onTool}
+              onChange={changeTool}
               options={[
                 {
                   value: 'boxes',
-                  label: 'Boxes',
+                  label: 'Find text',
                   title: 'Find and adjust the text blocks',
                 },
-                { value: 'mask', label: 'Mask', title: 'Brush over what gets hidden' },
-                { value: 'text', label: 'Text', title: 'Edit the translated lettering' },
+                { value: 'mask', label: 'Clean up', title: 'Brush over missed text without retranslating' },
+                { value: 'text', label: 'Edit translation', title: 'Edit and arrange the translated lettering' },
               ]}
             />
 
             <div className="flex shrink-0 items-center gap-2">
-              <Action
-                onClick={onRunAll}
-                disabled={busy}
-                stage={stage}
-                title={waiting ?? 'Read the page, translate it, then clean it'}
-              >
-                Translate
-              </Action>
+              {!lettered && (
+                <Action
+                  onClick={onRunAll}
+                  disabled={busy}
+                  stage={stage}
+                  title={waiting ?? 'Find and read text, translate it, then clean the page'}
+                >
+                  {translating.model ? 'Translate page' : 'Read & clean page'}
+                </Action>
+              )}
 
               {lettered && (
                 <Button
                   size="md"
                   onClick={translating.onApply}
                   disabled={busy || translating.applying}
-                  title="Set the lettering into the page and save it"
+                  title="Download the translated page using the latest cleanup"
                 >
-                  {translating.applying ? 'Applying…' : 'Apply to image'}
+                  {translating.applying ? 'Preparing PNG…' : 'Download PNG'}
                 </Button>
               )}
             </div>
           </>
         )}
       </header>
+
+      {image && !brushing && (
+        <TranslateTools
+          models={translating.models}
+          model={translating.model}
+          onModel={translating.onModel}
+          target={translating.target}
+          onTarget={translating.onTarget}
+          onTranslate={translating.onTranslate}
+          canTranslate={Boolean(translating.model) && read && !busy}
+          lettered={tool === 'text' && lettered}
+          note={translating.note}
+        />
+      )}
+
+      {image && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-raised/50 px-4 py-2">
+          <p role="status" className="min-w-0 flex-1 text-xs text-muted">
+            {busy
+              ? stage ? LABELS[stage] : 'Processing chapter…'
+              : brushing
+                ? cleaned
+                  ? 'Paint over leftover text, then apply touch-up. Earlier cleanup and translations stay intact.'
+                  : 'Paint over text to remove it, or auto-mark detected text. Then clean the page.'
+                : tool === 'boxes'
+                  ? 'Check detected text or add a missed block. Translate page runs all three steps for you.'
+                  : cleaned
+                    ? 'Review your translation. Missed some original text? Clean it up without starting over.'
+                    : 'Edit the translation, then clean up the original text before downloading.'}
+          </p>
+          {tool === 'text' && (
+            <Button onClick={() => changeTool('mask')} disabled={busy}>
+              {cleaned ? 'Touch up missed text' : 'Clean up original text'}
+            </Button>
+          )}
+          {brushing && lettered && (
+            <Button onClick={() => changeTool('text')} disabled={busy}>
+              Back to translation
+            </Button>
+          )}
+        </div>
+      )}
 
       {tool === 'boxes' && image && (
         <InspectTools
@@ -236,7 +258,7 @@ export function Board({
         />
       )}
 
-      {brushing && (
+      {brushing && image && (
         <MaskTools
           brush={brush}
           onBrush={setBrush}
@@ -252,29 +274,14 @@ export function Board({
           onSpread={masking.onSpread}
           fill={masking.fill}
           onFill={masking.onFill}
-          note={read ? null : 'find the text first, or brush the page by hand'}
-          onClean={() => {
-            if (mask && !mask.empty) void mask.toBlob().then(masking.onClean)
-          }}
+          note={cleaned && !showCleaned ? 'Viewing the original. Switch to Cleaned below to paint.' : null}
+          onClean={masking.onClean}
           canClean={marked}
           cleaned={Boolean(cleaned)}
           busy={busy}
         />
       )}
 
-      {tool === 'text' && image && (
-        <TranslateTools
-          models={translating.models}
-          model={translating.model}
-          onModel={translating.onModel}
-          target={translating.target}
-          onTarget={translating.onTarget}
-          onTranslate={translating.onTranslate}
-          canTranslate={Boolean(translating.model) && read && !busy}
-          lettered={lettered}
-          note={translating.note}
-        />
-      )}
 
       {error && (
         <p
@@ -339,7 +346,7 @@ export function Board({
                   <DrawRegion page={image} onAdd={inspecting.onAddRegion} />
                 )}
 
-                {tool === 'text' && (
+                {tool === 'text' && (!cleaned || showCleaned) && (
                   <TranslationLayer
                     page={image}
                     scale={view.scale}
@@ -351,7 +358,7 @@ export function Board({
                   />
                 )}
 
-                {brushing && mask && (
+                {brushing && mask && !busy && (!cleaned || showCleaned) && (
                   <MaskCanvas
                     page={image}
                     mask={mask}
@@ -414,10 +421,10 @@ function BoardEmpty() {
       <div className="text-center">
         <PageIcon className="mx-auto size-12 text-line" />
         <p className="mt-4 text-sm font-medium text-muted">
-          Click a page in the gallery to put it on the board
+          Import images or a chapter archive to get started
         </p>
         <p className="mt-1 text-sm text-faint">
-          Then: find the text, hide it, letter it back in.
+          Translate in one click, touch up missed text, then download.
         </p>
       </div>
     </div>

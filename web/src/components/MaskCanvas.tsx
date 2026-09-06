@@ -50,6 +50,7 @@ export function MaskCanvas({ page, mask, brush, panning, onStroke }: Props) {
           panning ? '' : 'cursor-none'
         }`}
         onPointerDown={(event) => {
+          if (panning || event.button !== 0) return
           event.currentTarget.setPointerCapture(event.pointerId)
           const point = at(event)
           drawing.current = point
@@ -70,6 +71,11 @@ export function MaskCanvas({ page, mask, brush, panning, onStroke }: Props) {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId)
           }
+          onStroke()
+        }}
+        onPointerCancel={() => {
+          if (!drawing.current) return
+          drawing.current = null
           onStroke()
         }}
         onPointerLeave={() => {

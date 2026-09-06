@@ -93,6 +93,7 @@ function App() {
     }
   }, [openFolder, folders])
   const { forPage, drop: dropMask, clear: clearMasks } = useMasks()
+  const { forPage: touchupsFor, drop: dropTouchups, clear: clearTouchups } = useMasks()
   const traced = useLetterMasks()
   const {
     urls: cleanedPages,
@@ -119,6 +120,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [showCleaned, setShowCleaned] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   const [spread, setSpread] = useState(4)
   const [fill, setFill] = useState<Fill>('white')
@@ -173,13 +175,14 @@ function App() {
 
   const forget = useCallback(
     (id: string) => {
+      dropTouchups(id)
       dropMask(id)
       dropCleaned(id)
       traced.drop(id)
       setLettering((current) => without(current, id))
       setAnalyses((current) => without(current, id))
     },
-    [dropMask, dropCleaned, traced],
+    [dropTouchups, dropMask, dropCleaned, traced],
   )
 
   const removeImage = useCallback(
@@ -523,10 +526,23 @@ function App() {
   }, [active, detectAndRead])
 
   const runClean = useCallback(
-    async (marks: Blob) => {
-      if (active) await cleanPage(active, marks)
+    async () => {
+      if (!active) return
+      const page = active
+      const base = cleanedNow.current[page.id]
+      const mask = base ? touchupsFor(page) : forPage(page)
+      if (!mask || mask.empty) return
+      const cleaned = await during(page.id, 'cleaning', async () => {
+        const file = base
+          ? new File([await (await fetch(base)).blob()], page.name, { type: 'image/png' })
+          : page.file
+        return clean(file, await mask.toBlob(), fill)
+      })
+      if (!cleaned || !held(page.id)) return
+      if (base) mask.clear()
+      setCleaned(page.id, cleaned)
     },
-    [active, cleanPage],
+    [active, during, fill, held, touchupsFor, forPage, setCleaned],
   )
 
   const runTranslate = useCallback(async () => {
@@ -682,6 +698,7 @@ function App() {
     stopBatch()
     clear()
     clearMasks()
+    clearTouchups()
     clearCleaned()
     traced.clear()
     setLettering({})
@@ -693,6 +710,7 @@ function App() {
     clear,
     clearMasks,
     clearCleaned,
+    clearTouchups,
     traced,
   ])
 
@@ -752,7 +770,7 @@ function App() {
     setApplying(true)
     setError(null)
     try {
-      const base = showCleaned && cleanedPage ? cleanedPage : active.url
+      const base = cleanedPage ?? active.url
       const page = await compose(base, active.width, active.height, set)
       save(page, `${stem(active.name)}-lettered.png`)
     } catch (cause) {
@@ -760,7 +778,7 @@ function App() {
     } finally {
       setApplying(false)
     }
-  }, [active, lettering, cleanedPage, showCleaned])
+  }, [active, lettering, cleanedPage])
 
   const downloadFolder = useCallback(
     async (folder: GalleryFolder) => {
@@ -890,14 +908,18 @@ function App() {
           <Board
             image={active}
             analysis={analysis}
-            mask={forPage(active)}
+            mask={cleanedPage ? touchupsFor(active) : forPage(active)}
             cleaned={cleanedPage}
             stage={stage}
             error={error}
             selected={selected}
             onSelect={setSelected}
             tool={tool}
-            onTool={setTool}
+            onTool={(next) => {
+              setTool(next)
+              setSelected(null)
+              setShowCleaned(next !== 'boxes' && Boolean(cleanedPage))
+            }}
             runningFolder={batch !== null && !batch.finished}
             showCleaned={showCleaned}
             onShowCleaned={setShowCleaned}
@@ -937,7 +959,7 @@ function App() {
               note:
                 llamaCpp.problem ??
                 (!analysis?.texts
-                  ? 'find the text first: there is nothing to translate yet'
+                  ? null
                   : pageLettering.some(Boolean) && !cleanedPage
                     ? 'this page has not been cleaned yet'
                     : null),
@@ -948,7 +970,20 @@ function App() {
         {!reviewFolder &&
           active &&
           analysis &&
-          (tool === 'text' ? (
+          tool !== 'mask' &&
+          (
+            <div className="flex shrink-0 flex-col lg:contents">
+              <button
+                type="button"
+                aria-expanded={detailsOpen}
+                aria-controls="page-details"
+                onClick={() => setDetailsOpen(!detailsOpen)}
+                className="border-t border-line bg-surface px-4 py-2 text-left text-xs font-medium text-muted focus-visible:outline-2 focus-visible:outline-accent lg:hidden"
+              >
+                {detailsOpen ? 'Hide' : 'Show'} {tool === 'text' ? 'translation editor' : 'detected text'}
+              </button>
+              <div id="page-details" className={detailsOpen ? 'contents' : 'hidden lg:contents'}>
+          {tool === 'text' ? (
             <TranslationsPanel
               originals={analysis.texts ?? analysis.detection.regions.map(() => null)}
               lettering={pageLettering}
@@ -967,7 +1002,10 @@ function App() {
               onToggleExcluded={toggleExcluded}
               onMove={moveRegion}
             />
-          ))}
+          )}
+              </div>
+            </div>
+          )}
       </div>
 
       {dragging && (

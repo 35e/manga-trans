@@ -45,13 +45,14 @@ export function MaskTools({
 }: Props) {
   return (
     <Toolbar>
+      <fieldset disabled={busy} className="flex min-w-0 flex-wrap items-center gap-2.5 disabled:opacity-60">
       <Segmented
         label="Brush"
         value={brush.erase ? 'erase' : 'draw'}
         onChange={(tool) => onBrush({ ...brush, erase: tool === 'erase' })}
         options={[
-          { value: 'draw', label: 'Draw' },
-          { value: 'erase', label: 'Erase' },
+          { value: 'draw', label: 'Paint to remove' },
+          { value: 'erase', label: 'Unmark' },
         ]}
       />
 
@@ -71,33 +72,31 @@ export function MaskTools({
       <Divider />
 
       <Field
-        label="Hide under"
-        title="What goes where the lettering was: the page around it filled in by a model, the same without one, or flat white"
+        label="Fill with"
+        title="Use white for plain speech bubbles, or restore the surrounding artwork"
       >
         <Segmented
-          label="What to hide the lettering under"
+          label="Cleanup fill method"
           value={fill}
           onChange={onFill}
           options={[
-            { value: 'art', label: 'The art' },
-            { value: 'telea', label: 'No model' },
             { value: 'white', label: 'White' },
+            { value: 'art', label: 'Restore artwork' },
+            { value: 'telea', label: 'Fast fill' },
           ]}
         />
       </Field>
 
       {note && <Note>{note}</Note>}
 
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        <span className="text-xs font-medium text-faint">
-          {tracing ? 'Tracing the lettering…' : 'Mark'}
-        </span>
+      {!cleaned && (
+        <>
         <Button
           onClick={onMarkLetters}
           disabled={!canMark || tracing}
           title="Mark the lettering itself, leaving the art it sits on"
         >
-          Letters
+          {tracing ? 'Marking text…' : 'Auto-mark text'}
         </Button>
         <Field
           label="+"
@@ -115,18 +114,20 @@ export function MaskTools({
             ))}
           </Select>
         </Field>
+        </>
+      )}
         <Button onClick={onClear} disabled={!canClear}>
-          Clear mask
+          Clear marks
         </Button>
         <Button
           variant="primary"
           onClick={onClean}
           disabled={busy || !canClean}
-          title={canClean ? undefined : 'Mark something to hide first'}
+          title={canClean ? 'Remove marked pixels without changing your translations' : 'Paint over the text you want to remove first'}
         >
-          {cleaned ? 'Clean again' : 'Clean page'}
+          {busy ? 'Cleaning…' : cleaned ? 'Apply touch-up' : 'Clean page'}
         </Button>
-      </div>
+      </fieldset>
     </Toolbar>
   )
 }

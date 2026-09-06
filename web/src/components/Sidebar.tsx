@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { BatchRun } from '../hooks/useBatch'
 import type { LibraryNotice } from '../hooks/useImageLibrary'
 import type { Stage } from '../lib/api'
@@ -67,6 +67,18 @@ export function Sidebar({
   workedOn,
   packing,
 }: Props) {
+  const [pagesExpanded, setPagesExpanded] = useState(false)
+  const pagesId = useId()
+  const active = images.find((image) => image.id === activeId)
+  const siblings = active ? images.filter((image) => image.folder === active.folder) : []
+  const position = siblings.findIndex((image) => image.id === activeId)
+  const activeFolder = folders.find((held) => held.id === active?.folder)
+  const openPage = (id: string) => {
+    const image = images.find((held) => held.id === id)
+    if (!image) return
+    onOpenFolder(image.folder ?? null)
+    onOpen(id)
+  }
   const folder = folders.find((held) => held.id === open) ?? null
 
   const counted = folder
@@ -83,11 +95,50 @@ export function Sidebar({
   }, [images.length, inside, onOpenFolder])
 
   return (
-    <aside className="flex shrink-0 flex-col overflow-hidden border-line bg-surface max-lg:h-64 max-lg:border-b lg:w-60 lg:border-r xl:w-72">
+    <aside aria-label="Pages" className="flex shrink-0 flex-col overflow-hidden border-line bg-surface max-lg:border-b lg:w-60 lg:border-r xl:w-72">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-3">
+        <h2 className="text-xs font-semibold text-ink">Pages</h2>
+        <Button
+          variant="ghost"
+          aria-expanded={pagesExpanded}
+          aria-controls={pagesId}
+          onClick={() => setPagesExpanded(!pagesExpanded)}
+          className="lg:hidden"
+        >
+          {pagesExpanded ? 'Hide pages' : 'Show pages'}
+        </Button>
+      </div>
       <div className="shrink-0 space-y-2 p-3">
         <Dropzone onFiles={onFiles} dragging={dragging} busy={busy} />
-        {!folder && <NewFolder onCreate={onNewFolder} />}
       </div>
+
+      {active && (
+        <nav aria-label="Active page navigation" className="shrink-0 space-y-1.5 border-b border-line px-3 pb-3">
+          <p className="truncate text-[11px] text-faint" title={activeFolder?.name ?? 'Loose pages'}>
+            {activeFolder?.name ?? (active.folder ? 'Folder pages' : 'Loose pages')}
+          </p>
+          <div className="flex items-center justify-between gap-1">
+            <Button
+              aria-label="Previous page"
+              disabled={position <= 0}
+              onClick={() => openPage(siblings[position - 1].id)}
+            >
+              Previous
+            </Button>
+            <span aria-live="polite" aria-atomic="true" className="text-center text-[11px] text-muted tabular-nums">
+              Page {position + 1} of {siblings.length}
+            </span>
+            <Button
+              aria-label="Next page"
+              disabled={position < 0 || position >= siblings.length - 1}
+              onClick={() => openPage(siblings[position + 1].id)}
+            >
+              Next
+            </Button>
+          </div>
+        </nav>
+      )}
+
 
       {notice && (
         <div className="mx-3 mb-3 flex shrink-0 items-start justify-between gap-2 rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-2 text-[11px] leading-snug text-warn">
@@ -107,7 +158,7 @@ export function Sidebar({
         <BatchProgress
           run={batch}
           stage={batchStage}
-          onOpen={onOpen}
+          onOpen={openPage}
           onStop={onStopBatch}
           onDismiss={onDismissBatch}
           onReview={onReviewBatch}
@@ -123,7 +174,17 @@ export function Sidebar({
         />
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        id={pagesId}
+        className={`${pagesExpanded ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col max-lg:max-h-64 lg:flex`}
+      >
+        {!folder && (
+          <div className="shrink-0 space-y-2 p-3">
+            <NewFolder onCreate={onNewFolder} />
+            <p className="text-[11px] font-medium text-faint">Folders &amp; loose pages</p>
+          </div>
+        )}
+      <div className="min-h-0 flex-1 overflow-y-auto pt-3">
         {folder && (
           <FolderBar
             folder={folder}
@@ -146,7 +207,7 @@ export function Sidebar({
             open={open}
             onOpenFolder={onOpenFolder}
             activeId={activeId}
-            onOpen={onOpen}
+            onOpen={openPage}
             onRemove={onRemove}
             onRemoveFolder={onRemoveFolder}
           />
@@ -161,6 +222,7 @@ export function Sidebar({
           <ClearAll onClear={onClearAll} />
         </div>
       )}
+      </div>
     </aside>
   )
 }
@@ -267,13 +329,14 @@ function FolderBar({
         <button
           type="button"
           onClick={onBack}
-          aria-label="Back to everything"
-          title="Back to everything"
+          aria-label="Back to all pages and folders"
+          title="Back to all pages and folders"
           className={`-ml-1 grid size-6 shrink-0 place-items-center rounded-md text-faint transition-colors hover:bg-surface hover:text-ink ${FOCUS}`}
         >
           <BackIcon className="size-4" />
         </button>
-        <p className="min-w-0 flex-1 truncate text-[11px] font-medium text-ink">
+        <span className="shrink-0 text-[11px] text-faint">All pages /</span>
+        <p title={folder.name} className="min-w-0 flex-1 truncate text-[11px] font-medium text-ink">
           {folder.name}
         </p>
         <span className="shrink-0 text-[11px] text-faint tabular-nums">

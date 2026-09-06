@@ -41,7 +41,7 @@ export function Gallery({
   }
 
   return (
-    <ul className="grid grid-cols-2 gap-2">
+    <ul aria-label={open === null ? 'Folders and loose pages' : 'Folder pages'} className="grid grid-cols-2 gap-2">
       {open === null &&
         folders.map((folder) => (
           <Folder
@@ -86,7 +86,7 @@ function Folder({
       <button
         type="button"
         onClick={onOpen}
-        onDoubleClick={onOpen}
+        aria-label={`Open folder ${folder.name}, ${plural(pages.length, 'page')}`}
         title={`${folder.name} — ${plural(pages.length, 'page')}, ${formatBytes(total)}. Open it.`}
         className="block w-full rounded-xl border border-line bg-surface p-1 text-left transition-colors hover:border-faint hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
@@ -143,6 +143,7 @@ function Thumb({
       <button
         type="button"
         onClick={onOpen}
+        aria-label={`Open page ${number}: ${image.name}`}
         aria-current={active}
         title={`${image.name} — ${image.width} × ${image.height}, ${formatBytes(image.size)}`}
         className={`block w-full rounded-xl border p-1 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${

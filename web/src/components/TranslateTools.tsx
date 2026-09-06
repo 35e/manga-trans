@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Button, Field, Note, Select, TextInput, Toolbar } from './ui'
 
 type Props = {
@@ -23,6 +24,14 @@ export function TranslateTools({
   lettered,
   note,
 }: Props) {
+  const [armed, setArmed] = useState(false)
+
+  useEffect(() => {
+    if (!armed) return
+    const timer = setTimeout(() => setArmed(false), 4000)
+    return () => clearTimeout(timer)
+  }, [armed])
+
   return (
     <Toolbar>
       <Field label="Model">
@@ -40,7 +49,7 @@ export function TranslateTools({
         </Select>
       </Field>
 
-      <Field label="Into">
+      <Field label="Translate into">
         <TextInput
           value={target}
           onChange={(event) => onTarget(event.target.value)}
@@ -53,12 +62,19 @@ export function TranslateTools({
 
       {lettered && (
         <Button
-          onClick={onTranslate}
+          onClick={() => {
+            if (!armed) setArmed(true)
+            else {
+              setArmed(false)
+              onTranslate()
+            }
+          }}
+          onBlur={() => setArmed(false)}
           disabled={!canTranslate}
           title="Translate the page again, against the blocks as they stand now — one added or dropped since is taken in, and every line already set is replaced"
           className="ml-auto"
         >
-          Translate again
+          {armed ? 'Replace edited translations?' : 'Translate again'}
         </Button>
       )}
     </Toolbar>
