@@ -54,25 +54,50 @@ def model_path(explicit: str | None = None) -> str:
 
 
 def patches(hole: np.ndarray, width: int, height: int) -> list[tuple[int, int, int, int]]:
-    """The page cut into the pieces worth sending through, one per mark."""
+    """Context crops, merged where fewer inference pixels need no downscaling."""
     near = grown(hole, APART)
     _, _, stats, _ = cv2.connectedComponentsWithStats(
         cv2.compare(near, 0, cv2.CMP_GT), connectivity=8
     )
+
+    def pixels(box):
+        x0, y0, x1, y1 = box
+        return ((x1 - x0 + BLOCK - 1) // BLOCK * BLOCK) * (
+            (y1 - y0 + BLOCK - 1) // BLOCK * BLOCK
+        )
 
     found = []
     for x0, y0, wide, tall, _ in stats[1:]:
         x0, y0, wide, tall = map(int, (x0, y0, wide, tall))
         x1, y1 = x0 + wide, y0 + tall
         room = max(LEAST, round(CONTEXT * max(x1 - x0, y1 - y0)))
-        found.append(
-            (
-                max(0, x0 - room),
-                max(0, y0 - room),
-                min(width, x1 + room),
-                min(height, y1 + room),
-            )
+        crop = (
+            max(0, x0 - room),
+            max(0, y0 - room),
+            min(width, x1 + room),
+            min(height, y1 + room),
         )
+        # ponytail: greedy O(n²) scan; spatial indexing if fragmented masks dominate.
+        at = 0
+        while at < len(found):
+            other = found[at]
+            merged = (
+                min(crop[0], other[0]), min(crop[1], other[1]),
+                max(crop[2], other[2]), max(crop[3], other[3]),
+            )
+            area = (merged[2] - merged[0]) * (merged[3] - merged[1])
+            if (
+                min(crop[2], other[2]) > max(crop[0], other[0])
+                and min(crop[3], other[3]) > max(crop[1], other[1])
+                and area <= LARGEST
+                and pixels(merged) < pixels(crop) + pixels(other)
+            ):
+                crop = merged
+                found.pop(at)
+                at = 0
+            else:
+                at += 1
+        found.append(crop)
     return found
 
 

@@ -364,6 +364,38 @@ class TestPainter(unittest.TestCase):
         hole[100:120, 125:145] = 255
         self.assertEqual(len(inpaint.patches(hole, 400, 400)), 1)
 
+    def test_context_crops_merge_only_when_cheaper_without_downscaling(self):
+        cases = [
+            ("overlap", [(400, 600, 430, 630), (520, 600, 550, 630)], 1),
+            ("diagonal", [(400, 600, 430, 630), (580, 780, 610, 810)], 2),
+            ("resolution cap", [(400, 600, 650, 850), (750, 600, 1000, 850)], 2),
+            ("chain", [(400, 600, 430, 630), (640, 600, 670, 630),
+                       (520, 650, 550, 680)], 1),
+        ]
+        for name, marks, count in cases:
+            with self.subTest(name=name):
+                hole = np.zeros((2000, 2000), np.uint8)
+                separate = []
+                for x0, y0, x1, y1 in marks:
+                    one = np.zeros_like(hole)
+                    one[y0:y1, x0:x1] = 255
+                    separate.extend(inpaint.patches(one, 2000, 2000))
+                    hole |= one
+                found = inpaint.patches(hole, 2000, 2000)
+                self.assertEqual(len(found), count)
+                for x0, y0, x1, y1 in separate:
+                    self.assertTrue(any(
+                        a <= x0 and b <= y0 and c >= x1 and d >= y1
+                        for a, b, c, d in found
+                    ), "merging discarded surrounding context")
+                if count == 1:
+                    x0, y0, x1, y1 = found[0]
+                    area = (x1 - x0) * (y1 - y0)
+                    self.assertLessEqual(area, inpaint.LARGEST)
+                    self.assertLess(area, sum(
+                        (c - a) * (d - b) for a, b, c, d in separate
+                    ))
+
 
 class TestGrowIsScanIndependent(unittest.TestCase):
     """`grow` means the same thing however large the page was scanned."""
