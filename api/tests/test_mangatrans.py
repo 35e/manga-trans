@@ -1182,36 +1182,31 @@ class TestLlamaCpp(unittest.TestCase):
             reply(translations("only one")),
             reply(translations("first", "second")),
         ]
-        with mock.patch.object(llamacpp, "ask", side_effect=answers) as ask:
+        with mock.patch.object(llamacpp, "ask", side_effect=answers):
             got = llamacpp.translate(["いち", "に"], "m")
         self.assertEqual(got, ["first", "second"])
-        self.assertEqual(ask.call_count, 2, "it did not simply ask again")
 
-    def test_asking_again_shows_the_model_what_it_did(self):
-        asked = []
+    def test_invalid_page_translations_can_be_corrected(self):
+        for invalid in (" \n", None, 42):
+            with self.subTest(invalid=invalid):
+                answers = [
+                    reply(translations("first", invalid)),
+                    reply(translations("first", "second")),
+                ]
+                with mock.patch.object(llamacpp, "ask", side_effect=answers):
+                    got = llamacpp.translate(["いち", " ", "に"], "m")
+                self.assertEqual(got, ["first", "", "second"])
 
-        def ask(path, body=None, **kwargs):
-            asked.append(body["messages"])
-            return reply(translations("only one"))
-
-        with mock.patch.object(llamacpp, "ask", ask):
-            llamacpp.translate(["いち", "に"], "m")
-        again = asked[1]
-        self.assertEqual(again[2]["role"], "assistant")
-        self.assertIn("only one", again[2]["content"])
-        self.assertIn("1 translations for 2 lines", again[3]["content"])
-
-    def test_losing_count_twice_falls_back_to_one_line_at_a_time(self):
+    def test_invalid_pages_recover_per_line_with_blank_alignment(self):
         answers = [
             reply(translations("only one")),
-            reply(translations("still only one")),
-            reply(translations("first")),
-            reply(translations("second")),
+            reply(translations("first", "")),
+            reply(f"```json\n{translations(' first ')}\n```"),
+            reply("", translations("second")),
         ]
-        with mock.patch.object(llamacpp, "ask", side_effect=answers) as ask:
-            got = llamacpp.translate(["いち", "に"], "m")
-        self.assertEqual(got, ["first", "second"])
-        self.assertEqual(ask.call_count, 4, "it did not ask again line by line")
+        with mock.patch.object(llamacpp, "ask", side_effect=answers):
+            got = llamacpp.translate(["いち", " ", "に"], "m")
+        self.assertEqual(got, ["first", "", "second"])
 
     def test_reference_stays_data_and_survives_line_fallback(self):
         asked = []
@@ -2028,17 +2023,44 @@ class TestApi(unittest.TestCase):
         self.assertIn("private model path", "\n".join(logged.output))
 
 
-    def test_translate_answers_with_one_text_per_text(self):
-        with mock.patch.object(
-            server.llamacpp, "translate", return_value=["Good morning"]
-        ) as translating:
+    def test_translate_returns_recovered_texts_with_blank_alignment(self):
+        answers = [
+            reply(translations(None, "Let's go")),
+            reply(translations("Good morning", "Let's go")),
+        ]
+        with mock.patch.object(llamacpp, "ask", side_effect=answers):
             response = client().post(
                 "/api/translate",
-                data={"texts": json.dumps(["おはよう"]), "model": "gemma4:12b"},
+                data={
+                    "texts": json.dumps(["おはよう", " ", "行こう"]),
+                    "model": "gemma4:12b",
+                },
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json, {"texts": ["Good morning"]})
-        self.assertEqual(translating.call_args.args[1], "gemma4:12b")
+        self.assertEqual(response.json, {"texts": ["Good morning", "", "Let's go"]})
+
+    def test_invalid_final_translations_are_service_errors(self):
+        invalid_answers = [
+            reply(translations("")),
+            reply(translations(" \n\t")),
+            reply(translations(None)),
+            reply(translations(42)),
+            reply(translations()),
+            reply(translations("first", "extra")),
+            reply("Here is my explanation, not a structured translation."),
+            reply("", "I need to think about this translation."),
+        ]
+        for invalid in invalid_answers:
+            with self.subTest(invalid=invalid):
+                answers = [reply(translations()), reply(translations()), invalid]
+                with mock.patch.object(llamacpp, "ask", side_effect=answers):
+                    response = client().post(
+                        "/api/translate",
+                        data={"texts": json.dumps(["おはよう"]), "model": "m"},
+                    )
+                self.assertEqual(response.status_code, 503)
+                self.assertIn("error", response.json)
+                self.assertNotIn("texts", response.json)
 
     def test_translate_takes_the_language_to_translate_into(self):
         with mock.patch.object(

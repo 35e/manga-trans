@@ -41,7 +41,7 @@ export function loadImage(file: File, folder?: string): Promise<GalleryImage | n
         id: crypto.randomUUID(),
         file,
         url,
-        name: file.name,
+        name: file.name.slice(file.name.lastIndexOf('/') + 1),
         size: file.size,
         addedAt: Date.now(),
         width: probe.naturalWidth,

@@ -77,13 +77,10 @@ export function expand(file: File): Promise<File[]> {
             resolve(
               Object.entries(unpacked)
                 .sort(([one], [other]) => order.compare(one, other))
-                .map(([path, bytes]) => {
-                  const name = path.slice(path.lastIndexOf('/') + 1)
-                  return new File([bytes as BlobPart], name, {
-                    type: typeOf(name),
-                    lastModified: file.lastModified,
-                  })
-                }),
+                .map(([path, bytes]) => new File([bytes as BlobPart], path, {
+                  type: typeOf(path),
+                  lastModified: file.lastModified,
+                })),
             )
           },
         )

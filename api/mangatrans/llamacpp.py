@@ -82,11 +82,11 @@ REFERENCE_NOTE = (
     "only the requested numbered lines of the current page."
 )
 
-MISCOUNTED = (
-    "That was {got} translations for {wanted} lines. Answer again with exactly "
-    "{wanted}, one for each numbered line, in the same order. A line you would "
-    "leave as it is still needs one: give it back as it stands rather than "
-    "dropping it."
+INVALID = (
+    "That answer did not provide one nonblank string per numbered line. "
+    "Answer again with exactly {wanted} translations, in the same order. "
+    "A line you would leave as it is still needs one: give it back as it "
+    "stands rather than dropping it."
 )
 
 
@@ -100,7 +100,7 @@ class Line:
 
 
 class Unreachable(RuntimeError):
-    """llama.cpp is not answering where it was expected to be."""
+    """llama.cpp is unavailable or did not return a usable answer."""
 
 
 _answering: str | None = None
@@ -312,22 +312,20 @@ def request_for(
 
 
 def counted(reply: dict | None, wanted: int) -> list[str] | None:
-    """The translations out of an answer, if there is one for every line.
+    """The translations, if every requested line has a nonblank string.
 
     One a place out is worse than none at all: nothing downstream can tell.
     """
     got = reply.get("translations") if reply else None
     if not isinstance(got, list) or len(got) != wanted:
         return None
-    return [str(line) for line in got]
+    if any(not isinstance(line, str) or not line.strip() for line in got):
+        return None
+    return got
 
 
 def corrected(body: dict, said: dict, complaint: str) -> dict:
-    """The same request again, with the miscounted answer and what was wrong with it.
-
-    Shown its own reply rather than only asked again: the count is what it
-    cannot see from the request alone.
-    """
+    """The same request again, showing the invalid answer and what was wrong."""
     return {
         **body,
         "messages": [
@@ -353,12 +351,12 @@ def one(body: dict, number: int, host=None) -> str:
             },
         ],
     }
-    message = completed(body, host)
-    reply = answered(message)
-    got = reply["translations"] if reply else None
-    if got:
-        return str(got[0]).strip()
-    return text_of(message)
+    got = counted(answered(completed(body, host)), 1)
+    if got is None:
+        raise Unreachable(
+            f"llama.cpp returned an invalid translation for page line {number}"
+        )
+    return got[0].strip()
 
 
 def translate(
@@ -402,9 +400,8 @@ def translate(
     got = counted(reply, len(lines))
 
     if got is None:
-        gave = len(reply["translations"]) if reply else 0
         asked_again = corrected(
-            body, said, MISCOUNTED.format(got=gave, wanted=len(lines))
+            body, said, INVALID.format(wanted=len(lines))
         )
         again = answered(completed(asked_again, host))
         got = counted(again, len(lines))
@@ -413,5 +410,5 @@ def translate(
         got = [one(body, number, host) for number in range(1, len(lines) + 1)]
 
     for (at, _), translated in zip(wanted, got):
-        done[at] = str(translated).strip()
+        done[at] = translated.strip()
     return done

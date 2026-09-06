@@ -6,7 +6,7 @@ import { Sidebar } from './components/Sidebar'
 import { TranslationsPanel } from './components/TranslationsPanel'
 import { ChapterReview } from './components/ChapterReview'
 import { GearIcon } from './components/icons'
-import { IconButton } from './components/ui'
+import { Button, IconButton } from './components/ui'
 import type { Phase } from './hooks/useBatch'
 import { useBatch } from './hooks/useBatch'
 import { useFileDrop } from './hooks/useFileDrop'
@@ -118,6 +118,10 @@ function App() {
   const [tool, setTool] = useState<Tool>('boxes')
   const [applying, setApplying] = useState(false)
   const [packing, setPacking] = useState<{ done: number; total: number } | null>(null)
+  const [exportFailure, setExportFailure] = useState<{
+    folder: GalleryFolder
+    message: string
+  } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [showCleaned, setShowCleaned] = useState(false)
@@ -808,8 +812,10 @@ function App() {
 
       setPacking({ done: 0, total: pages.length })
       setError(null)
+      setExportFailure(null)
       try {
         const held: Packed[] = []
+        const failed: string[] = []
         let anyLettered = false
 
         for (const [at, page] of pages.entries()) {
@@ -821,18 +827,32 @@ function App() {
             )
             anyLettered ||= made.reached === 'lettered'
             held.push(made)
-          } catch {
-            held.push({
-              name: page.name,
-              bytes: new Uint8Array(await page.file.arrayBuffer()),
-            })
+          } catch (cause) {
+            failed.push(`${page.name}: ${said(cause)}`)
           }
           setPacking({ done: at + 1, total: pages.length })
         }
 
-        save(await pack(held), archiveName(folder, llamaCpp.target, anyLettered))
+        if (failed.length > 0) {
+          const message = `Could not export ${failed.length} page(s):\n${failed.join('\n')}`
+          setExportFailure({ folder, message })
+          if (
+            held.length === 0 ||
+            !window.confirm(
+              `${message}\n\nDownload only the ${held.length} successful page(s)? ` +
+              'Failed pages will be omitted, not replaced with originals. ' +
+              'Cancel to fix the pages or retry the export.',
+            )
+          ) return
+        }
+
+        const name = archiveName(folder, llamaCpp.target, anyLettered)
+        save(
+          await pack(held),
+          failed.length > 0 ? name.replace(/\.(zip|cbz)$/i, '-partial.$1') : name,
+        )
       } catch (cause) {
-        setError(said(cause))
+        setExportFailure({ folder, message: said(cause) })
       } finally {
         setPacking(null)
       }
@@ -868,6 +888,21 @@ function App() {
           </IconButton>
         </div>
       </header>
+
+      {exportFailure && (
+        <div role="alert" className="max-h-48 shrink-0 overflow-y-auto border-b border-warn/30 bg-warn/10 px-4 py-3">
+          <p className="whitespace-pre-wrap break-words text-xs text-warn">{exportFailure.message}</p>
+          <div className="mt-2 flex gap-2">
+            <Button
+              disabled={packing !== null || !folders.some((folder) => folder.id === exportFailure.folder.id)}
+              onClick={() => void downloadFolder(exportFailure.folder)}
+            >
+              Retry export
+            </Button>
+            <Button onClick={() => setExportFailure(null)}>Dismiss</Button>
+          </div>
+        </div>
+      )}
 
       {settingsOpen && (
         <Settings
