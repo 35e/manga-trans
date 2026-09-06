@@ -29,7 +29,8 @@ import {
   said,
   translate,
 } from './lib/api'
-import { archiveName, finished } from './lib/chapter'
+import type { ChapterContext } from './lib/chapter'
+import { archiveName, chapterReference, finished } from './lib/chapter'
 import { compose, save } from './lib/compose'
 import { SIZE_MAX, SIZE_MIN, ready } from './lib/fit'
 import type { GalleryFolder, GalleryImage } from './lib/images'
@@ -476,7 +477,11 @@ function App() {
   )
 
   const translatePage = useCallback(
-    async (page: GalleryImage, found: Analysis): Promise<boolean> => {
+    async (
+      page: GalleryImage,
+      found: Analysis,
+      chapter?: ChapterContext,
+    ): Promise<boolean> => {
       if (!llamaCpp.model || !found.texts) return false
 
       const skip = new Set(found.excluded)
@@ -498,6 +503,7 @@ function App() {
         return translate(sending, llamaCpp.model, llamaCpp.target, {
           system: prompt,
           source: source.language?.name,
+          context: chapter ? chapterReference(chapter, page.id) : undefined,
         })
       })
       if (!got) return false
@@ -509,6 +515,11 @@ function App() {
       })
       setLettering((current) => ({ ...current, [page.id]: set }))
       if (onBoard(page.id)) setTool('text')
+      if (chapter) {
+        chapter.translations[page.id] = wanted.flatMap((line, at) =>
+          got[at]?.trim() ? [{ source: line.text, translated: got[at] }] : [],
+        )
+      }
       return true
     },
     [
@@ -582,19 +593,14 @@ function App() {
     [marksFor, cleanPage, traced, onBoard],
   )
 
-  const examine = useCallback(
-    async (page: GalleryImage) => (await readPage(page)).why,
-    [readPage],
-  )
-
   const translateOne = useCallback(
-    async (page: GalleryImage): Promise<string | null> => {
+    async (page: GalleryImage, chapter?: ChapterContext): Promise<string | null> => {
       if (!held(page.id)) return null
-      const found = analysesNow.current[page.id]
+      const found = chapter ? chapter.readings[page.id] : analysesNow.current[page.id]
       if (!found?.texts || !found.texts.some((text) => text.trim())) return null
 
       lastFailure.current = null
-      await translatePage(page, found)
+      await translatePage(page, found, chapter)
       return lastFailure.current
     },
     [held, translatePage],
@@ -659,10 +665,25 @@ function App() {
 
   const translateFolder = useCallback(
     (folder: GalleryFolder) => {
-      const pages = images.filter((image) => image.folder === folder.id)
-
-      const phases: Phase[] = [{ name: 'Reading', each: examine, blocking: true }]
-      if (llamaCpp.model) phases.push({ name: 'Translating', each: translateOne })
+      const pages = images
+        .filter((image) => image.folder === folder.id)
+        .sort((one, other) => one.name.localeCompare(other.name, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        }))
+      const chapter: ChapterContext = { pages, readings: {}, translations: {} }
+      const phases: Phase[] = [{
+        name: 'Reading',
+        blocking: true,
+        each: async (page) => {
+          const { found, why } = await readPage(page)
+          if (found && !why) chapter.readings[page.id] = found
+          return why
+        },
+      }]
+      if (llamaCpp.model) {
+        phases.push({ name: 'Translating', each: (page) => translateOne(page, chapter) })
+      }
       phases.push({ name: 'Cleaning', each: cleanOne })
 
       void startBatch(folder, pages, phases)
@@ -670,7 +691,7 @@ function App() {
     [
       startBatch,
       images,
-      examine,
+      readPage,
       translateOne,
       cleanOne,
       llamaCpp.model,

@@ -142,6 +142,7 @@ export type Untranslated = { text: string; kind?: Kind; budget?: number }
 export type Against = {
   system?: string | null
   source?: string | null
+  context?: string
 }
 
 export async function translate(
@@ -151,7 +152,7 @@ export async function translate(
   against: Against = {},
 ): Promise<string[]> {
   if (lines.length === 0) return []
-  const { system, source } = against
+  const { system, source, context } = against
 
   const body = new FormData()
   body.append('texts', JSON.stringify(lines.map((line) => line.text)))
@@ -159,6 +160,7 @@ export async function translate(
   body.append('target', target)
   if (system) body.append('system', system)
   if (source) body.append('source', source)
+  if (context) body.append('context', context)
   if (lines.some((line) => line.kind)) {
     body.append('kinds', JSON.stringify(lines.map((line) => line.kind ?? '')))
   }

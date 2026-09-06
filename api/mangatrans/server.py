@@ -267,7 +267,7 @@ def create_app() -> Flask:
 
     @app.post("/api/translate")
     def translate():
-        """One translation per text, in the order they were given."""
+        """Translate one page, optionally using bounded chapter reference text."""
         texts = [str(text) for text in sent("texts")]
         model = request.form.get("model", "").strip()
         if not model:
@@ -276,6 +276,9 @@ def create_app() -> Flask:
         source = request.form.get("source", "").strip() or llamacpp.SOURCE_DEFAULT
         system = request.form.get("system", "").strip() or None
         kinds, budgets = kinds_in(texts), budgets_in(texts)
+        context = request.form.get("context", "")
+        if len(context) > 16000:
+            raise BadRequest("'context' must be at most 16000 characters")
         try:
             done = llamacpp.translate(
                 texts,
@@ -285,6 +288,7 @@ def create_app() -> Flask:
                 source=source,
                 kinds=kinds,
                 budgets=budgets,
+                context=context,
             )
             return jsonify(texts=done)
         except llamacpp.Unreachable as exc:
