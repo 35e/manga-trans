@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { SetStateAction } from 'react'
 import { Board } from './components/Board'
 import { RegionsPanel } from './components/RegionsPanel'
 import { Settings } from './components/Settings'
@@ -17,6 +18,10 @@ import { useMasks } from './hooks/useMasks'
 import { useObjectUrls } from './hooks/useObjectUrls'
 import { useLlamaCpp } from './hooks/useLlamaCpp'
 import { usePrompt } from './hooks/usePrompt'
+import { usePageOperation } from './hooks/usePageOperation'
+import type { PageOperation } from './hooks/usePageOperation'
+import { useProject } from './hooks/useProject'
+import type { ProjectData } from './lib/project'
 import type { Analysis, Box, Fill, Lettering, Region, Stage, Tool } from './lib/api'
 import {
   API_BASE,
@@ -67,6 +72,7 @@ function App() {
     busy,
     notice,
     dismissNotice,
+    restore: restoreLibrary,
   } = useImageLibrary()
 
   const [openFolder, setOpenFolder] = useState<string | null>(null)
@@ -74,13 +80,16 @@ function App() {
   openNow.current = openFolder
 
   const addTo = useCallback(
-    (files: FileList | File[] | null) => void add(files, openNow.current ?? undefined),
+    (files: FileList | File[] | null) => {
+      if (restored.current) void add(files, openNow.current ?? undefined)
+    },
     [add],
   )
   const dragging = useFileDrop(addTo)
 
   const newFolder = useCallback(
     (name: string) => {
+      if (!restored.current) return false
       const made = makeFolder(name)
       if (made) setOpenFolder(made)
       return made !== null
@@ -93,26 +102,55 @@ function App() {
       setOpenFolder(null)
     }
   }, [openFolder, folders])
-  const { forPage, drop: dropMask, clear: clearMasks } = useMasks()
-  const { forPage: touchupsFor, drop: dropTouchups, clear: clearTouchups } = useMasks()
+  const projectChanged = useRef<() => void>(() => {})
+  const markProjectChanged = useCallback(() => projectChanged.current(), [])
+  const {
+    forPage, drop: dropMask, clear: clearMasks,
+    snapshot: snapshotMasks, restore: restoreMasks,
+  } = useMasks(markProjectChanged)
+  const {
+    forPage: touchupsFor, drop: dropTouchups, clear: clearTouchups,
+    snapshot: snapshotTouchups, restore: restoreTouchups,
+  } = useMasks(markProjectChanged)
   const traced = useLetterMasks()
   const {
     urls: cleanedPages,
+    blobs: cleanedBlobs,
     set: setCleaned,
     drop: dropCleaned,
     clear: clearCleaned,
+    restore: restoreCleaned,
   } = useObjectUrls()
   const llamaCpp = useLlamaCpp()
   const source = useLanguage()
+  const { setCode } = source
+  const { setModel, setTarget } = llamaCpp
   const { prompt, setPrompt, builtIn: builtInPrompt } = usePrompt()
 
   const [activeId, setActiveId] = useState<string | null>(null)
   const active = images.find((image) => image.id === activeId) ?? null
 
-  const [analyses, setAnalyses] = useState<Record<string, Analysis>>({})
-  const [lettering, setLettering] = useState<Record<string, Lines>>({})
+  const analysesNow = useRef<Record<string, Analysis>>({})
+  const [analyses, rememberAnalyses] = useState(analysesNow.current)
+  const setAnalyses = useCallback((update: SetStateAction<Record<string, Analysis>>) => {
+    analysesNow.current = typeof update === 'function' ? update(analysesNow.current) : update
+    rememberAnalyses(analysesNow.current)
+  }, [])
+  const letteringNow = useRef<Record<string, Lines>>({})
+  const [lettering, rememberLettering] = useState(letteringNow.current)
+  const setLettering = useCallback((update: SetStateAction<Record<string, Lines>>) => {
+    letteringNow.current = typeof update === 'function' ? update(letteringNow.current) : update
+    rememberLettering(letteringNow.current)
+  }, [])
 
-  const [working, setWorking] = useState<{ id: string; stage: Stage } | null>(null)
+  const { begin, cancel: abortPage } = usePageOperation()
+  const [working, setWorking] = useState<{
+    id: string; stage: Stage; operation: PageOperation
+  } | null>(null)
+  const cancel = useCallback((id?: string) => {
+    abortPage(id)
+    setWorking((now) => !id || now?.id === id ? null : now)
+  }, [abortPage])
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
   const [tool, setTool] = useState<Tool>('boxes')
@@ -129,6 +167,39 @@ function App() {
 
   const [spread, setSpread] = useState(4)
   const [fill, setFill] = useState<Fill>('white')
+
+  const snapshotProject = useCallback(async (): Promise<ProjectData> => ({
+    images: images.map(({ url: _url, ...image }) => image),
+    folders, analyses, lettering, cleaned: cleanedBlobs,
+    masks: await snapshotMasks(),
+    touchups: await snapshotTouchups(),
+    activeId, openFolder, language: source.code,
+    model: llamaCpp.model, target: llamaCpp.target, prompt, spread, fill,
+  }), [
+    images, folders, analyses, lettering, cleanedBlobs, snapshotMasks, snapshotTouchups,
+    activeId, openFolder, source.code, llamaCpp.model, llamaCpp.target, prompt, spread, fill,
+  ])
+  const restoreProject = useCallback(async (saved: ProjectData) => {
+    await restoreMasks(saved.masks)
+    await restoreTouchups(saved.touchups)
+    restoreLibrary(saved.images, saved.folders)
+    restoreCleaned(saved.cleaned)
+    setAnalyses(saved.analyses)
+    setLettering(saved.lettering)
+    setActiveId(saved.activeId)
+    setOpenFolder(saved.openFolder)
+    setCode(saved.language)
+    setModel(saved.model)
+    setTarget(saved.target)
+    setPrompt(saved.prompt)
+    setSpread(saved.spread)
+    setFill(saved.fill)
+  }, [
+    restoreMasks, restoreTouchups, restoreLibrary, restoreCleaned, setAnalyses, setLettering,
+    setCode, setModel, setTarget, setPrompt,
+  ])
+  const project = useProject(snapshotProject, restoreProject)
+  projectChanged.current = project.changed
 
   const analysis = active ? (analyses[active.id] ?? null) : null
   const pageLettering = active ? (lettering[active.id] ?? []) : []
@@ -151,12 +222,10 @@ function App() {
     setError(null)
   }, [activeId])
 
-  const analysesNow = useRef(analyses)
-  analysesNow.current = analyses
+  const restored = useRef(false)
+  useEffect(() => { restored.current = project.ready }, [project.ready])
   const cleanedNow = useRef(cleanedPages)
   cleanedNow.current = cleanedPages
-  const letteringNow = useRef(lettering)
-  letteringNow.current = lettering
 
   const activeNow = useRef(activeId)
   activeNow.current = activeId
@@ -180,6 +249,7 @@ function App() {
 
   const forget = useCallback(
     (id: string) => {
+      cancel(id)
       dropTouchups(id)
       dropMask(id)
       dropCleaned(id)
@@ -187,7 +257,7 @@ function App() {
       setLettering((current) => without(current, id))
       setAnalyses((current) => without(current, id))
     },
-    [dropTouchups, dropMask, dropCleaned, traced],
+    [cancel, dropTouchups, dropMask, dropCleaned, traced, setLettering, setAnalyses],
   )
 
   const removeImage = useCallback(
@@ -200,40 +270,63 @@ function App() {
 
   const lastFailure = useRef<string | null>(null)
 
-  const during = useCallback(
-    async <T,>(id: string, stage: Stage, step: () => Promise<T>): Promise<T | null> => {
+  const workOn = useCallback(
+    async <T,>(
+      page: GalleryImage,
+      step: (operation: PageOperation) => Promise<T>,
+      signal?: AbortSignal,
+    ): Promise<T | null> => {
+      if (!held(page.id) || !restored.current) return null
+      const operation = begin(page.id, signal)
+      lastFailure.current = null
       setError(null)
-      setWorking({ id, stage })
       try {
-        return await step()
+        operation.check()
+        const result = await step(operation)
+        operation.check()
+        return result
       } catch (cause) {
-        const why = said(cause)
-        lastFailure.current = why
-        setError(why)
+        if (operation.signal.aborted) {
+          if (signal) throw cause
+          return null
+        }
+        lastFailure.current = said(cause)
+        setError(lastFailure.current)
         return null
       } finally {
-        setWorking(null)
+        operation.finish()
+        setWorking((now) => now?.operation === operation ? null : now)
       }
+    },
+    [begin, held],
+  )
+
+  const during = useCallback(
+    async <T,>(operation: PageOperation, stage: Stage, step: () => Promise<T>): Promise<T> => {
+      operation.check()
+      setWorking({ id: operation.pageId, stage, operation })
+      const result = await step()
+      operation.check()
+      return result
     },
     [],
   )
 
   const reread = useCallback(
-    async (page: GalleryImage, boxes: Box[], ids: string[]) => {
+    async (page: GalleryImage, boxes: Box[], ids: string[], operation: PageOperation) => {
       const every = analysesNow.current[page.id]?.detection.regions ?? []
       const everyId = every.map((region) => region.id)
 
-      const answered = await during(page.id, 'reading', () =>
+      const [texts, balloons] = await during(operation, 'reading', () =>
         Promise.all([
-          read(page.file, boxes, source.code),
+          read(page.file, boxes, source.code, operation.signal),
           bubbles(
             page.file,
             every.map((region) => region.box),
+            operation.signal,
           ),
         ]),
       )
-      if (!answered) return
-      const [texts, balloons] = answered
 
       setAnalyses((current) => {
         const now = current[page.id]
@@ -246,17 +339,19 @@ function App() {
         return next === now ? current : { ...current, [page.id]: next }
       })
     },
-    [during, source.code],
+    [during, source.code, setAnalyses],
   )
 
   const detectAndRead = useCallback(
-    async (page: GalleryImage): Promise<Analysis | null> => {
+    async (page: GalleryImage, operation: PageOperation): Promise<Analysis> => {
       const { id, file } = page
       if (onBoard(id)) setSelected(null)
-
-      return during(id, 'detecting', async () => {
-        const detection = await detect(file, source.code)
-        let found: Analysis = {
+      let found = analysesNow.current[id]
+      if (!found) {
+        const detection = await during(operation, 'detecting', () =>
+          detect(file, source.code, operation.signal),
+        )
+        found = {
           detection,
           texts: detection.regions.length === 0 ? [] : null,
           excluded: detection.regions.flatMap((region, index) =>
@@ -264,33 +359,31 @@ function App() {
           ),
         }
         setAnalyses((current) => ({ ...current, [id]: found }))
-        setLettering((current) => without(current, id))
-
-        if (detection.regions.length > 0) {
-          setWorking({ id, stage: 'reading' })
-          const texts = await read(
-            file,
-            detection.regions.map((region) => region.box),
-            source.code,
-          )
-          found = { ...found, texts }
-          setAnalyses((current) =>
-            id in current ? { ...current, [id]: found } : current,
-          )
-        }
-        return found
-      })
+      }
+      if (found.texts === null) {
+        const texts = await during(operation, 'reading', () =>
+          read(file, found.detection.regions.map((region) => region.box), source.code, operation.signal),
+        )
+        found = { ...found, texts }
+        setAnalyses((current) => ({ ...current, [id]: found }))
+      }
+      return found
     },
-    [during, onBoard, source.code],
+    [during, onBoard, source.code, setAnalyses],
   )
 
   const tracePage = useCallback(
-    async (page: GalleryImage): Promise<ImageBitmap | null> => {
+    async (page: GalleryImage, operation: PageOperation): Promise<ImageBitmap> => {
+      operation.check()
       const held = traced.at(page.id, spread)
       if (held) return held
 
-      return during(page.id, 'tracing', async () => {
-        const bitmap = await createImageBitmap(await letterMask(page.file, spread))
+      return during(operation, 'tracing', async () => {
+        const bitmap = await createImageBitmap(await letterMask(page.file, spread, operation.signal))
+        if (operation.signal.aborted) {
+          bitmap.close()
+          operation.check()
+        }
         traced.keep(page.id, spread, bitmap)
         return bitmap
       })
@@ -299,15 +392,16 @@ function App() {
   )
 
   const traceLetters = useCallback(
-    () => (active ? tracePage(active) : Promise.resolve(null)),
-    [active, tracePage],
+    () => active ? workOn(active, (operation) => tracePage(active, operation)) : Promise.resolve(null),
+    [active, workOn, tracePage],
   )
 
   const markLetters = useCallback(
-    async (page: GalleryImage, boxes: Box[]) => {
+    async (page: GalleryImage, boxes: Box[], operation: PageOperation) => {
       const mask = forPage(page)
       if (!mask || mask.empty) return
-      const letters = await tracePage(page)
+      const letters = await tracePage(page, operation)
+      operation.check()
       if (!mask.empty) mark(mask, boxes, letters)
     },
     [forPage, tracePage],
@@ -319,6 +413,7 @@ function App() {
       const held = analyses[active.id]
       const box = held?.detection.regions[index]?.box
       if (!held || !box) return
+      cancel(active.id)
 
       const putBack = held.excluded.includes(index)
       setAnalyses((current) => ({
@@ -326,10 +421,10 @@ function App() {
         [active.id]: blocks.toggledExcluded(held, index),
       }))
 
-      if (putBack) await markLetters(active, [box])
+      if (putBack) await workOn(active, (operation) => markLetters(active, [box], operation))
       else forPage(active)?.boxes([box], true)
     },
-    [active, analyses, forPage, markLetters],
+    [active, analyses, cancel, forPage, markLetters, workOn, setAnalyses],
   )
 
   const addRegion = useCallback(
@@ -337,6 +432,7 @@ function App() {
       if (!active) return
       const held = analyses[active.id]
       if (!held) return
+      cancel(active.id)
 
       const at = insertionFor(
         held.detection.regions.map((region) => region.box),
@@ -355,22 +451,25 @@ function App() {
       )
       setSelected(at)
 
-      await markLetters(active, [box])
-      await reread(active, [box], [added.id])
+      await workOn(active, async (operation) => {
+        await markLetters(active, [box], operation)
+        await reread(active, [box], [added.id], operation)
+      })
     },
-    [active, analyses, markLetters, reread, source.rtl],
+    [active, analyses, cancel, markLetters, reread, source.rtl, workOn, setAnalyses, setLettering],
   )
 
   const setRegionBox = useCallback(
     (index: number, box: Box) => {
       if (!active) return
+      cancel(active.id)
       setAnalyses((current) => {
         const held = current[active.id]
         if (!held) return current
         return { ...current, [active.id]: blocks.withBox(held, index, box) }
       })
     },
-    [active],
+    [active, cancel, setAnalyses],
   )
 
   const rereadRegion = useCallback(
@@ -380,19 +479,20 @@ function App() {
       const region = held?.detection.regions[index]
       if (!held || !region || region.box.join() === was.join()) return
 
-      forPage(active)?.boxes([was], true)
-      if (!held.excluded.includes(index)) await markLetters(active, [region.box])
-
-      if (!held.texts) return
-      await reread(active, [region.box], [region.id])
+      await workOn(active, async (operation) => {
+        forPage(active)?.boxes([was], true)
+        if (!held.excluded.includes(index)) await markLetters(active, [region.box], operation)
+        if (held.texts) await reread(active, [region.box], [region.id], operation)
+      })
     },
-    [active, analyses, forPage, markLetters, reread],
+    [active, analyses, forPage, markLetters, reread, workOn],
   )
 
   const moveRegion = useCallback(
     (from: number, to: number) => {
       if (!active || from === to) return
       const { id } = active
+      cancel(id)
 
       setAnalyses((current) =>
         current[id] ? { ...current, [id]: blocks.moved(current[id], from, to) } : current,
@@ -402,7 +502,7 @@ function App() {
       )
       setSelected((now) => (now === null ? now : movedIndex(now, from, to)))
     },
-    [active],
+    [active, cancel, setAnalyses, setLettering],
   )
 
   const splitRegion = useCallback(
@@ -416,6 +516,7 @@ function App() {
       const before = line.text.slice(0, at).trim()
       const rest = line.text.slice(at).trim()
       if (!before || !rest) return
+      cancel(active.id)
 
       const [firstBox, secondBox] = halves(
         region.box,
@@ -448,20 +549,24 @@ function App() {
       })
       setSelected(index)
 
-      await reread(active, [firstBox, secondBox], [region.id, added.id])
+      await workOn(active, (operation) =>
+        reread(active, [firstBox, secondBox], [region.id, added.id], operation),
+      )
     },
-    [active, analyses, lettering, reread, source.rtl],
+    [active, analyses, lettering, cancel, reread, source.rtl, workOn, setAnalyses, setLettering],
   )
 
   const marksFor = useCallback(
-    async (page: GalleryImage, found: Analysis): Promise<Blob | null> => {
+    async (page: GalleryImage, found: Analysis, operation: PageOperation): Promise<Blob | null> => {
       const mask = forPage(page)
       if (!mask) return null
 
       if (mask.empty) {
         const boxes = blocks.toClean(found)
         if (boxes.length === 0) return null
-        mark(mask, boxes, await tracePage(page))
+        const letters = await tracePage(page, operation)
+        operation.check()
+        mark(mask, boxes, letters)
       }
       return mask.toBlob()
     },
@@ -469,13 +574,11 @@ function App() {
   )
 
   const cleanPage = useCallback(
-    async (page: GalleryImage, marks: Blob): Promise<boolean> => {
-      const cleaned = await during(page.id, 'cleaning', () =>
-        clean(page.file, marks, fill),
+    async (page: GalleryImage, marks: Blob, operation: PageOperation): Promise<void> => {
+      const cleaned = await during(operation, 'cleaning', () =>
+        clean(page.file, marks, fill, operation.signal),
       )
-      if (!cleaned) return false
       setCleaned(page.id, cleaned)
-      return true
     },
     [during, setCleaned, fill],
   )
@@ -484,18 +587,23 @@ function App() {
     async (
       page: GalleryImage,
       found: Analysis,
+      operation: PageOperation,
       chapter?: ChapterContext,
-    ): Promise<boolean> => {
-      if (!llamaCpp.model || !found.texts) return false
+      resume = false,
+    ): Promise<void> => {
+      if (!llamaCpp.model || !found.texts) return
 
       const skip = new Set(found.excluded)
       const wanted = found.texts
         .map((text, index) => ({ text, index }))
-        .filter(({ text, index }) => text.trim() && !skip.has(index))
-      if (wanted.length === 0) return false
+        .filter(({ text, index }) =>
+          text.trim() && !skip.has(index) && (!resume || !letteringNow.current[page.id]?.[index]),
+        )
+      if (wanted.length === 0) return
 
-      const got = await during(page.id, 'translating', async () => {
+      const got = await during(operation, 'translating', async () => {
         await ready()
+        operation.check()
         const sending = wanted.map(({ text, index }) => {
           const region = found.detection.regions[index]
           return {
@@ -508,23 +616,18 @@ function App() {
           system: prompt,
           source: source.language?.name,
           context: chapter ? chapterReference(chapter, page.id) : undefined,
-        })
+        }, operation.signal)
       })
-      if (!got) return false
 
-      const set: Lines = found.detection.regions.map(() => null)
+      const set: Lines = found.detection.regions.map((_, index) =>
+        resume ? letteringNow.current[page.id]?.[index] ?? null : null,
+      )
       wanted.forEach((line, at) => {
         const text = (got[at] ?? '').trim()
         if (text) set[line.index] = lines.laidOut(found, line.index, text)
       })
       setLettering((current) => ({ ...current, [page.id]: set }))
       if (onBoard(page.id)) setTool('text')
-      if (chapter) {
-        chapter.translations[page.id] = wanted.flatMap((line, at) =>
-          got[at]?.trim() ? [{ source: line.text, translated: got[at] }] : [],
-        )
-      }
-      return true
     },
     [
       during,
@@ -533,12 +636,19 @@ function App() {
       llamaCpp.target,
       prompt,
       source.language?.name,
+      setLettering,
     ],
   )
 
   const runDetect = useCallback(async () => {
-    if (active) await detectAndRead(active)
-  }, [active, detectAndRead])
+    if (!active) return
+    if (
+      (analysesNow.current[active.id] || cleanedNow.current[active.id] || !forPage(active)?.empty) &&
+      !window.confirm('Find text again? This discards this page’s regions, translations, masks, and cleanup.')
+    ) return
+    forget(active.id)
+    await workOn(active, (operation) => detectAndRead(active, operation))
+  }, [active, forget, forPage, workOn, detectAndRead])
 
   const runClean = useCallback(
     async () => {
@@ -547,109 +657,47 @@ function App() {
       const base = cleanedNow.current[page.id]
       const mask = base ? touchupsFor(page) : forPage(page)
       if (!mask || mask.empty) return
-      const cleaned = await during(page.id, 'cleaning', async () => {
-        const file = base
-          ? new File([await (await fetch(base)).blob()], page.name, { type: 'image/png' })
-          : page.file
-        return clean(file, await mask.toBlob(), fill)
+      await workOn(page, async (operation) => {
+        const cleaned = await during(operation, 'cleaning', async () => {
+          const file = base
+            ? new File([await (await fetch(base, { signal: operation.signal })).blob()], page.name, { type: 'image/png' })
+            : page.file
+          return clean(file, await mask.toBlob(), fill, operation.signal)
+        })
+        if (base) mask.clear()
+        setCleaned(page.id, cleaned)
       })
-      if (!cleaned || !held(page.id)) return
-      if (base) mask.clear()
-      setCleaned(page.id, cleaned)
     },
-    [active, during, fill, held, touchupsFor, forPage, setCleaned],
+    [active, during, fill, workOn, touchupsFor, forPage, setCleaned],
   )
 
   const runTranslate = useCallback(async () => {
     const found = active ? analyses[active.id] : null
-    if (active && found) await translatePage(active, found)
-  }, [active, analyses, translatePage])
+    if (active && found) {
+      await workOn(active, (operation) => translatePage(active, found, operation))
+    }
+  }, [active, analyses, workOn, translatePage])
 
-  const readPage = useCallback(
-    async (
-      page: GalleryImage,
-    ): Promise<{ found: Analysis | null; why: string | null }> => {
-      if (!held(page.id)) return { found: null, why: null }
-
-      const found = await detectAndRead(page)
-      if (!found) {
-        return { found: null, why: lastFailure.current ?? 'the text could not be found' }
-      }
-
-      return { found, why: null }
-    },
-    [detectAndRead, held],
-  )
 
   const hidePage = useCallback(
-    async (page: GalleryImage, found: Analysis): Promise<string | null> => {
-      const marks = await marksFor(page, found)
-      if (marks) {
-        lastFailure.current = null
-        if (!(await cleanPage(page, marks))) {
-          return lastFailure.current ?? 'the page could not be cleaned'
-        }
-      }
-
+    async (page: GalleryImage, found: Analysis, operation: PageOperation): Promise<void> => {
+      const marks = await marksFor(page, found, operation)
+      operation.check()
+      if (marks) await cleanPage(page, marks, operation)
       if (!onBoard(page.id)) traced.drop(page.id)
-      return null
     },
     [marksFor, cleanPage, traced, onBoard],
   )
 
-  const translateOne = useCallback(
-    async (page: GalleryImage, chapter?: ChapterContext): Promise<string | null> => {
-      if (!held(page.id)) return null
-      const found = chapter ? chapter.readings[page.id] : analysesNow.current[page.id]
-      if (!found?.texts || !found.texts.some((text) => text.trim())) return null
 
-      lastFailure.current = null
-      await translatePage(page, found, chapter)
-      return lastFailure.current
-    },
-    [held, translatePage],
-  )
-
-  const cleanOne = useCallback(
-    async (page: GalleryImage): Promise<string | null> => {
-      if (!held(page.id)) return null
-      const found = analysesNow.current[page.id]
-      if (!found || cleanedNow.current[page.id]) return null
-      return hidePage(page, found)
-    },
-    [held, hidePage],
-  )
-
-  const render = useCallback(
-    async (page: GalleryImage): Promise<string | null> => {
-      if (!held(page.id)) return null
-
-      let found: Analysis | null = analysesNow.current[page.id] ?? null
-      if (!found?.texts) {
-        const done = await readPage(page)
-        if (done.why) return done.why
-        found = done.found
-      }
-      if (!found?.texts) return lastFailure.current ?? 'the text could not be found'
-
-      if (llamaCpp.model && found.texts.some((text) => text.trim())) {
-        lastFailure.current = null
-        await translatePage(page, found)
-        if (lastFailure.current) return lastFailure.current
-      }
-
-      if (!cleanedNow.current[page.id]) {
-        const why = await hidePage(page, found)
-        if (why) return why
-      }
-      return null
-    },
-    [readPage, hidePage, translatePage, held, llamaCpp.model],
-  )
-
-  const runAll = useCallback(() => {
-    if (active) void render(active)
-  }, [active, render])
+  const runAll = useCallback(async () => {
+    if (!active) return
+    await workOn(active, async (operation) => {
+      const found = await detectAndRead(active, operation)
+      await translatePage(active, found, operation, undefined, true)
+      if (!cleanedNow.current[active.id]) await hidePage(active, found, operation)
+    })
+  }, [active, workOn, detectAndRead, translatePage, hidePage])
 
   const {
     run: batch,
@@ -668,38 +716,63 @@ function App() {
   }, [batch])
 
   const translateFolder = useCallback(
-    (folder: GalleryFolder) => {
+    (folder: GalleryFolder, reprocess = false) => {
+      if (batch && !batch.finished) return
+      if (reprocess && !window.confirm(
+        `Reprocess all pages in ${folder.name}? This discards saved regions, translations, masks, and cleanup. Originals are kept.`,
+      )) return
       const pages = images
         .filter((image) => image.folder === folder.id)
-        .sort((one, other) => one.name.localeCompare(other.name, undefined, {
+        .sort((one, other) => one.file.name.localeCompare(other.file.name, undefined, {
           numeric: true,
           sensitivity: 'base',
         }))
+      if (reprocess) for (const page of pages) forget(page.id)
       const chapter: ChapterContext = { pages, readings: {}, translations: {} }
       const phases: Phase[] = [{
         name: 'Reading',
         blocking: true,
-        each: async (page) => {
-          const { found, why } = await readPage(page)
-          if (found && !why) chapter.readings[page.id] = found
-          return why
+        each: async (page, signal) => {
+          if (!held(page.id)) return null
+          const found = await workOn(page, (operation) => detectAndRead(page, operation), signal)
+          if (found) {
+            chapter.readings[page.id] = found
+            chapter.translations[page.id] = (found.texts ?? []).flatMap((source, index) => {
+              const translated = letteringNow.current[page.id]?.[index]?.text
+              return translated?.trim() && !found.excluded.includes(index) ? [{ source, translated }] : []
+            })
+          }
+          return lastFailure.current
         },
       }]
       if (llamaCpp.model) {
-        phases.push({ name: 'Translating', each: (page) => translateOne(page, chapter) })
+        phases.push({
+          name: 'Translating',
+          blocking: true,
+          each: async (page, signal) => {
+            const found = chapter.readings[page.id]
+            if (!held(page.id) || !found) return null
+            await workOn(page, (operation) => translatePage(page, found, operation, chapter, true), signal)
+            chapter.translations[page.id] = (found.texts ?? []).flatMap((source, index) => {
+              const translated = letteringNow.current[page.id]?.[index]?.text
+              return translated?.trim() && !found.excluded.includes(index) ? [{ source, translated }] : []
+            })
+            return lastFailure.current
+          },
+        })
       }
-      phases.push({ name: 'Cleaning', each: cleanOne })
-
+      phases.push({
+        name: 'Cleaning',
+        each: async (page, signal) => {
+          const found = chapter.readings[page.id]
+          if (!held(page.id) || !found || cleanedNow.current[page.id]) return null
+          await workOn(page, (operation) => hidePage(page, found, operation), signal)
+          return lastFailure.current
+        },
+      })
       void startBatch(folder, pages, phases)
     },
-    [
-      startBatch,
-      images,
-      readPage,
-      translateOne,
-      cleanOne,
-      llamaCpp.model,
-    ],
+    [batch, images, forget, held, workOn, detectAndRead, translatePage, hidePage, startBatch, llamaCpp.model],
   )
 
   const removeFolder = useCallback(
@@ -721,6 +794,7 @@ function App() {
 
   const clearAll = useCallback(() => {
     stopBatch()
+    cancel()
     clear()
     clearMasks()
     clearTouchups()
@@ -730,8 +804,13 @@ function App() {
     setAnalyses({})
     setActiveId(null)
     setReviewing(null)
+    setOpenFolder(null)
+    setExportFailure(null)
   }, [
     stopBatch,
+    cancel,
+    setAnalyses,
+    setLettering,
     clear,
     clearMasks,
     clearCleaned,
@@ -743,13 +822,14 @@ function App() {
     (index: number, patch: Partial<Lettering>) => {
       if (!active) return
       const { id } = active
+      cancel(id)
       setLettering((current) =>
         current[id]
           ? { ...current, [id]: lines.withLine(current[id], index, patch) }
           : current,
       )
     },
-    [active],
+    [active, cancel, setLettering],
   )
 
   const setLetteringBox = useCallback(
@@ -877,17 +957,43 @@ function App() {
     [cleanedPages, lettering],
   )
 
+  if (!project.ready) {
+    return (
+      <main className="flex h-screen items-center justify-center bg-canvas p-6 text-ink">
+        {project.error ? (
+          <div role="alert">
+            <p>{project.error}</p>
+            <Button className="mt-3" onClick={project.retry}>Retry loading project</Button>
+          </div>
+        ) : <p role="status">Restoring project…</p>}
+      </main>
+    )
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-canvas text-ink">
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-4 py-2.5">
         <h1 className="text-sm font-semibold tracking-tight text-ink">manga-trans</h1>
         <div className="flex min-w-0 items-center gap-2">
           <p className="truncate font-mono text-[11px] text-faint">{API_BASE}</p>
+          <span role="status" className="text-[11px] text-faint">
+            {project.error ? 'Project not saved' : project.saving ? 'Saving project…' : 'Project saved'}
+          </span>
+          {working && (
+            <Button onClick={() => { stopBatch(); cancel() }}>Cancel operation</Button>
+          )}
           <IconButton label="Settings" onClick={() => setSettingsOpen(true)}>
             <GearIcon />
           </IconButton>
         </div>
       </header>
+
+      {project.error && (
+        <div role="alert" className="shrink-0 border-b border-warn/30 bg-warn/10 px-4 py-3 text-xs text-warn">
+          <p>{project.error} Keep this tab open until the project is saved.</p>
+          <Button className="mt-2" onClick={project.retry}>Retry saving project</Button>
+        </div>
+      )}
 
       {exportFailure && (
         <div role="alert" className="max-h-48 shrink-0 overflow-y-auto border-b border-warn/30 bg-warn/10 px-4 py-3">
@@ -909,7 +1015,7 @@ function App() {
           onClose={() => setSettingsOpen(false)}
           prompt={prompt}
           fallback={builtInPrompt}
-          onSave={setPrompt}
+          onSave={(next) => { stopBatch(); cancel(); setPrompt(next) }}
           apiBase={API_BASE}
           models={llamaCpp.models}
         />
@@ -935,7 +1041,8 @@ function App() {
           batch={batch}
           batchStage={working && working.id === batch?.page?.id ? working.stage : null}
           onTranslateFolder={translateFolder}
-          onStopBatch={stopBatch}
+          onReprocessFolder={(folder) => translateFolder(folder, true)}
+          onStopBatch={() => { stopBatch(); cancel() }}
           onDismissBatch={dismissBatch}
           onReviewBatch={() => batch && setReviewing(batch.folder)}
           canTranslate={Boolean(llamaCpp.model)}
@@ -984,7 +1091,7 @@ function App() {
             inspecting={{
               languages: source.offered,
               language: source.code,
-              onLanguage: source.setCode,
+              onLanguage: (next) => { stopBatch(); cancel(); source.setCode(next) },
               onAddRegion: addRegion,
               onRegionBox: setRegionBox,
               onRegionSettled: rereadRegion,
@@ -995,16 +1102,16 @@ function App() {
               letters: traced.at(active?.id, spread),
               onTrace: traceLetters,
               spread,
-              onSpread: setSpread,
+              onSpread: (next) => { cancel(); setSpread(next) },
               fill,
-              onFill: setFill,
+              onFill: (next) => { cancel(); setFill(next) },
             }}
             translating={{
               models: llamaCpp.models,
               model: llamaCpp.model,
-              onModel: llamaCpp.setModel,
+              onModel: (next) => { stopBatch(); cancel(); llamaCpp.setModel(next) },
               target: llamaCpp.target,
-              onTarget: llamaCpp.setTarget,
+              onTarget: (next) => { stopBatch(); cancel(); llamaCpp.setTarget(next) },
               onTranslate: runTranslate,
               lettering: pageLettering,
               onBox: setLetteringBox,

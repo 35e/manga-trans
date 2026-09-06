@@ -54,22 +54,31 @@ export function said(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
 }
 
-async function refuse(response: Response): Promise<never> {
+async function refuse(response: Response, signal?: AbortSignal | null): Promise<never> {
   const said = await response
     .json()
     .then((body: { error?: string }) => body.error)
-    .catch(() => undefined)
+    .catch((cause: unknown) => {
+      signal?.throwIfAborted()
+      if (cause instanceof Error && cause.name === 'AbortError') throw cause
+      return undefined
+    })
+  signal?.throwIfAborted()
   throw new Error(said ?? `The API answered ${response.status}`)
 }
 
 async function reach(path: string, init?: RequestInit): Promise<Response> {
+  init?.signal?.throwIfAborted()
   let response: Response
   try {
     response = await fetch(`${API_BASE}${path}`, init)
   } catch (cause) {
+    init?.signal?.throwIfAborted()
+    if (cause instanceof Error && cause.name === 'AbortError') throw cause
     throw new Error(`Could not reach the API at ${API_BASE}`, { cause })
   }
-  if (!response.ok) await refuse(response)
+  init?.signal?.throwIfAborted()
+  if (!response.ok) await refuse(response, init?.signal)
   return response
 }
 
@@ -77,6 +86,7 @@ async function send(
   path: string,
   file: File,
   parts: Record<string, unknown> = {},
+  signal?: AbortSignal,
 ): Promise<Response> {
   const body = new FormData()
   body.append('image', file, file.name)
@@ -85,26 +95,37 @@ async function send(
     else if (typeof value === 'string') body.append(name, value)
     else body.append(name, JSON.stringify(value))
   }
-  return reach(path, { method: 'POST', body })
+  return reach(path, { method: 'POST', body, signal })
 }
 
-export async function detect(file: File, language: string): Promise<Detection> {
-  const response = await send('/api/detect', file, { language })
+export async function detect(
+  file: File,
+  language: string,
+  signal?: AbortSignal,
+): Promise<Detection> {
+  const response = await send('/api/detect', file, { language }, signal)
   const found = (await response.json()) as {
     width: number
     height: number
     regions: Omit<Region, 'id'>[]
   }
+  signal?.throwIfAborted()
   return {
     ...found,
     regions: found.regions.map((region) => ({ ...region, id: crypto.randomUUID() })),
   }
 }
 
-export async function bubbles(file: File, boxes: Box[]): Promise<(Box | null)[]> {
+export async function bubbles(
+  file: File,
+  boxes: Box[],
+  signal?: AbortSignal,
+): Promise<(Box | null)[]> {
+  signal?.throwIfAborted()
   if (boxes.length === 0) return []
-  const response = await send('/api/bubbles', file, { boxes })
+  const response = await send('/api/bubbles', file, { boxes }, signal)
   const answer = (await response.json()) as { regions: { bubble: Box | null }[] }
+  signal?.throwIfAborted()
   return answer.regions.map((region) => region.bubble)
 }
 
@@ -112,10 +133,13 @@ export async function read(
   file: File,
   boxes: Box[],
   language: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
+  signal?.throwIfAborted()
   if (boxes.length === 0) return []
-  const response = await send('/api/read', file, { boxes, language })
+  const response = await send('/api/read', file, { boxes, language }, signal)
   const { texts } = (await response.json()) as { texts: string[] }
+  signal?.throwIfAborted()
   return texts
 }
 
@@ -150,7 +174,9 @@ export async function translate(
   model: string,
   target: string,
   against: Against = {},
+  signal?: AbortSignal,
 ): Promise<string[]> {
+  signal?.throwIfAborted()
   if (lines.length === 0) return []
   const { system, source, context } = against
 
@@ -168,21 +194,36 @@ export async function translate(
     body.append('budgets', JSON.stringify(lines.map((line) => line.budget ?? 0)))
   }
 
-  const response = await reach('/api/translate', { method: 'POST', body })
+  const response = await reach('/api/translate', { method: 'POST', body, signal })
   const answer = (await response.json()) as { texts: string[] }
+  signal?.throwIfAborted()
   return answer.texts
 }
 
-export async function letterMask(file: File, grow?: number): Promise<Blob> {
+export async function letterMask(
+  file: File,
+  grow?: number,
+  signal?: AbortSignal,
+): Promise<Blob> {
   const response = await send(
     '/api/letters',
     file,
     grow === undefined ? {} : { grow },
+    signal,
   )
-  return response.blob()
+  const mask = await response.blob()
+  signal?.throwIfAborted()
+  return mask
 }
 
-export async function clean(file: File, mask: Blob, fill: Fill): Promise<Blob> {
-  const response = await send('/api/clean', file, { mask, fill })
-  return response.blob()
+export async function clean(
+  file: File,
+  mask: Blob,
+  fill: Fill,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await send('/api/clean', file, { mask, fill }, signal)
+  const image = await response.blob()
+  signal?.throwIfAborted()
+  return image
 }

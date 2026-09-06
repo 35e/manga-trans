@@ -17,8 +17,11 @@ export class Mask {
   private readonly canvas: HTMLCanvasElement
   private readonly ctx: CanvasRenderingContext2D
   private marked = false
+  private saved: Promise<Blob> | null = null
+  private readonly onChange?: () => void
 
-  constructor(width: number, height: number) {
+  constructor(width: number, height: number, onChange?: () => void) {
+    this.onChange = onChange
     this.width = width
     this.height = height
     this.canvas = document.createElement('canvas')
@@ -38,16 +41,23 @@ export class Mask {
     return !this.marked
   }
 
+  private changed() {
+    this.saved = null
+    this.onChange?.()
+  }
+
   private into(erase: boolean) {
     this.ctx.globalCompositeOperation = erase ? 'destination-out' : 'source-over'
     if (!erase) this.marked = true
   }
 
   boxes(boxes: Box[], erase = false) {
+    if (boxes.length === 0) return
     this.into(erase)
     for (const [x0, y0, x1, y1] of boxes) {
       this.ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
     }
+    this.changed()
   }
 
   letters(source: CanvasImageSource, boxes: Box[]) {
@@ -60,6 +70,7 @@ export class Mask {
       const height = y1 - y0
       this.ctx.drawImage(source, x0, y0, width, height, x0, y0, width, height)
     }
+    this.changed()
   }
 
   dot(at: Point, brush: Brush) {
@@ -67,6 +78,7 @@ export class Mask {
     this.ctx.beginPath()
     this.ctx.arc(at.x, at.y, brush.radius, 0, Math.PI * 2)
     this.ctx.fill()
+    this.changed()
   }
 
   stroke(from: Point, to: Point, brush: Brush) {
@@ -76,12 +88,15 @@ export class Mask {
     this.ctx.moveTo(from.x, from.y)
     this.ctx.lineTo(to.x, to.y)
     this.ctx.stroke()
+    this.changed()
   }
 
   clear() {
+    if (!this.marked) return
     this.ctx.globalCompositeOperation = 'source-over'
     this.ctx.clearRect(0, 0, this.width, this.height)
     this.marked = false
+    this.changed()
   }
 
   showOn(target: HTMLCanvasElement) {
@@ -94,6 +109,41 @@ export class Mask {
     ctx.fillStyle = TINT
     ctx.fillRect(0, 0, this.width, this.height)
     ctx.globalCompositeOperation = 'source-over'
+  }
+
+  snapshot(): Promise<Blob> {
+    if (!this.saved) {
+      const saving = new Promise<Blob>((resolve, reject) => {
+        this.canvas.toBlob(
+          (blob) => blob ? resolve(blob) : reject(new Error('the mask could not be saved')),
+          'image/png',
+        )
+      })
+      this.saved = saving
+      void saving.catch(() => {
+        if (this.saved === saving) this.saved = null
+      })
+    }
+    return this.saved
+  }
+
+  static async restore(blob: Blob, onChange?: () => void): Promise<Mask> {
+    const image = await createImageBitmap(blob)
+    try {
+      const mask = new Mask(image.width, image.height, onChange)
+      mask.ctx.drawImage(image, 0, 0)
+      const pixels = mask.ctx.getImageData(0, 0, image.width, image.height).data
+      for (let at = 3; at < pixels.length; at += 4) {
+        if (pixels[at] !== 0) {
+          mask.marked = true
+          break
+        }
+      }
+      mask.saved = Promise.resolve(blob)
+      return mask
+    } finally {
+      image.close()
+    }
   }
 
   toBlob(): Promise<Blob> {

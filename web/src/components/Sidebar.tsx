@@ -29,6 +29,7 @@ type Props = {
   batch: BatchRun | null
   batchStage: Stage | null
   onTranslateFolder: (folder: GalleryFolder) => void
+  onReprocessFolder: (folder: GalleryFolder) => void
   onStopBatch: () => void
   onDismissBatch: () => void
   onReviewBatch: () => void
@@ -58,6 +59,7 @@ export function Sidebar({
   batch,
   batchStage,
   onTranslateFolder,
+  onReprocessFolder,
   onStopBatch,
   onDismissBatch,
   onReviewBatch,
@@ -193,6 +195,7 @@ export function Sidebar({
             done={counted.filter((image) => workedOn.includes(image.id)).length}
             onBack={() => onOpenFolder(null)}
             onTranslate={() => onTranslateFolder(folder)}
+            onReprocess={() => onReprocessFolder(folder)}
             onDownload={() => onDownloadFolder(folder)}
             running={batch !== null && !batch.finished}
             packing={packing}
@@ -295,6 +298,7 @@ function FolderBar({
   done,
   onBack,
   onTranslate,
+  onReprocess,
   onDownload,
   running,
   packing,
@@ -306,22 +310,12 @@ function FolderBar({
   done: number
   onBack: () => void
   onTranslate: () => void
+  onReprocess: () => void
   onDownload: () => void
   running: boolean
   packing: { done: number; total: number } | null
   canTranslate: boolean
 }) {
-  const [armed, setArmed] = useState(false)
-
-  useEffect(() => {
-    if (!armed) return
-    const timer = setTimeout(() => setArmed(false), 4000)
-    return () => clearTimeout(timer)
-  }, [armed])
-
-  useEffect(() => {
-    if (lettered === 0) setArmed(false)
-  }, [lettered])
 
   return (
     <div className="mx-3 mb-3 rounded-lg border border-line bg-raised px-2 py-2">
@@ -345,30 +339,31 @@ function FolderBar({
       </div>
 
       <Button
-        variant={armed ? 'primary' : 'outline'}
-        onClick={() => {
-          if (!armed && lettered > 0) setArmed(true)
-          else {
-            setArmed(false)
-            onTranslate()
-          }
-        }}
-        onBlur={() => setArmed(false)}
+        variant="outline"
+        onClick={onTranslate}
         disabled={running || pages.length === 0}
         className="mt-2 w-full"
         title={
           running
             ? 'A folder is already being run'
-            : canTranslate
-              ? `Read all ${plural(pages.length, 'page')}, translate them, then clean them`
-              : `Read and clean all ${plural(pages.length, 'page')} — no model picked, so nothing is translated`
+            : 'Resume unfinished stages and keep saved regions, translations, and cleanup'
         }
       >
-        {armed
-          ? `Do ${plural(lettered, 'lettered page')} again?`
+        {done > 0 || lettered > 0
+          ? 'Resume folder'
           : canTranslate
             ? 'Translate folder'
             : 'Read & clean folder'}
+      </Button>
+
+      <Button
+        variant="ghost"
+        onClick={onReprocess}
+        disabled={running || pages.length === 0}
+        className="mt-1 w-full"
+        title="Discard this folder’s derived work and start again from the original pages"
+      >
+        Reprocess all pages
       </Button>
 
       <Button

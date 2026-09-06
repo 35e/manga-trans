@@ -64,7 +64,7 @@ export function BatchProgress({
             onClick={onStop}
             disabled={run.stopping}
             className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-faint transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-faint"
-            title="Stop once the page in hand is finished"
+            title="Cancel the current request and stop this chapter; unfinished stages can be resumed"
           >
             {run.stopping ? 'Stopping…' : 'Stop'}
           </button>

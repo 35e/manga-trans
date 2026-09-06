@@ -1,6 +1,7 @@
 // With Vite open in playwright-cli: playwright-cli run-code --filename=check-export.js
 globalThis.checkExport = async page => {
-  const check = await page.context().newPage()
+  const context = await page.context().browser().newContext()
+  const check = await context.newPage()
   try {
     await check.addInitScript(() => {
       const state = window.exportCheck = { fail: 'none', cleaned: [], downloads: [] }
@@ -44,6 +45,7 @@ globalThis.checkExport = async page => {
       }
     })
     await check.goto(page.url())
+    await check.getByText('Project saved', { exact: true }).waitFor()
     await check.evaluate(async () => {
       const { pack } = await import('/src/lib/zip.ts')
       const canvas = document.createElement('canvas')
@@ -108,6 +110,6 @@ globalThis.checkExport = async page => {
     }
     return { cancelled: 'no download', partial, allFailed: 'no download', recovered }
   } finally {
-    await check.close()
+    await context.close()
   }
 }
